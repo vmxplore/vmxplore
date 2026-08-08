@@ -13,6 +13,7 @@
 ![Platform](https://img.shields.io/badge/platform-Linux-brightgreen.svg)
 ![Built with Go](https://img.shields.io/badge/built%20with-Go-00ADD8.svg)
 ![KVM](https://img.shields.io/badge/hypervisor-KVM%2Flibvirt-red.svg)
+![Wayland](https://img.shields.io/badge/native-Wayland%20%7C%20X11-7a2fe0.svg)
 
 **The family:** [kldload](https://github.com/kldload/kldload) — the substrate &middot; [zxplore](https://github.com/zxplore/zxplore) — the ZFS console &middot; [wgxplore](https://github.com/wgxplore/wgxplore) — the WireGuard console &middot; **vmxplore** — the VM console
 
@@ -30,11 +31,12 @@ fought, only shown.
 
 ## Highlights
 
-- **A VNC client built from scratch** — the graphics console is a hand-rolled
-  RFB implementation rendering the guest's framebuffer natively into the
-  window, with full mouse, keyboard, and two-way clipboard. **No websockify,
-  no noVNC, no virt-viewer** — no bridge process at all. It talks straight to
-  qemu's VNC server (over loopback locally, over ssh for a remote host).
+- **A modern VNC client, built from scratch** — the graphics console is a
+  hand-rolled RFB implementation rendering the guest's framebuffer natively
+  into the window, with full mouse, keyboard, and two-way clipboard. **No
+  websockify, no noVNC, no virt-viewer** — no bridge process at all. It talks
+  straight to qemu's VNC server (over loopback locally, over ssh for a remote
+  host), and the GUI runs natively on **Wayland** (and X11).
 - **An in-app serial console** — a real terminal on `virsh console`, in the
   same window: boot messages, login prompts, headless ttys, copy-paste and all.
 - **Remote management over `qemu+ssh`** — `--connect` a headless hypervisor and
