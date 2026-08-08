@@ -3,3 +3,8 @@
 /vmxplore
 # local self-incrementing build counter (stamped via -X main.buildNum)
 /.buildnum
+
+# laid down locally by the private brain repo — NEVER commit to the public repo
+/CLAUDE.md
+CLAUDE.md.bak.*
+/secrets.env
