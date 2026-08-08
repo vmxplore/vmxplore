@@ -1,7 +1,7 @@
 <div align="center">
 
 <h1>
-  <img src="packaging/vmxplore.svg" width="76" align="middle" alt=""/>
+  <img src="assets/vmxplore-avatar.svg" width="84" align="middle" alt=""/>
   &nbsp;vmxplore
 </h1>
 

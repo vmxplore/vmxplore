@@ -1,0 +1,37 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="vmxplore">
+  <defs>
+    <linearGradient id="vg" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#cf8bff"/>
+      <stop offset=".5" stop-color="#a95ff0"/>
+      <stop offset="1" stop-color="#e2695d"/>
+    </linearGradient>
+    <radialGradient id="bgg" cx="50%" cy="38%" r="72%">
+      <stop offset="0" stop-color="#18222a"/>
+      <stop offset="1" stop-color="#080b0d"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <circle cx="256" cy="256" r="242" fill="url(#bgg)"/>
+  <circle cx="256" cy="256" r="240.5" fill="none" stroke="#2b3944" stroke-width="3"/>
+  <circle cx="256" cy="256" r="214" fill="none" stroke="#c77dff" stroke-opacity=".20" stroke-width="2"/>
+  <g transform="translate(256 264) scale(.92) translate(-256 -256)">
+    <g filter="url(#glow)">
+      <g fill="url(#vg)">
+        <path d="M138 150 L210 150 L288 350 L232 350 Z"/>
+        <path d="M374 150 L302 150 L224 350 L280 350 Z"/>
+      </g>
+    </g>
+    <!-- clone nodes: squares capping each arm top -->
+    <g fill="#cf8bff">
+      <rect x="126" y="128" width="56" height="42" rx="7"/>
+      <rect x="330" y="128" width="56" height="42" rx="7"/>
+    </g>
+    <!-- source node + amber running LED at the fork vertex -->
+    <rect x="224" y="330" width="64" height="46" rx="9" fill="#e2695d"/>
+    <circle cx="256" cy="353" r="16" fill="#ffd043" opacity=".35"/>
+    <circle cx="256" cy="353" r="9" fill="#ffd043"/>
+  </g>
+</svg>
