@@ -151,23 +151,98 @@ when ZFS, KVM, WireGuard and the tooling are assembled with opinions. vmxplore
 just gives it a stage. The generic tool recruits the user; the substrate is
 what the console makes effortless.
 
-## Install
+## Zero to hero — from a stock distro
 
-Any Linux with KVM/libvirt (be in the `libvirt` group). Build deps for the GUI
-are cgo + OpenGL headers — the Makefile header carries the exact per-distro
-package list. Headless boxes can skip them entirely and build just the TUI.
+Assume a clean, ordinary install with nothing set up. Three steps: the KVM
+stack vmxplore drives, the build toolchain, then turn it on.
 
+**1 — the KVM stack** (what vmxplore shells out to: libvirt, `virt-install`
+for New VM/clone, `qemu-img` + `xorriso` for the cloud-init seed):
+
+```bash
+# Fedora / RHEL / Rocky
+sudo dnf install -y qemu-kvm libvirt virt-install libvirt-client qemu-img xorriso
+
+# Debian / Ubuntu
+sudo apt install -y qemu-system-x86 libvirt-daemon-system virtinst \
+                    libvirt-clients qemu-utils xorriso
+
+# Arch
+sudo pacman -S --needed qemu-full libvirt virt-install xorriso
 ```
+
+Optional: `guestfs-tools` (Fedora/Arch) / `libguestfs-tools` (Debian) adds
+`virt-sysprep`, used by **Make Golden** to seal a template generically.
+
+**2 — the GUI build deps** (cgo + OpenGL; a headless box can skip these and
+`make tui` for the static terminal binary only):
+
+```bash
+# Fedora / RHEL
+sudo dnf install -y golang gcc pkgconf-pkg-config mesa-libGL-devel \
+     libX11-devel libXcursor-devel libXrandr-devel libXinerama-devel \
+     libXi-devel libXxf86vm-devel wayland-devel libxkbcommon-devel fontconfig-devel
+
+# Debian / Ubuntu
+sudo apt install -y golang gcc pkg-config libgl1-mesa-dev xorg-dev \
+     libwayland-dev libxkbcommon-dev libfontconfig1-dev
+
+# Arch
+sudo pacman -S --needed go gcc pkgconf libgl libxcursor libxrandr \
+     libxinerama libxi wayland libxkbcommon fontconfig
+```
+
+**3 — turn KVM on and join the group** (distro-agnostic):
+
+```bash
+sudo systemctl enable --now libvirtd
+sudo usermod -aG libvirt "$USER"          # then log out and back in
+sudo virsh net-start default              # the NAT network New VM uses
+sudo virsh net-autostart default
+```
+
+**Build & run:**
+
+```bash
 git clone https://github.com/vmxplore/vmxplore && cd vmxplore
 make            # vmxplore (GUI+TUI) + vmx (static TUI-only)
 sudo make install
 ```
 
-```
+```bash
 vmxplore                 # the GUI
 vmx --tui                # the terminal UI (any ssh session)
 vmx --once               # print the estate table and exit (scripts)
 vmx --connect HOST       # drive a remote hypervisor over qemu+ssh
+```
+
+That's it — a stock distro is now a hypervisor with a console. Everything above
+is upstream KVM/libvirt; vmxplore only adds the window.
+
+### Preflight — are you ready?
+
+Confirm each before (or right after) building. vmxplore also surfaces these as
+clear messages rather than cryptic failures, but checking up front is faster:
+
+- [ ] **CPU virtualization on** (BIOS/UEFI VT-x / AMD-V):
+      `grep -Eqc 'vmx|svm' /proc/cpuinfo && echo ok`
+- [ ] **KVM device present**: `test -e /dev/kvm && echo ok`
+- [ ] **libvirt running**: `systemctl is-active libvirtd`
+- [ ] **You're in the `libvirt` group** (log out/in after adding):
+      `id -nG | grep -qw libvirt && echo ok`
+- [ ] **System libvirt reachable** (this is the estate vmxplore reads):
+      `virsh -c qemu:///system list --all`
+- [ ] **Default network active** (New VM attaches to it):
+      `virsh net-list --all`
+- [ ] **Build tools present** (only for the GUI): `go version && pkg-config --exists gl && echo ok`
+
+One-liner that checks the essentials:
+
+```bash
+for c in "grep -Eqc 'vmx|svm' /proc/cpuinfo" "test -e /dev/kvm" \
+         "systemctl is-active --quiet libvirtd" "id -nG | grep -qw libvirt"; do
+  eval "$c" && echo "ok   : $c" || echo "FIX  : $c"
+done
 ```
 
 ## Remote
