@@ -5,9 +5,9 @@
   &nbsp;vmxplore
 </h1>
 
-**The KVM console your distro never shipped — the whole estate, one window.**
+**Turn any Linux distro into a powerful hypervisor — GUI *and* TUI, one binary.**
 
-*Every domain joined to the storage under it: lineage, snapshots, consoles, clones.*
+*The KVM console your distro never shipped: the whole estate, one window.*
 
 [![License: BSD-3](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-brightgreen.svg)
@@ -24,10 +24,10 @@
 </div>
 
 KVM is already in your kernel. libvirt already manages it. What stock Linux
-never shipped is the *console*: one window where the estate lives. vmxplore is
-that window — a native GUI (and a static TUI for ssh) over the libvirt you
-already have. Nothing replaced, no appliance, no agent; `virsh` is never
-fought, only shown.
+never shipped is the *console* — one window where the estate lives. vmxplore is
+that window: a native GUI (and a static TUI for ssh) over the libvirt you
+already have. Nothing replaced, no appliance, no agent, no reinstall; `virsh`
+is never fought, only shown.
 
 ## Highlights
 
@@ -85,7 +85,7 @@ A from-scratch RFB (VNC) client renders the guest's framebuffer directly into
 the window, with full mouse, keyboard, and two-way clipboard. It speaks to
 qemu's VNC server over loopback (or over ssh for a remote host) — **no
 websockify, no noVNC, no virt-viewer.** The picture the web tools bridge to,
-delivered natively.
+delivered natively, on Wayland.
 
 ### kldload — the substrate's toolset, one click
 
@@ -95,11 +95,8 @@ delivered natively.
 
 On a plain libvirt host this tab pitches the OS. On a **kldload** host it
 becomes a command center — a tile launcher for the whole kernel-loaded
-substrate: instant ZFS-clone clusters (`kspawn`), Kubernetes-on-ZFS
-(`kube-cluster`), golden cloud-init images (`kimage`), Windows goldens
-(`kvm-win`), nine-format VM exports (`kexport`), guided demos, and more, each
-running right in the tab. Same one binary — the abilities light up by
-capability probe, never a licence check.
+substrate (see [Enhanced on kldload](#enhanced-on-kldload)). Same one binary —
+the abilities light up by capability probe, never a licence check.
 
 ## Build a VM the way you want
 
@@ -135,29 +132,24 @@ shared until a clone diverges.
 </tr>
 </table>
 
-## The capability ladder
+## Three ways in
 
-vmxplore is tiered by what the host *can do* — probes, never licence checks:
+vmxplore is tiered by what the host *can do* — probes, never licence checks.
+Start anywhere; each layer unlocks more, and the top one you don't build at all.
 
-| Host | What lights up |
-|---|---|
-| any libvirt box | the full console: estate, serial + VNC consoles, lifecycle verbs, New VM |
-| + OpenZFS | the storage join: clone lineage, snapshot classes, rollback, instant clones, golden → fleet |
-| + [kldload](https://kldload.com) | the tool launcher: cluster builds, golden images, Windows unattended goldens, nine-format exports, guided demos |
+| You have… | You get… | Effort |
+|---|---|---|
+| **stock Linux + KVM** | the full console: estate, serial + VNC consoles, lifecycle verbs, New VM | a few packages ([below](#1--stock-linux--kvm)) |
+| **+ OpenZFS** | the storage join: clone lineage, snapshot classes, rollback, instant clones, golden → fleet | one repo + a pool ([below](#2--add-openzfs)) |
+| **[kldload](https://kldload.com)** | *all of it, pre-wired* — plus clusters, Windows goldens, air-gap, mesh, eBPF | **zero — it's already done** ([below](#enhanced-on-kldload)) |
 
-The third tier is the interesting one: those tiles aren't features of vmxplore
-— they're live demonstrations of what a **kernel-loaded substrate** looks like
-when ZFS, KVM, WireGuard and the tooling are assembled with opinions. vmxplore
-just gives it a stage. The generic tool recruits the user; the substrate is
-what the console makes effortless.
+### 1 — stock Linux + KVM
 
-## Zero to hero — from a stock distro
+Assume a clean, ordinary install with nothing set up. The KVM stack vmxplore
+drives, the build toolchain, then turn it on.
 
-Assume a clean, ordinary install with nothing set up. Three steps: the KVM
-stack vmxplore drives, the build toolchain, then turn it on.
-
-**1 — the KVM stack** (what vmxplore shells out to: libvirt, `virt-install`
-for New VM/clone, `qemu-img` + `xorriso` for the cloud-init seed):
+**The KVM stack** (libvirt, `virt-install` for New VM/clone, `qemu-img` +
+`xorriso` for the cloud-init seed):
 
 ```bash
 # Fedora / RHEL / Rocky
@@ -174,7 +166,7 @@ sudo pacman -S --needed qemu-full libvirt virt-install xorriso
 Optional: `guestfs-tools` (Fedora/Arch) / `libguestfs-tools` (Debian) adds
 `virt-sysprep`, used by **Make Golden** to seal a template generically.
 
-**2 — the GUI build deps** (cgo + OpenGL; a headless box can skip these and
+**The GUI build deps** (cgo + OpenGL; a headless box can skip these and
 `make tui` for the static terminal binary only):
 
 ```bash
@@ -192,7 +184,7 @@ sudo pacman -S --needed go gcc pkgconf libgl libxcursor libxrandr \
      libxinerama libxi wayland libxkbcommon fontconfig
 ```
 
-**3 — turn KVM on and join the group** (distro-agnostic):
+**Turn KVM on and join the group** (distro-agnostic):
 
 ```bash
 sudo systemctl enable --now libvirtd
@@ -219,10 +211,10 @@ vmx --connect HOST       # drive a remote hypervisor over qemu+ssh
 That's it — a stock distro is now a hypervisor with a console. Everything above
 is upstream KVM/libvirt; vmxplore only adds the window.
 
-### Preflight — are you ready?
+#### Preflight — are you ready?
 
-Confirm each before (or right after) building. vmxplore also surfaces these as
-clear messages rather than cryptic failures, but checking up front is faster:
+Confirm each before (or right after) building. vmxplore surfaces these as clear
+messages rather than cryptic failures, but checking up front is faster:
 
 - [ ] **CPU virtualization on** (BIOS/UEFI VT-x / AMD-V):
       `grep -Eqc 'vmx|svm' /proc/cpuinfo && echo ok`
@@ -232,11 +224,8 @@ clear messages rather than cryptic failures, but checking up front is faster:
       `id -nG | grep -qw libvirt && echo ok`
 - [ ] **System libvirt reachable** (this is the estate vmxplore reads):
       `virsh -c qemu:///system list --all`
-- [ ] **Default network active** (New VM attaches to it):
-      `virsh net-list --all`
-- [ ] **Build tools present** (only for the GUI): `go version && pkg-config --exists gl && echo ok`
-
-One-liner that checks the essentials:
+- [ ] **Default network active** (New VM attaches to it): `virsh net-list --all`
+- [ ] **Build tools present** (GUI only): `go version && pkg-config --exists gl && echo ok`
 
 ```bash
 for c in "grep -Eqc 'vmx|svm' /proc/cpuinfo" "test -e /dev/kvm" \
@@ -245,13 +234,77 @@ for c in "grep -Eqc 'vmx|svm' /proc/cpuinfo" "test -e /dev/kvm" \
 done
 ```
 
+### 2 — add OpenZFS
+
+The storage join lights up the moment `zfs` is present and your VMs sit on
+zvols. **You don't need ZFS on root** — just a pool with a dataset for VM
+volumes. Then clones are instant, lineage shows up, and golden → fleet works.
+
+```bash
+# Ubuntu — OpenZFS ships in the archive
+sudo apt install -y zfsutils-linux
+
+# Debian — enable contrib, then:
+sudo apt install -y zfs-dkms zfsutils-linux
+
+# Fedora / RHEL / Rocky / Arch — add the OpenZFS (or archzfs) repo first;
+# it's a kernel module, so follow the current per-distro instructions:
+#   https://openzfs.github.io/openzfs-docs/Getting%20Started/
+```
+
+Make a pool and a home for VM volumes (a spare disk — or a file, just to try it):
+
+```bash
+# a whole disk:
+sudo zpool create rpool /dev/sdX
+# …or kick the tires on a file-backed pool:
+truncate -s 40G ~/vmpool.img && sudo zpool create vmpool "$PWD/vmpool.img"
+
+sudo zfs create rpool/vms          # where vmxplore puts VM zvols
+```
+
+Now every VM on a zvol shows its used space, snapshot count, and clone lineage
+in the tree; **Clone** and **EZ Fleet** become zero-copy `zfs clone` operations
+that finish in seconds. Doing this *properly* across a fleet — ZFS on root,
+reproducible, air-gapped, snapshot-everything — is exactly what kldload
+automates for you (next).
+
+### Enhanced on kldload
+
+[**kldload**](https://kldload.com) is the reproducible, multi-distro substrate:
+ZFS on root, an in-kernel WireGuard mesh, eBPF observability, and KVM — assembled
+with opinions and wired together, so vmxplore's third tab turns into a command
+center where the hard things are already done. Point vmxplore at a kldload box
+(or open it right there) and, one tile away:
+
+- **Spin up a cluster from nothing** — `kspawn` conjures a multi-node cluster of
+  instant ZFS clones on its own encrypted WireGuard backplane; `kube-cluster`
+  brings up Kubernetes-on-ZFS (Cilium eBPF, MetalLB, the ZFS CSI) in one command.
+- **Golden images, everywhere** — `kimage` builds a sealed cloud-init golden;
+  `kexport` ships any VM to **nine formats** (qcow2, raw, vhd, vmdk, ova, oci,
+  lxc, firecracker, all) — feed them to Packer, any cloud, any hypervisor.
+- **Windows, unattended** — `kvm-win` builds a Win11/Server golden fully
+  hands-off: OVMF Secure Boot, TPM 2.0, virtio, even WSL2 nested — then clones
+  it like any other golden.
+- **Snapshot everything, undo anything** — every install and change snapshots
+  first; roll back the whole transaction, not just a package.
+- **Air-gapped and reproducible** — the image *is* the repo; provision a fleet
+  from one USB with the network unplugged.
+- **The rest of the estate** — a self-forming WireGuard mesh (no DNS, no IPs),
+  live eBPF flow maps and tracing, GPU sharing, an on-box model — all on by
+  default.
+
+None of that is a vmxplore feature — it's what a **kernel-loaded substrate** can
+do, and vmxplore is simply the window that makes it one click. The generic tool
+recruits the user; kldload is what the console makes effortless.
+
 ## Remote
 
-`--connect <host | user@host | qemu+ssh://host/system>` points the whole tool
-at a headless hypervisor over ssh — the estate, the verbs, the ZFS join, the
-serial and VNC consoles all follow. Same key and `known_hosts` as your shell;
-nothing new to configure. (In the GUI, the **Connect** button on the estate
-header does the same.)
+`--connect <host | user@host | qemu+ssh://host/system>` points the whole tool at
+a headless hypervisor over ssh — the estate, the verbs, the ZFS join, the serial
+and VNC consoles all follow. Same key and `known_hosts` as your shell; nothing
+new to configure. (In the GUI, the **Connect** button on the estate header does
+the same.)
 
 ## Grouping rules
 
