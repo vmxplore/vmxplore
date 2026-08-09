@@ -218,21 +218,38 @@ sudo pacman -S --needed qemu-full libvirt virt-install xorriso
 Optional: `guestfs-tools` (Fedora/Arch) / `libguestfs-tools` (Debian) adds
 `virt-sysprep`, used by **Make Golden** to seal a template generically.
 
+**Go 1.26 or newer** — check before anything else, because this is the one
+that bites: several distributions still package an older Go, and the build
+stops with `go.mod requires go >= 1.26`. Debian 13 ships 1.24, for example.
+
+```bash
+go version                      # need go1.26 or newer
+```
+
+If it is older or missing, take the current tarball from
+[go.dev/dl](https://go.dev/dl/) — this does not disturb your distro's package:
+
+```bash
+curl -fsSLO https://go.dev/dl/go1.26.0.linux-amd64.tar.gz   # use the current filename
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.26.0.linux-amd64.tar.gz
+export PATH=/usr/local/go/bin:$PATH                          # add to ~/.profile
+```
+
 **The GUI build deps** (cgo + OpenGL; a headless box can skip these and
 `make tui` for the static terminal binary only):
 
 ```bash
 # Fedora / RHEL
-sudo dnf install -y golang gcc pkgconf-pkg-config mesa-libGL-devel \
+sudo dnf install -y git gcc pkgconf-pkg-config mesa-libGL-devel \
      libX11-devel libXcursor-devel libXrandr-devel libXinerama-devel \
      libXi-devel libXxf86vm-devel wayland-devel libxkbcommon-devel fontconfig-devel
 
 # Debian / Ubuntu
-sudo apt install -y golang gcc pkg-config libgl1-mesa-dev xorg-dev \
+sudo apt install -y git gcc pkg-config libgl1-mesa-dev xorg-dev \
      libwayland-dev libxkbcommon-dev libfontconfig1-dev
 
 # Arch
-sudo pacman -S --needed go gcc pkgconf libgl libxcursor libxrandr \
+sudo pacman -S --needed git gcc pkgconf libgl libxcursor libxrandr \
      libxinerama libxi wayland libxkbcommon fontconfig
 ```
 
@@ -277,7 +294,11 @@ messages rather than cryptic failures, but checking up front is faster:
 - [ ] **System libvirt reachable** (this is the estate vmxplore reads):
       `virsh -c qemu:///system list --all`
 - [ ] **Default network active** (New VM attaches to it): `virsh net-list --all`
-- [ ] **Build tools present** (GUI only): `go version && pkg-config --exists gl && echo ok`
+- [ ] **Go new enough** (build only): `go version` — must be **1.26+**; a
+      distro-packaged Go is often older, see [above](#1--stock-linux--kvm)
+- [ ] **Build tools present** (GUI only): `pkg-config --exists gl && echo ok`
+- [ ] **A seed-ISO writer present** (New VM / Appliances):
+      `command -v xorriso genisoimage mkisofs | head -1`
 
 ```bash
 for c in "grep -Eqc 'vmx|svm' /proc/cpuinfo" "test -e /dev/kvm" \
