@@ -11,9 +11,9 @@
 //  3. Right-top pane: the serial console — a real terminal widget attached
 //     to `virsh console` for the selected domain, in-window.
 //  4. Right-bottom pane: details dossier + settings + the verb buttons,
-//     driving the SAME plan builders and gates as the TUI (verbs.go): every
-//     mutation shows its exact commands and confirms first; destructive
-//     verbs require retyping the domain name; all runs audit-log.
+//     driving the SAME plan builders as the TUI (verbs.go): every mutation
+//     shows the exact command it runs in the status line and runs it — no
+//     confirmation step, including delete; all runs audit-log.
 //
 // Why: vmxplore is the giveaway KVM console — GUI for the desktop, TUI for
 // ssh — that lights up extra powers on kldload/ZFS hosts via capability
@@ -32,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -278,6 +279,13 @@ func (r *vmRow) MouseDown(e *desktop.MouseEvent) {
 }
 func (r *vmRow) MouseUp(*desktop.MouseEvent) {}
 
+// Tree UIDs for the catalog branch. They live outside the "grp/" and "vm/"
+// namespaces so no estate lookup can ever collide with a catalog entry.
+const (
+	applianceBranchUID = "appliances"
+	applianceUIDPrefix = "app/"
+)
+
 func newVMRow() *vmRow {
 	r := &vmRow{
 		title:  canvas.NewText("", theme.Color(theme.ColorNameForeground)),
@@ -479,63 +487,65 @@ func (g *guiState) dossierSegs(r Row) []widget.RichTextSegment {
 	return segs
 }
 
-// confirmPlan is the GUI twin of the TUI confirm overlay: exact commands,
-// the warning, and — for retype-gated plans — an entry that must match the
-// domain name before OK arms. Same contract, different chrome.
-// guiStatus, if set, gets a one-line note when a verb fires without a
-// dialog — the exact command still surfaces (teach-the-CLI), just in the
-// status bar instead of a modal. Set once in runGUI.
+// guiStatus, if set, gets a one-line note when a verb fires — the exact
+// command still surfaces (teach-the-CLI), in the status bar rather than a
+// modal. Set once in runGUI.
 var guiStatus func(string)
 
-func confirmPlan(w fyne.Window, p verbPlan, after func()) {
-	cmds := widget.NewLabel(strings.TrimRight(p.cmdLines(), "\n"))
-	cmds.TextStyle = fyne.TextStyle{Monospace: true}
-	items := []fyne.CanvasObject{cmds}
-	if p.warn != "" {
-		warn := widget.NewLabel("⚠ " + p.warn)
-		warn.Importance = widget.WarningImportance
-		items = append(items, warn)
-	}
-	run := func() {
-		go func() {
-			err := runPlan(p)
-			fyne.Do(func() {
-				if err != nil {
-					dialog.ShowError(err, w)
-				}
-				after()
-			})
-		}()
-	}
-	// No retype gate → a safe, reversible verb (start/stop/reboot/snapshot/
-	// clone/…): just run it. Prompting on every routine action is friction
-	// the operator explicitly waived; the audit log keeps the record and
-	// the destructive trio below still arms by retype.
-	if p.retype == "" {
-		if guiStatus != nil {
-			guiStatus("· " + strings.TrimSpace(strings.TrimPrefix(
-				strings.TrimSpace(p.cmdLines()), "$")))
+// pickPubKey returns the operator's ssh public key for prefilling the
+// guest-login field, or "" when there is none to offer. It walks a
+// preference order and then falls back to any *.pub, because hardcoding
+// one filename silently offered nothing on a host whose only key is an
+// id_kldload or an id_rsa — and an empty key box next to an empty password
+// box is how a VM gets built that nobody can log into.
+func pickPubKey() string {
+	dir := os.Getenv("HOME") + "/.ssh/"
+	for _, n := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"} {
+		if b, err := os.ReadFile(dir + n); err == nil {
+			return strings.TrimSpace(string(b))
 		}
-		run()
-		return
 	}
-	entry := widget.NewEntry()
-	entry.SetPlaceHolder(p.retype)
-	items = append(items,
-		widget.NewLabel("type the name "+p.retype+" to arm:"), entry)
-	d := dialog.NewCustomConfirm(p.title, "Run", "Cancel",
-		container.NewVBox(items...), func(ok bool) {
-			if !ok {
-				return
+	names, _ := filepath.Glob(dir + "*.pub")
+	for _, n := range names {
+		if b, err := os.ReadFile(n); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+// firePlan runs a plan and reports it. There is no confirmation step of any
+// kind, including for delete.
+//
+// WHY (operator call, 2026-08-09): these are cattle, not pets. A VM here is
+// a thing you make in seconds from a golden and remake just as fast, and
+// every dialog between the click and the deed was taxing the common case to
+// insure against a rare one. Clicking delete IS the confirmation.
+//
+// What remains of the safety net is deliberate and worth knowing: every
+// command lands in the audit log (runPlan → /var/log/kldload/vmx.log) with
+// who ran it and its exit code, and the command itself shows in the status
+// bar as it fires. WARN: `zfs destroy -r` takes the dataset's snapshots
+// with it, so sanoid history on that zvol is not a recovery path — only
+// replication to another pool or host is.
+func firePlan(w fyne.Window, p verbPlan, after func()) {
+	if guiStatus != nil {
+		note := "· " + strings.TrimSpace(strings.TrimPrefix(
+			strings.TrimSpace(p.cmdLines()), "$"))
+		if p.warn != "" {
+			note += "  ⚠ " + p.warn
+		}
+		guiStatus(note)
+	}
+	go func() {
+		err := runPlan(p)
+		fyne.Do(func() {
+			if err != nil {
+				dialog.ShowError(err, w)
 			}
-			if entry.Text != p.retype {
-				dialog.ShowInformation(p.title,
-					"not armed — the typed name did not match", w)
-				return
-			}
-			run()
-		}, w)
-	d.Show()
+			after()
+		})
+	}()
 }
 
 func runGUI(rs *Ruleset) {
@@ -616,11 +626,24 @@ func runGUI(rs *Ruleset) {
 
 	var tree *widget.Tree
 	var rowMenuAt func(r Row, pos fyne.Position) // wired after the verbs exist
+	// openAppliance is wired once the dialog exists, further down. The tree
+	// is built before it, so the catalog branch reaches it through this.
+	var openAppliance func(name string)
 	childUIDs := func(uid string) []string {
 		if uid == "" {
-			out := make([]string, 0, len(viewGroups))
+			out := make([]string, 0, len(viewGroups)+1)
 			for _, g := range viewGroups {
 				out = append(out, "grp/"+g.Label)
+			}
+			// The catalog sits last and closed: it is a menu of things to
+			// build, not estate, so it must never push the running VMs
+			// down the pane.
+			return append(out, applianceBranchUID)
+		}
+		if uid == applianceBranchUID {
+			out := make([]string, 0, len(Appliances()))
+			for _, n := range ApplianceNames() {
+				out = append(out, applianceUIDPrefix+n)
 			}
 			return out
 		}
@@ -638,7 +661,8 @@ func runGUI(rs *Ruleset) {
 		return nil
 	}
 	isBranch := func(uid string) bool {
-		return uid == "" || strings.HasPrefix(uid, "grp/")
+		return uid == "" || uid == applianceBranchUID ||
+			strings.HasPrefix(uid, "grp/")
 	}
 	tree = widget.NewTree(childUIDs, isBranch,
 		func(branch bool) fyne.CanvasObject {
@@ -651,16 +675,50 @@ func runGUI(rs *Ruleset) {
 		},
 		func(uid string, branch bool, o fyne.CanvasObject) {
 			if branch {
+				t := o.(*canvas.Text)
+				if uid == applianceBranchUID {
+					t.Text = fmt.Sprintf("Appliances  (%d)", len(Appliances()))
+					t.Color = acBrand.at()
+					t.Refresh()
+					return
+				}
 				label := strings.TrimPrefix(uid, "grp/")
 				n, run := groupStats(label)
 				s := fmt.Sprintf("%s  (%d)", label, n)
 				if run > 0 {
 					s += fmt.Sprintf("  ·  %d running", run)
 				}
-				t := o.(*canvas.Text)
 				t.Text = s
 				t.Color = acBrand.at()
 				t.Refresh()
+				return
+			}
+			// A catalog leaf is a thing to build, not a thing that exists,
+			// so it borrows the row widget but none of its estate gestures.
+			// Every callback is reassigned because Fyne recycles leaf
+			// widgets — a stale closure here would aim a VM verb at an
+			// appliance.
+			if name, ok := strings.CutPrefix(uid, applianceUIDPrefix); ok {
+				a, found := ApplianceByName(name)
+				if !found {
+					return
+				}
+				row := o.(*vmRow)
+				row.title.Text = "＋ " + a.Name
+				row.title.Color = acBrand.at()
+				row.detail.Text = fmt.Sprintf("%s   ·   %d vCPU, %d MB, %d GB",
+					a.Summary, a.VCPUs, a.RAMMB, a.DiskGB)
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() {
+					if openAppliance != nil {
+						openAppliance(a.Name)
+					}
+				}
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.title.Refresh()
+				row.detail.Refresh()
 				return
 			}
 			r, ok := rowByUID(uid)
@@ -845,7 +903,8 @@ func runGUI(rs *Ruleset) {
 	toolsHost := container.NewStack()
 	var toolCmd *exec.Cmd
 	var toolPty interface{ Close() error }
-	var selectToolsTab func() // set once the tab bar exists below
+	var selectToolsTab func()    // set once the tab bar exists below
+	var selectGraphicsTab func() // ditto — where a new VM's first boot shows
 	var showToolTiles func()
 	stopTool := func() {
 		if toolCmd != nil && toolCmd.Process != nil {
@@ -935,6 +994,39 @@ func runGUI(rs *Ruleset) {
 		}
 		return theme.ComputerIcon()
 	}
+	// toolAccent colours a tile by what the tool DOES, so the launcher is
+	// scannable before a single label is read — the same colour language
+	// the verb tiles already speak inside a tool (green makes, red
+	// destroys, steel reads), lifted one level up to the tools themselves.
+	//
+	//	green  builds or creates something new
+	//	blue   storage: snapshots, images, the ZFS consoles
+	//	gold   read-only — looking, never touching
+	//	red    destroys, and cannot be undone
+	//	purple guided demos (the brand accent: these are the showpieces)
+	//
+	// Unknown tools fall through to gold rather than a neutral grey: a new
+	// k-tool nobody has classified yet is, at worst, safe to look at.
+	toolAccent := func(name string) accentPair {
+		switch {
+		case strings.HasSuffix(name, "-demo"):
+			return acBrand
+		case name == "kvm-delete":
+			return acRed
+		case name == "kvm-snap" || name == "ksnap" || name == "kexport" ||
+			name == "kimage" || name == "zxplore":
+			return acBlue
+		case name == "kvm-list" || name == "kst":
+			return acGold
+		case name == "klab" || name == "kube-cluster" || name == "kspawn" ||
+			name == "kvm-create" || name == "kvm-clone" || name == "kvm-win" ||
+			name == "kzfs-lab":
+			return acGreen
+		case name == "shell":
+			return acOff // a plain prompt: no verb, no colour to earn
+		}
+		return acGold
+	}
 	// ── the action catalog ───────────────────────────────────────────────
 	// Curated from each tool's REAL usage banner (2026-08-07 sweep) —
 	// most k-tools are `tool <subcommand>` CLIs, so a bare tile just
@@ -961,6 +1053,35 @@ func runGUI(rs *Ruleset) {
 				prompt: "how many workers to add"},
 			{label: "destroy", desc: "tear down the cluster — VMs and zvols", argv: []string{"kube-cluster", "destroy"},
 				confirm: true},
+		},
+		// The OpenZFS Lab is a whole workflow, not one command: build
+		// goldens once, clone them into a blue site, run the suite, stage
+		// changes in green and promote when they pass. The verbs are
+		// grouped in that order so the tile grid reads as the process.
+		"kzfs-lab": {
+			{label: "status", desc: "every VM, site and snapshot in the lab", argv: []string{"kzfs-lab", "status"}},
+			{label: "health…", desc: "system health dashboard for a site", argv: []string{"kzfs-lab", "health"},
+				prompt: "site (blue/green, empty = blue)"},
+			{label: "build…", desc: "golden images with the ZFS dev tools baked in", builds: true, argv: []string{"kzfs-lab", "build"},
+				prompt: "distro or all (centos rocky fedora debian ubuntu arch)"},
+			{label: "deploy blue", desc: "clone the goldens into the blue site", builds: true, argv: []string{"kzfs-lab", "deploy", "blue"}},
+			{label: "deploy green", desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"kzfs-lab", "deploy", "green"}},
+			{label: "test…", desc: "quick ZFS tests across the site's VMs", argv: []string{"kzfs-lab", "test"},
+				prompt: "distro or all"},
+			{label: "test-full…", desc: "the complete zfs-tests.sh suite — slow", argv: []string{"kzfs-lab", "test-full"},
+				prompt: "distro (empty = all)"},
+			{label: "ebpf-latency…", desc: "I/O latency across the site, measured with eBPF", argv: []string{"kzfs-lab", "ebpf-latency"},
+				prompt: "site (empty = blue)"},
+			{label: "ebpf-arc…", desc: "ARC hit/miss ratios across the site", argv: []string{"kzfs-lab", "ebpf-arc"},
+				prompt: "site (empty = blue)"},
+			{label: "snapshot…", desc: "tag every lab VM at once", argv: []string{"kzfs-lab", "snapshot"},
+				prompt: "tag (empty = timestamp)"},
+			{label: "promote green", desc: "green becomes blue — blue is snapshotted first", argv: []string{"kzfs-lab", "promote", "green"},
+				confirm: true},
+			{label: "rollback", desc: "revert blue to its previous snapshot", argv: []string{"kzfs-lab", "rollback"},
+				confirm: true},
+			{label: "destroy…", desc: "tear down a site; goldens are preserved", argv: []string{"kzfs-lab", "destroy"},
+				prompt: "blue, green, all or goldens", confirm: true},
 		},
 		"kspawn": {
 			{label: "list", desc: "every spawned cluster", argv: []string{"kspawn", "list"}},
@@ -1048,6 +1169,9 @@ func runGUI(rs *Ruleset) {
 		"ksnap":        "host-level ZFS snapshots and rollback",
 		"kvm-demo":     "guided KVM / ZFS / GPU showcase",
 		"kube-demo":    "guided Kubernetes-on-ZFS showcase",
+		"kzfs-lab":     "OpenZFS Lab: goldens, blue/green sites, ZFS tests, eBPF",
+		"zxplore":      "the ZFS console: pools, datasets, snapshots, clones",
+		"kst":          "this host at a glance: pool health, capacity, build",
 		"shell":        "a plain bash prompt, right here",
 	}
 
@@ -1092,9 +1216,11 @@ func runGUI(rs *Ruleset) {
 		tiles := make([]fyne.CanvasObject, 0, len(acts))
 		for _, act := range acts {
 			act := act
-			// colour says what a verb does before you read it: green
-			// builds, red destroys, steel reads
-			col := theme.Color(theme.ColorNameForeground)
+			// colour says what a verb does before you read it, in the
+			// same language as the tools grid one level up: green
+			// builds, red destroys, gold reads. Nothing is left neutral
+			// — a grey tile reads as disabled, not as safe.
+			col := acGold.at()
 			switch {
 			case act.confirm:
 				col = acRed.at()
@@ -1154,16 +1280,18 @@ func runGUI(rs *Ruleset) {
 		tiles := make([]fyne.CanvasObject, 0, len(ktools)+1)
 		for _, t := range append(append([]string{}, ktools...), "shell") {
 			t := t
-			col := theme.Color(theme.ColorNameForeground)
-			if strings.HasSuffix(t, "-demo") {
-				col = acBrand.at() // demos pop in the brand purple
-			}
-			tiles = append(tiles, newTile(toolIcon(t), t, toolDesc[t], col,
-				func() { openTool(t) }))
+			tiles = append(tiles, newTile(toolIcon(t), t, toolDesc[t],
+				toolAccent(t).at(), func() { openTool(t) }))
 		}
+		// The legend is spelled out because a colour language nobody
+		// explains is decoration. One line, once, at the top.
+		legend := widget.NewLabel(
+			"green builds · blue storage · gold reads · red destroys · purple demos")
+		legend.TextStyle = fyne.TextStyle{Italic: true}
 		head := container.NewVBox(
 			pageHeading("kldload tools", acBrand),
-			widget.NewLabel("clusters, goldens, clones, demos — they run right here"))
+			widget.NewLabel("clusters, goldens, clones, demos — they run right here"),
+			legend)
 		grid := container.NewGridWrap(fyne.NewSize(250, 96), tiles...)
 		toolsHost.Objects = []fyne.CanvasObject{container.NewBorder(
 			container.NewPadded(head), nil, nil, nil,
@@ -1172,8 +1300,17 @@ func runGUI(rs *Ruleset) {
 	}
 	showToolTiles()
 
+	// conName/conState remember what the panes are actually attached TO,
+	// as opposed to what is merely selected — the refresh loop compares
+	// against these to notice a machine that changed underneath a standing
+	// attachment. conLast* are the previous poll's sample, which is what
+	// makes a restart detectable at all (see the refresh loop).
+	var conName, conState, conLastName string
+	var conCPU uint64
+
 	// followConsole keeps both panes in lock-step with the selection.
 	followConsole := func(r Row) {
+		conName, conState = r.D.Name, r.D.State
 		if r.D.State == "running" && !r.Synthetic {
 			attachConsole(r.D.Name)
 			attachVNC(r.D.Name)
@@ -1199,7 +1336,7 @@ func runGUI(rs *Ruleset) {
 	}
 	status := widget.NewLabel(fmt.Sprintf("vmxplore %s · rules: %s",
 		versionFull(), rs.Source))
-	// non-retype verbs fire without a dialog and report here
+	// every verb fires without a dialog and reports here
 	guiStatus = func(s string) { fyne.Do(func() { status.SetText(s) }) }
 
 	// ── the verb toolbar ─────────────────────────────────────────────────
@@ -1207,7 +1344,7 @@ func runGUI(rs *Ruleset) {
 	// always-visible icon buttons; everything else lives behind labelled
 	// dropdown menus (Storage / Configure / Build / Estate) so the pane
 	// stays organized as verbs accumulate. Every path funnels through the
-	// same plan builders + confirmPlan gates as the TUI.
+	// same plan builders as the TUI, fired the same way.
 	var refreshNow func()
 	withSel := func(f func(Row)) func() {
 		return func() {
@@ -1223,7 +1360,7 @@ func runGUI(rs *Ruleset) {
 				dialog.ShowError(err, w)
 				return
 			}
-			confirmPlan(w, p, func() { refreshNow() })
+			firePlan(w, p, func() { refreshNow() })
 		})
 	}
 
@@ -1242,7 +1379,7 @@ func runGUI(rs *Ruleset) {
 						dialog.ShowError(err, w)
 						return
 					}
-					confirmPlan(w, p, func() { refreshNow() })
+					firePlan(w, p, func() { refreshNow() })
 				}, w)
 		})
 	}
@@ -1282,7 +1419,7 @@ func runGUI(rs *Ruleset) {
 					dialog.ShowError(err, w)
 					return
 				}
-				confirmPlan(w, p, func() { refreshNow() })
+				firePlan(w, p, func() { refreshNow() })
 			}, w)
 	})
 
@@ -1313,7 +1450,7 @@ func runGUI(rs *Ruleset) {
 					dialog.ShowError(err, w)
 					return
 				}
-				confirmPlan(w, p, func() { refreshNow() })
+				firePlan(w, p, func() { refreshNow() })
 			}, w)
 	})
 
@@ -1369,15 +1506,16 @@ func runGUI(rs *Ruleset) {
 		ram.SetText("2048")
 		diskGB := widget.NewEntry()
 		diskGB.SetText("20")
+		// Prefilled, not placeholdered: an empty password box and an
+		// empty key box build a VM with no way in, and a grey hint is
+		// too easy to read as "already handled".
 		user := widget.NewEntry()
 		user.SetText("admin")
 		pass := widget.NewEntry()
-		pass.SetPlaceHolder("password (optional if key given)")
+		pass.SetText(DefaultGuestPassword)
 		key := widget.NewEntry()
 		key.SetPlaceHolder("ssh public key (optional)")
-		if b, err := os.ReadFile(os.Getenv("HOME") + "/.ssh/id_ed25519.pub"); err == nil {
-			key.SetText(strings.TrimSpace(string(b)))
-		}
+		key.SetText(pickPubKey())
 		// the custom post-installer: bash run as root on first boot. This
 		// is "build your own image" — install packages, drop configs, then
 		// Make Golden → Clone. A Load… button reuses a script from disk.
@@ -1467,6 +1605,18 @@ func runGUI(rs *Ruleset) {
 					done = "created — open the Graphics tab and run the installer"
 				}
 				parent := ZFSVMParent(st.visibleRows())
+				// Focus the machine being built, and show it. Selection
+				// follows the domain BY NAME across refreshes (see the
+				// refresh loop), so naming it here means the estate list
+				// jumps to the new VM the moment it first appears; the tab
+				// switch means the operator is looking at its first boot
+				// rather than at the form they just submitted. That boot is
+				// the part worth watching and it is over before the build
+				// call returns.
+				st.selName = spec.Name
+				if selectGraphicsTab != nil {
+					selectGraphicsTab()
+				}
 				go func() {
 					err := BuildNewVM(spec, parent, func(line string) {
 						fyne.Do(func() { status.SetText(line) })
@@ -1477,13 +1627,171 @@ func runGUI(rs *Ruleset) {
 							return
 						}
 						refreshNow()
-						dialog.ShowInformation("New VM", spec.Name+" "+done, w)
+						// The status line, not a modal: the VM is already
+						// built and in the list by now, so a popup asking to
+						// be dismissed is pure friction between the operator
+						// and the machine they just made.
+						status.SetText(spec.Name + " " + done)
 					})
 				}()
 			}, w)
 		d.Resize(fyne.NewSize(460, 560))
 		d.Show()
 	}
+
+	// Appliances: the catalog (appliances.go) as a button. Picking an entry
+	// fixes the distro and sizing and supplies the post-install script, so
+	// the only things left to answer are app-specific — which is the whole
+	// point: "give me a blog" instead of "give me a Debian VM, then follow
+	// a writeup." The build path is the ordinary New VM pipeline.
+	// preselect names the catalog entry to open on; empty picks the first.
+	// The left-tree catalog branch passes the entry that was clicked.
+	applianceDialog := func(preselect string) {
+		catalog := Appliances()
+		if len(catalog) == 0 {
+			dialog.ShowInformation("Appliances", "The catalog is empty.", w)
+			return
+		}
+		if _, ok := ApplianceByName(preselect); !ok {
+			preselect = catalog[0].Name
+		}
+		name := widget.NewEntry()
+		name.SetPlaceHolder("vm name")
+		pick := widget.NewSelect(ApplianceNames(), nil)
+		summary := widget.NewLabel("")
+		summary.Wrapping = fyne.TextWrapWord
+		notes := widget.NewLabel("")
+		notes.Wrapping = fyne.TextWrapWord
+		notes.TextStyle = fyne.TextStyle{Italic: true}
+		// fields is rebuilt on every pick; entries indexes the live widgets
+		// by field key so the submit handler can read them back.
+		fields := container.NewVBox()
+		entries := map[string]*widget.Entry{}
+		current := catalog[0]
+
+		// The VM's own account, and prefilled for the same reason as New
+		// VM: this dialog carries TWO credential pairs — the app's admin
+		// login above and the machine's login here — and the machine's
+		// were the easy ones to leave blank.
+		user := widget.NewEntry()
+		user.SetText("admin")
+		pass := widget.NewEntry()
+		pass.SetText(DefaultGuestPassword)
+		key := widget.NewEntry()
+		key.SetPlaceHolder("ssh public key (optional)")
+		key.SetText(pickPubKey())
+
+		rebuild := func(appName string) {
+			a, ok := ApplianceByName(appName)
+			if !ok {
+				return
+			}
+			current = a
+			summary.SetText(fmt.Sprintf("%s — %s\n%s · %s · %d vCPU, %d MB, %d GB",
+				a.Name, a.Summary, a.License, a.Distro, a.VCPUs, a.RAMMB, a.DiskGB))
+			notes.SetText(a.Notes)
+			fields.RemoveAll()
+			entries = map[string]*widget.Entry{}
+			for _, f := range a.Fields {
+				var e *widget.Entry
+				if f.Secret {
+					e = widget.NewPasswordEntry()
+				} else {
+					e = widget.NewEntry()
+				}
+				e.SetText(f.Default)
+				e.SetPlaceHolder(f.Placeholder)
+				entries[f.Key] = e
+				fields.Add(widget.NewLabel(f.Label))
+				fields.Add(e)
+			}
+			fields.Refresh()
+		}
+		pick.OnChanged = rebuild
+		pick.SetSelected(preselect)
+
+		// The two credential blocks are labelled as a pair of opposites
+		// on purpose. Filling the app's login and leaving the machine's
+		// blank is the mistake this dialog invites, and the result used
+		// to be a VM that served its app perfectly and could not be
+		// logged into at all.
+		appHead := widget.NewLabel("the app's own login — you sign into the website with this")
+		appHead.TextStyle = fyne.TextStyle{Bold: true}
+		vmHead := widget.NewLabel("the machine's login — console and ssh, not the app")
+		vmHead.TextStyle = fyne.TextStyle{Bold: true}
+		form := container.NewVBox(
+			widget.NewLabel("appliance"), pick, summary,
+			widget.NewSeparator(),
+			widget.NewLabel("vm name"), name,
+			appHead,
+			fields,
+			widget.NewSeparator(),
+			vmHead,
+			user, pass, key,
+			widget.NewSeparator(),
+			notes,
+		)
+		d := dialog.NewCustomConfirm("Appliance — a configured app in one shot",
+			"Build", "Cancel", container.NewVScroll(form), func(ok bool) {
+				if !ok {
+					return
+				}
+				vals := map[string]string{}
+				for k, e := range entries {
+					vals[k] = e.Text
+				}
+				a := current
+				spec, err := a.Spec(name.Text, user.Text, pass.Text, key.Text, vals)
+				if err != nil {
+					// Field validation lives in the catalog entry, so a bad
+					// value is reported here rather than 90 seconds later in
+					// the guest's cloud-init log.
+					dialog.ShowError(err, w)
+					return
+				}
+				parent := ZFSVMParent(st.visibleRows())
+				// Focus the machine being built, and show it. Selection
+				// follows the domain BY NAME across refreshes (see the
+				// refresh loop), so naming it here means the estate list
+				// jumps to the new VM the moment it first appears; the tab
+				// switch means the operator is looking at its first boot
+				// rather than at the form they just submitted. That boot is
+				// the part worth watching and it is over before the build
+				// call returns.
+				st.selName = spec.Name
+				if selectGraphicsTab != nil {
+					selectGraphicsTab()
+				}
+				go func() {
+					err := BuildNewVM(spec, parent, func(line string) {
+						fyne.Do(func() { status.SetText(line) })
+					})
+					fyne.Do(func() {
+						if err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						refreshNow()
+						// No modal: the build already narrated itself here,
+						// ending with the appliance's real URL, and the
+						// catalog entry's notes carry the rest. Where it
+						// lands is the one thing worth repeating.
+						// The machine login goes in the line too: the
+						// app's credentials are in the guest's /root/,
+						// but you need to get in to read them.
+						status.SetText(fmt.Sprintf(
+							"%s — %s ready · %s · machine login %s/%s · "+
+								"app credentials in /root/ inside the guest",
+							spec.Name, a.Name, a.LandsOn,
+							spec.User, spec.Password))
+					})
+				}()
+			}, w)
+		d.Resize(fyne.NewSize(480, 620))
+		d.Show()
+	}
+	// close the forward reference the catalog branch in the tree holds
+	openAppliance = applianceDialog
 
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
 	// proposition in a gesture ("give me 5 Fedora boxes").
@@ -1525,6 +1833,11 @@ func runGUI(rs *Ruleset) {
 					User: "admin", Password: "kldload", PostInst: post.Text,
 				}
 				parent := ZFSVMParent(st.visibleRows())
+				// the golden appears first; the clones land under it
+				st.selName = spec.Name
+				if selectGraphicsTab != nil {
+					selectGraphicsTab()
+				}
 				go func() {
 					err := BuildFleet(spec, n, parent, func(line string) {
 						fyne.Do(func() { status.SetText(line) })
@@ -1535,8 +1848,8 @@ func runGUI(rs *Ruleset) {
 							return
 						}
 						refreshNow()
-						dialog.ShowInformation("EZ Fleet",
-							fmt.Sprintf("%s golden + %d clones ready", spec.Name, n), w)
+						status.SetText(fmt.Sprintf(
+							"%s golden + %d clones ready", spec.Name, n))
 					})
 				}()
 			}, w)
@@ -1594,6 +1907,8 @@ func runGUI(rs *Ruleset) {
 		fyne.NewMenuItem("Autostart on/off", verb(planAutostart)))
 	mBuild := menuButton("Build", theme.ContentAddIcon(),
 		fyne.NewMenuItem("New VM…", newVMDialog),
+		fyne.NewMenuItem("Appliance — a configured app…",
+			func() { applianceDialog("") }),
 		fyne.NewMenuItem("EZ Fleet — golden + N clones…", fleetDialog),
 		fyne.NewMenuItem("Clone…", cloneAny),
 		fyne.NewMenuItem("Make Golden…", goldenAct))
@@ -1620,15 +1935,16 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
 			fyne.NewMenuItem("Autostart on/off", verb(planAutostart)),
 			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem("Delete…", verb(planDelete)),
+			// no ellipsis: nothing opens, it deletes
+			fyne.NewMenuItem("Delete", verb(planDelete)),
 		), w.Canvas())
 		m.ShowAtPosition(pos)
 	}
 
 	// ── batch bar: verbs over the checked set ────────────────────────────
-	// Appears only when ≥1 VM is checked (dot-click). Safe verbs fire
-	// across the set immediately; the destructive ones show ONE confirm
-	// listing the targets (retyping N names would be absurd).
+	// Appears only when ≥1 VM is checked (dot-click). Every verb fires
+	// across the set immediately — checking the rows and pressing the
+	// button is the deliberate act; a dialog asking again is not.
 	checkedRows := func() []Row {
 		var rows []Row
 		for _, g := range st.groups {
@@ -1647,10 +1963,10 @@ func runGUI(rs *Ruleset) {
 		tree.Refresh()
 		refreshBatchBar()
 	}
-	// batchRun builds each row's plan and runs it; destructive plans confirm
+	// batchRun builds each row's plan and runs it — no confirmation step
 	// once for the whole set. Per-VM errors are collected, not fatal — one
 	// bad VM must not abort the rest of a 40-VM sweep.
-	batchRun := func(label string, build func(Row) (verbPlan, error), destructive bool) {
+	batchRun := func(label string, build func(Row) (verbPlan, error)) {
 		rows := checkedRows()
 		if len(rows) == 0 {
 			return
@@ -1677,21 +1993,11 @@ func runGUI(rs *Ruleset) {
 				})
 			}()
 		}
-		if !destructive {
-			fire()
-			return
-		}
-		names := make([]string, len(rows))
-		for i, r := range rows {
-			names[i] = r.D.Name
-		}
-		dialog.ShowConfirm(label+" — "+fmt.Sprint(len(rows))+" VMs",
-			label+" these "+fmt.Sprint(len(rows))+" VMs?\n\n"+
-				strings.Join(names, "\n"), func(ok bool) {
-				if ok {
-					fire()
-				}
-			}, w)
+		// No confirm, destructive or not: the operator picked the rows and
+		// pressed the button, which is the same two deliberate acts a
+		// dialog would have asked for again. Failures still surface, and
+		// every command is in the audit log.
+		fire()
 	}
 	batchBar := container.NewHBox()
 	refreshBatchBar = func() {
@@ -1702,17 +2008,17 @@ func runGUI(rs *Ruleset) {
 		}
 		lbl := pageHeading(fmt.Sprintf("%d selected", n), acBrand)
 		bStart := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(),
-			func() { batchRun("Start", planStart, false) })
+			func() { batchRun("Start", planStart) })
 		bStart.Importance = widget.SuccessImportance
 		bReboot := widget.NewButtonWithIcon("Reboot", theme.ViewRefreshIcon(),
-			func() { batchRun("Reboot", planReboot, false) })
+			func() { batchRun("Reboot", planReboot) })
 		bStop := widget.NewButtonWithIcon("Shut down", theme.MediaStopIcon(),
-			func() { batchRun("Shut down", planShutdown, false) })
+			func() { batchRun("Shut down", planShutdown) })
 		bKill := widget.NewButtonWithIcon("Force off", theme.ErrorIcon(),
-			func() { batchRun("Force off", planForceOff, true) })
+			func() { batchRun("Force off", planForceOff) })
 		bKill.Importance = widget.DangerImportance
 		bDel := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(),
-			func() { batchRun("Delete", planDelete, true) })
+			func() { batchRun("Delete", planDelete) })
 		bDel.Importance = widget.DangerImportance
 		bClear := widget.NewButtonWithIcon("", theme.CancelIcon(), clearChecked)
 		batchBar.Objects = []fyne.CanvasObject{
@@ -1743,6 +2049,18 @@ func runGUI(rs *Ruleset) {
 				tree.OpenBranch(uid)
 			}
 			tree.Unselect(uid)
+			return
+		}
+		// A catalog leaf is an action, not a selection: opening the build
+		// dialog is the whole point, and leaving it selected would strand
+		// the dossier and console panes on a VM that does not exist yet.
+		// (The leaf's own tap handler covers mouse clicks; this is the
+		// path keyboard navigation takes.)
+		if name, ok := strings.CutPrefix(uid, applianceUIDPrefix); ok {
+			tree.Unselect(uid)
+			if openAppliance != nil {
+				openAppliance(name)
+			}
 			return
 		}
 		r, ok := rowByUID(uid)
@@ -1800,6 +2118,26 @@ func runGUI(rs *Ruleset) {
 			len(doms), st.rs.Source, at.Format("15:04:05"), versionFull()))
 		if r, ok := st.selected(); ok {
 			renderDossier(r)
+			// The console is attached to a PROCESS, not to a name. A domain
+			// that stopped and started again is a new qemu with a new
+			// serial pty and a new VNC port, so the standing attachment is
+			// a dead pipe over stale pixels — and nothing noticed, because
+			// this only ever ran on a click. The operator's workaround was
+			// to select another VM and come back.
+			//
+			// Three things mean "re-follow": a different domain, a
+			// different power state, or a cumulative CPU counter that went
+			// BACKWARDS. That last one is what catches an off-and-on cycle
+			// completed between two polls, where the state reads "running"
+			// both times and only the counter reveals that the process
+			// behind the name was replaced. A reboot from inside the guest
+			// keeps the same qemu, keeps counting up, and correctly does
+			// not disturb the attachment.
+			restarted := r.D.Name == conLastName && r.D.CPUTimeNs < conCPU
+			if r.D.Name != conName || r.D.State != conState || restarted {
+				followConsole(r)
+			}
+			conLastName, conCPU = r.D.Name, r.D.CPUTimeNs
 		}
 	}
 	fetchEstate := func() {
@@ -1883,6 +2221,48 @@ func runGUI(rs *Ruleset) {
 	left := gap(card(container.NewBorder(
 		container.NewVBox(estateHead, search, batchBar), nil, nil, nil,
 		tree)))
+	// The build surfaces are tabs in the console card, not menu items,
+	// because the tile grid the kldload tab already uses reads as a menu
+	// you can see: every way to make a VM is one glance, and a tile opens
+	// the dialog that collects its details. Same layout in all three tabs
+	// so the pane behaves identically wherever you are.
+	tileGrid := func(tiles ...fyne.CanvasObject) fyne.CanvasObject {
+		return container.NewVScroll(container.NewPadded(
+			container.NewGridWrap(fyne.NewSize(250, 96), tiles...)))
+	}
+	vmsHost := container.NewBorder(
+		container.NewCenter(pageHeading("NEW VM", acBrand)), nil, nil, nil,
+		// Same colour language as the tools grid: the three that end with
+		// a new machine are green; Make Golden is blue because it seals
+		// storage rather than creating a VM.
+		tileGrid(
+			newTile(theme.ContentAddIcon(), "New VM",
+				"cloud image, or boot an installer ISO",
+				acGreen.at(), newVMDialog),
+			newTile(theme.ViewRefreshIcon(), "EZ Fleet",
+				"a golden plus N clones, one shot",
+				acGreen.at(), fleetDialog),
+			newTile(theme.ContentCopyIcon(), "Clone",
+				"instant zero-copy ZFS clone of the selected VM",
+				acGreen.at(), cloneAny),
+			newTile(theme.ConfirmIcon(), "Make Golden",
+				"seal the selected VM into a clone template",
+				acBlue.at(), goldenAct),
+		))
+
+	// One tile per catalog entry (appliances.go). The catalog is data, so
+	// this grid grows on its own as entries are added — nothing here to
+	// edit per app.
+	appTiles := make([]fyne.CanvasObject, 0, len(Appliances()))
+	for _, ap := range Appliances() {
+		ap := ap // the tile closure outlives the loop iteration
+		appTiles = append(appTiles, newTile(theme.StorageIcon(), ap.Name,
+			ap.Summary, acGreen.at(), func() { applianceDialog(ap.Name) }))
+	}
+	appliancesHost := container.NewBorder(
+		container.NewCenter(pageHeading("APPLIANCES", acGreen)), nil, nil, nil,
+		tileGrid(appTiles...))
+
 	// Serial | Graphics tabs share the console card; ⛶ toggles the card
 	// full-window (and back) for real console work.
 	tabs := container.NewAppTabs(
@@ -1892,6 +2272,14 @@ func runGUI(rs *Ruleset) {
 	// get-kldload pitch elsewhere
 	tabs.Append(container.NewTabItem("kldload", toolsHost))
 	selectToolsTab = func() { tabs.SelectIndex(2) }
+	selectGraphicsTab = func() { tabs.SelectIndex(1) }
+	tabs.Append(container.NewTabItem("New VM", vmsHost))
+	tabs.Append(container.NewTabItem("Appliances", appliancesHost))
+	// Graphics, not Serial, is where the work happens: it shows the same
+	// console plus everything graphical, so it is the right landing tab.
+	// Serial stays for the case Graphics cannot cover — a guest with no
+	// video, or one whose X is broken, where it is the only way in.
+	tabs.SelectIndex(1)
 	var mainContent fyne.CanvasObject
 	consoleCard := card(container.NewBorder(nil, nil, nil, nil, tabs))
 	restoreBtn := widget.NewButtonWithIcon("", theme.ViewRestoreIcon(), func() {

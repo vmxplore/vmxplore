@@ -44,6 +44,11 @@ is never fought, only shown.
   authenticated with the same ssh key as your shell. No agent on the far side.
 - **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
   zero-copy clones in one gesture; blocks are shared until a clone diverges.
+- **Appliances — a self-hosted app as one button** — pick an app, fill in its
+  two or three fields, and get a configured VM running it. Every "how to
+  self-host X" writeup is the same four moves (fetch a pinned artifact, write a
+  config, init a database, drop a unit file); the catalog encodes that once per
+  app, so a weekend of following a blog post becomes a click.
 - **New VM your way** — a cloud image (cloud-init) *or* boot the distro's own
   installer ISO and do it by hand; either way with a custom first-boot script.
 - **Batch operations** — check many VMs and Start / Stop / Reboot / Delete them
@@ -131,6 +136,53 @@ shared until a clone diverges.
 </td>
 </tr>
 </table>
+
+## Appliances — an app, running, in one gesture
+
+<img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely Desktop appliance — the VM boots straight into the editor, signed in" width="100%"/>
+<sub><em>WriteFreely Desktop: power on, write. No login prompt, no desktop to
+navigate — the graphics console <strong>is</strong> the application.</em></sub>
+
+Pick an entry, answer its handful of app-specific questions, and the ordinary
+New VM pipeline builds it: cloud image, cloud-init, a fixed post-install script,
+then a wait until the app actually answers on its port — at which point you are
+handed its real URL.
+
+The catalog is **data, not code**. An entry is a struct literal plus a bash
+string, so adding an app never touches the pipeline, the GUI or the tests. Two
+consequences worth knowing:
+
+- **The generated script is a useful artifact on its own.** `--appliance-script`
+  prints it without building anything: ordinary bash with no vmxplore, libvirt
+  or ZFS dependency in it, which an upstream project could publish as their own
+  "install on a fresh VM" page. It also means you can *read exactly what the
+  button is about to run*.
+- **Operator input is never interpolated into a script body.** The body is fixed
+  bash reading named variables; only shell-quoted assignments are prepended. A
+  site name containing a quote, a `$(…)` or a backtick is inert data.
+
+Two entries ship today, both WriteFreely — the same blog, headless or as a
+writing machine:
+
+| | |
+|---|---|
+| **WriteFreely** | 1 vCPU / 1 GB. Minimalist federated blogging behind Caddy with automatic HTTPS. Reach it from your own browser. |
+| **WriteFreely Desktop** | 2 vCPU / 3 GB. The same blog *plus a machine to write on*: X, a kiosk window manager and a browser, booting straight into the editor already signed in as the admin you set up. Deliberately not GNOME — measured, `gnome-core` costs 802 additional packages to put one window on screen. |
+
+From the terminal, no GUI needed:
+
+```bash
+vmx --appliances                       # the catalog, with each entry's fields
+vmx --appliance-script "WriteFreely"   # just print the installer, build nothing
+
+vmx --appliance "WriteFreely" --vm blog \
+    WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
+```
+
+It waits for the first boot to finish and prints the appliance's real URL on
+stdout. `WF_ADMIN_PASS` is left out above on purpose: password fields left blank
+are generated from `crypto/rand` and written to `/root/` inside the guest, so
+the happy path needs no typing and no reused password.
 
 ## Three ways in
 
