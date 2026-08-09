@@ -44,7 +44,7 @@ is never fought, only shown.
   authenticated with the same ssh key as your shell. No agent on the far side.
 - **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
   zero-copy clones in one gesture; blocks are shared until a clone diverges.
-- **Appliances — a self-hosted app as one button** — pick an app, fill in its
+- **Apps — a self-hosted application as one button** — pick an app, fill in its
   two or three fields, and get a configured VM running it. Every "how to
   self-host X" writeup is the same four moves (fetch a pinned artifact, write a
   config, init a database, drop a unit file); the catalog encodes that once per
@@ -70,21 +70,27 @@ is never fought, only shown.
   mutation shows its exact `virsh`/`zfs` command and is audit-logged; the
   destructive ones arm only when you retype the domain name.
 
-## The three console tabs
+## The console tabs
 
 The console pane is the heart of it — pick a running VM and the right tab
-attaches automatically, in-window, no external viewer.
+attaches automatically, in-window, no external viewer. Five tabs, in the
+order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
+machine you have, then make one, with the substrate's own toolset last.
+
+⛶ hands the pane the whole window with no chrome at all, and 📋 pastes the
+host clipboard into the guest (as RFB cut text *and* as keystrokes, so it
+lands whether or not the guest runs a clipboard agent).
 
 ### Serial
 
 A real terminal on `virsh console`, right in the pane — boot messages, a login
 prompt, a headless server's tty. Copy-paste, resize, the works.
 
-### Graphics — a native VNC client, no bridge
+### Screen — a native VNC client, no bridge
 
-<img src="assets/screenshots/console-vnc.png" width="820" alt="the Graphics tab rendering a guest's framebuffer natively"/>
+<img src="assets/screenshots/console-vnc.png" width="820" alt="the Screen tab rendering a guest's framebuffer natively"/>
 
-<sub><em>The Graphics tab: a guest's boot console rendered by a hand-written VNC client — no bridge, no external viewer.</em></sub>
+<sub><em>The Screen tab: a guest's boot console rendered by a hand-written VNC client — no bridge, no external viewer.</em></sub>
 
 A from-scratch RFB (VNC) client renders the guest's framebuffer directly into
 the window, with full mouse, keyboard, and two-way clipboard. It speaks to
@@ -137,11 +143,13 @@ shared until a clone diverges.
 </tr>
 </table>
 
-## Appliances — an app, running, in one gesture
+## Apps — an application, running, in one gesture
 
 <img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely Desktop appliance — the VM boots straight into the editor, signed in" width="100%"/>
 <sub><em>WriteFreely Desktop: power on, write. No login prompt, no desktop to
-navigate — the graphics console <strong>is</strong> the application.</em></sub>
+navigate — the Screen tab <strong>is</strong> the application. It signs itself
+in as the admin you set up, at 2560x1440, and narrates its own first boot on
+both consoles while it builds.</em></sub>
 
 Pick an entry, answer its handful of app-specific questions, and the ordinary
 New VM pipeline builds it: cloud image, cloud-init, a fixed post-install script,
@@ -297,7 +305,7 @@ messages rather than cryptic failures, but checking up front is faster:
 - [ ] **Go new enough** (build only): `go version` — must be **1.26+**; a
       distro-packaged Go is often older, see [above](#1--stock-linux--kvm)
 - [ ] **Build tools present** (GUI only): `pkg-config --exists gl && echo ok`
-- [ ] **A seed-ISO writer present** (New VM / Appliances):
+- [ ] **A seed-ISO writer present** (VM / Apps):
       `command -v xorriso genisoimage mkisofs | head -1`
 
 ```bash

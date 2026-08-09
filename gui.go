@@ -43,6 +43,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/creack/pty"
@@ -64,9 +65,11 @@ type compactTheme struct{ fyne.Theme }
 func (t compactTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNameInnerPadding:
-		return 3 // tight rows (single-spaced list)
+		return 2 // tight rows (single-spaced list)
 	case theme.SizeNamePadding:
-		return 6 // space between panes / regions
+		return 3 // space between panes / regions — small on purpose: this
+		// window is mostly other machines' screens, and every margin is
+		// drawn at the expense of one
 	}
 	return t.Theme.Size(name)
 }
@@ -158,6 +161,17 @@ func card(content fyne.CanvasObject) fyne.CanvasObject {
 	r.CornerRadius = 8
 	repaint = append(repaint, func() { r.FillColor = cardColor(); r.Refresh() })
 	return container.NewStack(r, container.NewPadded(content))
+}
+
+// cardTight is card without the inner inset — for the console, where the
+// content is a guest's screen and every pixel spent on a margin is a pixel
+// not spent on the machine. The rounded backdrop stays, so the pane still
+// reads as a card next to the others.
+func cardTight(content fyne.CanvasObject) fyne.CanvasObject {
+	r := canvas.NewRectangle(cardColor())
+	r.CornerRadius = 8
+	repaint = append(repaint, func() { r.FillColor = cardColor(); r.Refresh() })
+	return container.NewStack(r, content)
 }
 
 // heading is a bold accent-colored section title (long-lived surfaces —
@@ -677,7 +691,7 @@ func runGUI(rs *Ruleset) {
 			if branch {
 				t := o.(*canvas.Text)
 				if uid == applianceBranchUID {
-					t.Text = fmt.Sprintf("Appliances  (%d)", len(Appliances()))
+					t.Text = fmt.Sprintf("Apps  (%d)", len(Appliances()))
 					t.Color = acBrand.at()
 					t.Refresh()
 					return
@@ -854,13 +868,18 @@ func runGUI(rs *Ruleset) {
 		consoleHost.Objects = []fyne.CanvasObject{term}
 		consoleHost.Refresh()
 	}
-	// Graphics pane: the native RFB viewer (vnc.go) — same auto-follow
+	// Screen pane: the native RFB viewer (vnc.go) — same auto-follow
 	// contract as serial. Loopback makes eager attach cheap.
 	vncHost := container.NewStack(conPlaceholder(
 		"select a running VM — its graphical console renders here"))
 	var vncConn *rfbConn
 	vncName := ""
+	// curVNC is the live viewer, so a control outside the pane (the paste
+	// button in the console header) can drive the session the pane owns.
+	// Nil whenever nothing is attached.
+	var curVNC *vncViewer
 	detachVNC := func() {
+		curVNC = nil
 		if vncConn != nil {
 			vncConn.Close()
 		}
@@ -889,7 +908,9 @@ func runGUI(rs *Ruleset) {
 		conn.onCutText = func(s string) {
 			fyne.Do(func() { w.Clipboard().SetContent(s) })
 		}
-		vncHost.Objects = []fyne.CanvasObject{newVNCViewer(conn)}
+		v := newVNCViewer(conn)
+		curVNC = v
+		vncHost.Objects = []fyne.CanvasObject{v}
 		vncHost.Refresh()
 	}
 
@@ -903,8 +924,8 @@ func runGUI(rs *Ruleset) {
 	toolsHost := container.NewStack()
 	var toolCmd *exec.Cmd
 	var toolPty interface{ Close() error }
-	var selectToolsTab func()    // set once the tab bar exists below
-	var selectGraphicsTab func() // ditto — where a new VM's first boot shows
+	var selectToolsTab func()  // set once the tab bar exists below
+	var selectScreenTab func() // ditto — where a new VM's first boot shows
 	var showToolTiles func()
 	stopTool := func() {
 		if toolCmd != nil && toolCmd.Process != nil {
@@ -1472,9 +1493,22 @@ func runGUI(rs *Ruleset) {
 		}
 	}
 
+	// The action row speaks one language, in two families.
+	//
+	// Lifecycle verbs are traffic lights — green runs it, amber stops it
+	// politely, red pulls the plug — so the consequence is legible before
+	// the label is read. Everything else is a MENU rather than an act, and
+	// those all carry the brand accent so they read as one family and never
+	// as something that is about to happen to a machine.
+	//
+	// The palette is Fyne's Importance rather than hand-painted colour:
+	// Success/Warning/Danger/High are the four the theme already resolves
+	// per light and dark variant, so the row stays right when GNOME flips
+	// and nothing here has to be repainted by applyPalette.
 	btnStart := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), verb(planStart))
 	btnStart.Importance = widget.SuccessImportance
 	btnStop := widget.NewButtonWithIcon("Shut down", theme.MediaStopIcon(), verb(planShutdown))
+	btnStop.Importance = widget.WarningImportance
 	btnKill := widget.NewButtonWithIcon("Force off", theme.ErrorIcon(), verb(planForceOff))
 	btnKill.Importance = widget.DangerImportance
 
@@ -1488,7 +1522,7 @@ func runGUI(rs *Ruleset) {
 		name := widget.NewEntry()
 		name.SetPlaceHolder("vm name")
 		// build mode: a cloud image (fast — cloud-init, preset user) or an
-		// installer ISO (boot the distro's own installer in the Graphics
+		// installer ISO (boot the distro's own installer in the Screen
 		// tab, run apt/dnf/pacman the normal way; any ISO — Debian, Fedora,
 		// an Arch live ISO, a RHEL DVD)
 		mode := widget.NewSelect([]string{"cloud image", "installer ISO"}, nil)
@@ -1602,7 +1636,7 @@ func runGUI(rs *Ruleset) {
 				}
 				done := "created — cloud-init finishes the first boot"
 				if spec.install() {
-					done = "created — open the Graphics tab and run the installer"
+					done = "created — open the Screen tab and run the installer"
 				}
 				parent := ZFSVMParent(st.visibleRows())
 				// Focus the machine being built, and show it. Selection
@@ -1614,8 +1648,8 @@ func runGUI(rs *Ruleset) {
 				// the part worth watching and it is over before the build
 				// call returns.
 				st.selName = spec.Name
-				if selectGraphicsTab != nil {
-					selectGraphicsTab()
+				if selectScreenTab != nil {
+					selectScreenTab()
 				}
 				go func() {
 					err := BuildNewVM(spec, parent, func(line string) {
@@ -1649,7 +1683,7 @@ func runGUI(rs *Ruleset) {
 	applianceDialog := func(preselect string) {
 		catalog := Appliances()
 		if len(catalog) == 0 {
-			dialog.ShowInformation("Appliances", "The catalog is empty.", w)
+			dialog.ShowInformation("Applications", "The catalog is empty.", w)
 			return
 		}
 		if _, ok := ApplianceByName(preselect); !ok {
@@ -1731,7 +1765,7 @@ func runGUI(rs *Ruleset) {
 			widget.NewSeparator(),
 			notes,
 		)
-		d := dialog.NewCustomConfirm("Appliance — a configured app in one shot",
+		d := dialog.NewCustomConfirm("Application — a configured app in one shot",
 			"Build", "Cancel", container.NewVScroll(form), func(ok bool) {
 				if !ok {
 					return
@@ -1759,8 +1793,8 @@ func runGUI(rs *Ruleset) {
 				// the part worth watching and it is over before the build
 				// call returns.
 				st.selName = spec.Name
-				if selectGraphicsTab != nil {
-					selectGraphicsTab()
+				if selectScreenTab != nil {
+					selectScreenTab()
 				}
 				go func() {
 					err := BuildNewVM(spec, parent, func(line string) {
@@ -1835,8 +1869,8 @@ func runGUI(rs *Ruleset) {
 				parent := ZFSVMParent(st.visibleRows())
 				// the golden appears first; the clones land under it
 				st.selName = spec.Name
-				if selectGraphicsTab != nil {
-					selectGraphicsTab()
+				if selectScreenTab != nil {
+					selectScreenTab()
 				}
 				go func() {
 					err := BuildFleet(spec, n, parent, func(line string) {
@@ -1907,7 +1941,7 @@ func runGUI(rs *Ruleset) {
 		fyne.NewMenuItem("Autostart on/off", verb(planAutostart)))
 	mBuild := menuButton("Build", theme.ContentAddIcon(),
 		fyne.NewMenuItem("New VM…", newVMDialog),
-		fyne.NewMenuItem("Appliance — a configured app…",
+		fyne.NewMenuItem("Application — a configured app…",
 			func() { applianceDialog("") }),
 		fyne.NewMenuItem("EZ Fleet — golden + N clones…", fleetDialog),
 		fyne.NewMenuItem("Clone…", cloneAny),
@@ -2012,8 +2046,10 @@ func runGUI(rs *Ruleset) {
 		bStart.Importance = widget.SuccessImportance
 		bReboot := widget.NewButtonWithIcon("Reboot", theme.ViewRefreshIcon(),
 			func() { batchRun("Reboot", planReboot) })
+		bReboot.Importance = widget.HighImportance
 		bStop := widget.NewButtonWithIcon("Shut down", theme.MediaStopIcon(),
 			func() { batchRun("Shut down", planShutdown) })
+		bStop.Importance = widget.WarningImportance
 		bKill := widget.NewButtonWithIcon("Force off", theme.ErrorIcon(),
 			func() { batchRun("Force off", planForceOff) })
 		bKill.Importance = widget.DangerImportance
@@ -2034,10 +2070,21 @@ func runGUI(rs *Ruleset) {
 	pad := func(o fyne.CanvasObject) fyne.CanvasObject {
 		return container.NewPadded(o)
 	}
-	buttons := container.NewPadded(container.NewHBox(
+	for _, m := range []*widget.Button{mStorage, mConfig, mBuild, mEstate} {
+		m.Importance = widget.HighImportance
+	}
+	// Centred, not flush left: the row used to run off the right edge with
+	// no margin left on it, which reads as truncated rather than as a row
+	// that ended. The trailing gap is a fixed 20px rather than more theme
+	// padding, because it is doing a different job — theme padding scales
+	// with the theme, this is a deliberate margin at the end of a row of
+	// buttons so the last one is never the last pixel.
+	endGap := canvas.NewRectangle(color.Transparent)
+	endGap.SetMinSize(fyne.NewSize(20, 1))
+	buttons := container.NewPadded(container.NewCenter(container.NewHBox(
 		pad(btnStart), pad(btnStop), pad(btnKill),
 		widget.NewSeparator(),
-		pad(mStorage), pad(mConfig), pad(mBuild), pad(mEstate)))
+		pad(mStorage), pad(mConfig), pad(mBuild), pad(mEstate), endGap)))
 
 	// ── selection → panes ────────────────────────────────────────────────
 	// A branch (group header) toggles its own fold; a leaf drives the panes.
@@ -2260,39 +2307,114 @@ func runGUI(rs *Ruleset) {
 			ap.Summary, acGreen.at(), func() { applianceDialog(ap.Name) }))
 	}
 	appliancesHost := container.NewBorder(
-		container.NewCenter(pageHeading("APPLIANCES", acGreen)), nil, nil, nil,
+		container.NewCenter(pageHeading("APPS", acGreen)), nil, nil, nil,
 		tileGrid(appTiles...))
 
-	// Serial | Graphics tabs share the console card; ⛶ toggles the card
-	// full-window (and back) for real console work.
+	// The tab order is the order of the work: look at the machine you have
+	// (Serial, Screen), then make one — an Applications entry if somebody
+	// already solved it, a bare VM if not — and the kldload toolset last,
+	// since it is the only tab that isn't there on every host.
+	//
+	// The tabs share the console card; ⛶ toggles the card full-window (and
+	// back) for real console work.
+	screenTab := container.NewTabItem("Screen", vncHost)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Serial", consoleHost),
-		container.NewTabItem("Graphics", vncHost))
-	// the tab exists on every host: tools launcher on kldload, the
-	// get-kldload pitch elsewhere
-	tabs.Append(container.NewTabItem("kldload", toolsHost))
-	selectToolsTab = func() { tabs.SelectIndex(2) }
-	selectGraphicsTab = func() { tabs.SelectIndex(1) }
-	tabs.Append(container.NewTabItem("New VM", vmsHost))
-	tabs.Append(container.NewTabItem("Appliances", appliancesHost))
-	// Graphics, not Serial, is where the work happens: it shows the same
+		screenTab,
+		container.NewTabItem("Apps", appliancesHost),
+		container.NewTabItem("VM", vmsHost))
+	// this one exists on every host too, but says different things: the
+	// tools launcher on kldload, the get-kldload pitch elsewhere
+	toolsTab := container.NewTabItem("kldload", toolsHost)
+	tabs.Append(toolsTab)
+	// Select by tab, never by index: the index form silently pointed at
+	// whatever had moved into slot 2 the first time these were reordered.
+	selectToolsTab = func() { tabs.Select(toolsTab) }
+	selectScreenTab = func() { tabs.Select(screenTab) }
+	// Screen, not Serial, is where the work happens: it shows the same
 	// console plus everything graphical, so it is the right landing tab.
-	// Serial stays for the case Graphics cannot cover — a guest with no
+	// Serial stays for the case Screen cannot cover — a guest with no
 	// video, or one whose X is broken, where it is the only way in.
-	tabs.SelectIndex(1)
+	tabs.Select(screenTab)
 	var mainContent fyne.CanvasObject
-	consoleCard := card(container.NewBorder(nil, nil, nil, nil, tabs))
-	restoreBtn := widget.NewButtonWithIcon("", theme.ViewRestoreIcon(), func() {
-		w.SetContent(mainContent)
+	consoleCard := cardTight(container.NewBorder(nil, nil, nil, nil, tabs))
+
+	// ⛶ — nothing but the guest, in the window you already have.
+	//
+	// It used to hand over the console CARD — tab bar, padding and card
+	// border included. On a 2560x1440 guest that chrome is the difference
+	// between reading the screen and squinting at it, and every pixel of it
+	// shows controls nobody is using while they look at a machine. Now the
+	// selected tab's content goes edge to edge with the restore control
+	// floated over the top-right corner instead of given a row of its own.
+	//
+	// WHY it does NOT call SetFullScreen, which is the obvious thing:
+	// because on a multi-monitor desktop it moves the window to the WRONG
+	// display. Fyne picks the target itself and offers no way to say which;
+	// read getMonitorForWindow in its glfw driver — under Wayland it skips
+	// the geometry search outright, and even on X11 a miss falls through to
+	// GetPrimaryMonitor. Observed here on a three-head desktop: ⛶ threw the
+	// console onto monitor 1 from a window that was on another.
+	//
+	// Filling the window is a smaller promise that is always kept. The
+	// window manager already does true fullscreen correctly and on the
+	// right monitor — its own shortcut composes with this, and the result
+	// is the guest occupying the whole display with no furniture at all.
+	//
+	// WARN: the restore button is the ONLY way back out of this mode.
+	// Escape cannot be the escape — the VNC widget owns the keyboard and
+	// forwards it to the guest, so anything that wants Escape (vi, a
+	// firmware menu, the editor in the writing appliance) would eat it.
+	// Small and cornered, never hidden.
+	// Paste, as a button you can see.
+	//
+	// Ctrl+V already worked — TypedShortcut sends the host clipboard as RFB
+	// cut text AND types it as keystrokes, so it lands in a guest whether or
+	// not that guest runs a clipboard agent. Nobody knew, because a keyboard
+	// shortcut inside a pane that swallows the keyboard is invisible. This
+	// is the same code path with a control attached to it.
+	//
+	// Not a right-click menu: right-click belongs to the guest. A guest is
+	// exactly the place where stealing the secondary button breaks real work.
+	pasteBtn := widget.NewButtonWithIcon("", theme.ContentPasteIcon(), func() {
+		if curVNC == nil {
+			guiStatus("paste: no screen attached — select a running VM")
+			return
+		}
+		text := w.Clipboard().Content()
+		if text == "" {
+			guiStatus("paste: the host clipboard is empty")
+			return
+		}
+		curVNC.pasteText(text)
+		guiStatus(fmt.Sprintf("pasted %d characters into the guest", len(text)))
 	})
+
+	restoreBtn := widget.NewButtonWithIcon("", theme.ViewRestoreIcon(), func() {
+		w.SetPadded(true) // the window's own margin comes back with the chrome
+		w.SetContent(mainContent)
+		// the borrowed pane is going back into its tab: Fyne needs telling
+		// that the tab's content moved parents and back again
+		tabs.Refresh()
+	})
+	restoreBtn.Importance = widget.LowImportance
 	fullBtn := widget.NewButtonWithIcon("", theme.ViewFullScreenIcon(), func() {
-		// the console card alone, edge to edge, with its own way back
-		w.SetContent(container.NewBorder(
-			container.NewBorder(nil, nil, nil, restoreBtn), nil, nil, nil,
-			gap(consoleCard)))
+		pane := tabs.Selected().Content
+		// SetPadded(false) is the last of the border: Fyne insets window
+		// content by a theme margin, which on a maximised window is a
+		// visible frame around a guest that should be reaching the edges.
+		w.SetPadded(false)
+		// The two controls stack vertically rather than sitting side by
+		// side, so they cost one button of width instead of two — the
+		// difference is guest pixels, which is the entire point of the mode.
+		w.SetContent(container.NewStack(
+			pane,
+			container.NewVBox(container.NewHBox(layout.NewSpacer(),
+				container.NewVBox(pasteBtn, restoreBtn)))))
 	})
 	consoleHead := container.NewBorder(nil, nil,
-		heading("CONSOLE", acGold), fullBtn)
+		heading("CONSOLE", acGold),
+		container.NewHBox(pasteBtn, fullBtn))
 	consolePane := gap(container.NewBorder(consoleHead, nil, nil, nil,
 		consoleCard))
 	rightBottom := gap(card(container.NewBorder(
