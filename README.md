@@ -51,8 +51,16 @@ is never fought, only shown.
   app, so a weekend of following a blog post becomes a click.
 - **New VM your way** — a cloud image (cloud-init) *or* boot the distro's own
   installer ISO and do it by hand; either way with a custom first-boot script.
+- **Knows what the hardware can do** — the host's GPUs are probed from sysfs
+  (and over ssh for a remote hypervisor, because the card that matters is the
+  one attached to the VMs). Find an NVIDIA card and New VM offers to install
+  the drivers in the guest; find none and the option never appears.
 - **Batch operations** — check many VMs and Start / Stop / Reboot / Delete them
   all at once.
+- **No confirmation theatre** — clicking delete deletes, and a running VM is
+  forced off rather than refused. These are cattle: a VM here is made from a
+  golden in seconds. Every command still shows in the status line as it runs
+  and lands in an audit log with who ran it and its exit code.
 - **One static binary, capability-tiered** — copy `vmx` to any libvirt box; the
   extra powers light up by probe (ZFS, then kldload), never a licence check.
 
@@ -143,6 +151,38 @@ shared until a clone diverges.
 </tr>
 </table>
 
+## GPUs — offered only where they could work
+
+vmxplore probes the machine that runs the VMs for display controllers, the
+driver bound to each, and whether the IOMMU is on. It reads sysfs rather than
+shelling out to `lspci`, because sysfs is always there and `lspci` is a
+package — and it runs the same probe over ssh for a remote hypervisor, since
+the card that matters is the one attached to the VMs, not the one in the
+laptop driving them.
+
+Find an NVIDIA card and **New VM** grows an *NVIDIA drivers in the guest*
+checkbox, naming the card it found. Find none and the option never appears —
+on a machine with no GPU it would be several hundred megabytes of driver, ten
+minutes of build, and nothing to drive.
+
+The guest layer composes onto whatever post-install is already there: it
+enables `contrib`/`non-free` (a Debian cloud image ships `Components: main`
+only, so `nvidia-driver` has no installation candidate at all), installs the
+generic kernel with matching headers for DKMS, pins grub to that kernel, and
+reboots once.
+
+**What it does not do — and this matters:** installing the driver is the guest
+half. *Handing the card to the guest* is host-side `vfio` passthrough, which
+this does not touch. Passthrough is exclusive — the host gives the card up
+entirely — so on a single-GPU desktop the host's display goes with it. The
+checkbox says so, and says when the IOMMU is off, since no card reaches a
+guest until it is on.
+
+> A GPU also will not make the console faster. The VNC pane sends *pixels*:
+> a 2560x1440 frame is ~14 MB uncompressed. That is a transport question
+> (compressed encodings), not a graphics-card question. Drivers in the guest
+> are for workloads *inside* it — transcoding, streaming, local AI.
+
 ## Apps — an application, running, in one gesture
 
 <img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely Desktop appliance — the VM boots straight into the editor, signed in" width="100%"/>
@@ -196,6 +236,8 @@ the happy path needs no typing and no reused password.
 
 vmxplore is tiered by what the host *can do* — probes, never licence checks.
 Start anywhere; each layer unlocks more, and the top one you don't build at all.
+Hardware is probed the same way: [an NVIDIA card](#gpus--offered-only-where-they-could-work)
+on the hypervisor adds a driver option to New VM, and its absence removes it.
 
 | You have… | You get… | Effort |
 |---|---|---|
