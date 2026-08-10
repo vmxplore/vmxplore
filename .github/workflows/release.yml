@@ -1,0 +1,149 @@
+# release.yml — publish binaries so getting vmxplore is downloading a file.
+#
+# Why this exists: the only way to obtain vmxplore was `git clone && make`,
+# which needs Go 1.26. Debian ships 1.24. So a stranger's first five minutes
+# were spent installing a newer toolchain than their distribution provides,
+# and most of them stopped there — not because the tool was bad, but
+# because they never saw it.
+#
+# Two products, deliberately different:
+#
+#   vmx       CGO_ENABLED=0, fully static, amd64 AND arm64. Zero runtime
+#             dependencies: scp it to any libvirt box, including a headless
+#             server or an SBC, and run it. This is the one that matters.
+#
+#   vmxplore  the Fyne GUI, amd64 only. Needs cgo and the GL/X11/wayland
+#             stack at build time, so it cannot be cross-compiled honestly
+#             and is built on the runner with those libraries present.
+#
+# Every artifact is checksummed. A binary people download over the internet
+# and run against their hypervisor has to be verifiable.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  static:
+    name: static TUI (${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -Eeuo pipefail
+          out="vmx-linux-${{ matrix.goarch }}"
+          go build -trimpath \
+            -ldflags "-X main.buildNum=${GITHUB_RUN_NUMBER}" \
+            -o "$out" .
+          # a "static" binary that is not static is the whole promise broken,
+          # so assert it rather than trust the flag
+          file "$out"
+          ! ldd "$out" 2>/dev/null | grep -q '=>' || {
+            echo "FATAL: $out is dynamically linked" >&2; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vmx-linux-${{ matrix.goarch }}
+          path: vmx-linux-${{ matrix.goarch }}
+
+  gui:
+    name: GUI (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: fyne build dependencies
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc pkg-config libgl1-mesa-dev xorg-dev libwayland-dev \
+            libxkbcommon-dev libfontconfig1-dev
+      - name: build
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -Eeuo pipefail
+          go build -trimpath -tags gui \
+            -ldflags "-X main.buildNum=${GITHUB_RUN_NUMBER}" \
+            -o vmxplore-linux-amd64 .
+          # the same trap the ISO build guards: a '-tags gui' build that
+          # silently produced the terminal variant looks like success
+          readelf -d vmxplore-linux-amd64 |
+            grep -qiE 'NEEDED.*(libGL|libX11|libwayland|libxkbcommon)' || {
+              echo "FATAL: GUI build did not link a display stack" >&2
+              exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vmxplore-linux-amd64
+          path: vmxplore-linux-amd64
+
+  publish:
+    name: publish release
+    needs: [static, gui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: checksums
+        run: |
+          set -Eeuo pipefail
+          cd dist
+          chmod +x vmx-* vmxplore-*
+          sha256sum vmx-* vmxplore-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/vmx-linux-amd64
+            dist/vmx-linux-arm64
+            dist/vmxplore-linux-amd64
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            ## Getting it
+
+            **Headless box, or you just want it working now** — `vmx` is
+            static with zero dependencies:
+
+            ```sh
+            curl -fsSLO https://github.com/vmxplore/vmxplore/releases/latest/download/vmx-linux-amd64
+            chmod +x vmx-linux-amd64
+            sudo install -m0755 vmx-linux-amd64 /usr/local/bin/vmx
+            vmx --setup      # installs the KVM stack, shows every command first
+            vmx --tui
+            ```
+
+            **Desktop** — add the GUI:
+
+            ```sh
+            curl -fsSLO https://github.com/vmxplore/vmxplore/releases/latest/download/vmxplore-linux-amd64
+            sudo install -m0755 vmxplore-linux-amd64 /usr/local/bin/vmxplore
+            vmxplore
+            ```
+
+            Verify first if you like: `sha256sum -c SHA256SUMS`.
+
+            No Go toolchain needed for either.

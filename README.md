@@ -247,8 +247,33 @@ on the hypervisor adds a driver option to New VM, and its absence removes it.
 
 ### 1 — stock Linux + KVM
 
-Assume a clean, ordinary install with nothing set up. The KVM stack vmxplore
-drives, the build toolchain, then turn it on.
+**The short way — download a binary, let it do the rest.** No toolchain, no
+build dependencies:
+
+```bash
+curl -fsSLO https://github.com/vmxplore/vmxplore/releases/latest/download/vmx-linux-amd64
+chmod +x vmx-linux-amd64
+sudo install -m0755 vmx-linux-amd64 /usr/local/bin/vmx
+
+vmx --setup      # installs the KVM stack — and prints every command first
+vmx --tui        # or add the GUI binary below and run `vmxplore`
+```
+
+`vmx` is fully static with zero runtime dependencies, and there is an
+`arm64` build too. For the desktop GUI, grab `vmxplore-linux-amd64` from the
+same release. Checksums are in `SHA256SUMS`.
+
+`--setup` reads `/etc/os-release`, picks the right package manager for
+Debian/Ubuntu, Fedora/RHEL/Rocky, Arch or SUSE, installs the KVM stack,
+enables `libvirtd`, starts the default network, and adds you to the
+`libvirt` group. It shows the whole list before it runs anything, so you can
+copy the commands out and run them yourself instead if you prefer.
+
+---
+
+**The long way — build it from source.** Assume a clean, ordinary install
+with nothing set up. The KVM stack vmxplore drives, the build toolchain,
+then turn it on.
 
 **The KVM stack** (libvirt, `virt-install` for New VM/clone, `qemu-img` +
 `xorriso` for the cloud-init seed):
