@@ -56,6 +56,18 @@ been there from the start.
 
 ### Fixed
 
+- **A remote target was honoured by the estate but not by the verbs.** Fifteen
+  call sites hardcoded `qemu:///system` or ran a bare `zfs`, so under
+  `--connect` they acted on the *local* machine while the domain lived on the
+  remote one — a clone would snapshot there and copy here, and a "golden not
+  found" answer silently downgraded a cheap clone to a full copy. Every virsh,
+  virt-install, virt-clone and zfs call now routes through the target, and a
+  test walks the source to fail the build if a new one does not.
+- **Agentless guests showed no address.** Cloud images do not ship
+  qemu-guest-agent, so the estate knew a VM was running but not where it
+  landed. When the agent is absent, addresses now come from the hypervisor's
+  own DHCP leases. The AGENT column still reports only the agent — it is a
+  statement about the agent, not about whether an address was found.
 - **A numeric VM name broke cloud-init entirely.** `instance-id: 11` is the
   integer eleven in YAML, so the NoCloud datasource never initialised and
   *nothing* in user-data applied — no user, no password, no first-boot script.
@@ -76,6 +88,8 @@ been there from the start.
 - One tile size everywhere, and tile descriptions truncate so a grid is not
   ragged.
 - The mark is violet, matching zxplore and wgxplore in one icon idiom.
+- **`vmx --once` prints an IP column**, so a script or a cron check can answer
+  "where did this VM land?" without a `virsh domifaddr` per domain.
 
 ### Project
 
@@ -84,6 +98,10 @@ been there from the start.
   version-guard that refuses a tag disagreeing with the version constant.
   It found the data race, dead code in the static build, and three deprecated
   APIs before it ever ran on a runner.
+- **`golang.org/x/crypto` 0.48.0 → 0.54.0**, closing seven advisories this
+  code actually reaches (`ConnectSystem → ConnectToURI → ssh.Dial`, the path
+  every remote connection takes), and matching zxplore so the two consoles do
+  not drift on a shared dependency. Zero reachable advisories now.
 - `install.sh` for a from-source install.
 - README callouts are generated from data, so a new screenshot does not mean
   redrawing them by hand.
