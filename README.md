@@ -233,6 +233,7 @@ navigate — the Screen tab <strong>is</strong> the application. It signs itself
 in as the admin you set up, at 2560x1440, and narrates its own first boot on
 both consoles while it builds.</em></sub>
 
+
 Pick an entry, answer its handful of app-specific questions, and the ordinary
 New VM pipeline builds it: cloud image, cloud-init, a fixed post-install script,
 then a wait until the app actually answers on its port — at which point you are
