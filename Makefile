@@ -50,8 +50,13 @@ tui:
 gui:
 	go build -trimpath -tags gui $(STAMPFLAGS) -o $(BIN_GUI) .
 
+# GOTMPDIR is pinned inside the tree because a host that mounts /tmp noexec
+# (onyx does) makes `go test` die with "fork/exec ...: permission denied" when
+# it tries to run the test binary Go just linked there — a failure that reads
+# like a broken test and is not one. .gotmp is gitignored.
 test:
-	go test ./...
+	@mkdir -p $(CURDIR)/.gotmp
+	GOTMPDIR=$(CURDIR)/.gotmp go test ./...
 
 vet:
 	go vet ./...

@@ -3,6 +3,8 @@
 /vmxplore
 # local self-incrementing build counter (stamped via -X main.buildNum)
 /.buildnum
+# `make test` scratch — Go's temp dir, kept in-tree because /tmp is noexec here
+/.gotmp/
 
 # laid down locally by the private brain repo — NEVER commit to the public repo
 /CLAUDE.md
