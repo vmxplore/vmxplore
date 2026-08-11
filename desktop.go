@@ -52,17 +52,24 @@ type recipe struct {
 // 2026-08-10 — see the file banner before editing.
 var desktopRecipes = map[string]map[string]recipe{
 	"fedora": {
-		// Each group's display manager was checked, not assumed:
-		//   workstation-product -> gdm
-		//   xfce-desktop        -> lightdm
-		//   kde-desktop         -> NONE
-		// So Fedora KDE names sddm itself, or it installs a desktop with
-		// nothing to log in with. The DM is enabled explicitly in every
-		// case: enabling an already-enabled unit is a no-op, and it stops a
-		// future group change from quietly removing the login screen.
-		"gnome": {Pkgs: []string{"workstation-product"}, DM: "gdm"},
-		"kde":   {Pkgs: []string{"kde-desktop", "sddm"}, DM: "sddm"},
-		"xfce":  {Pkgs: []string{"xfce-desktop"}, DM: "lightdm"},
+		// ENVIRONMENT groups, not the bare product/desktop groups.
+		// workstation-product is "Fedora Workstation product CORE" — a
+		// GNOME shell and nothing else. A guest built from it came up with
+		// no terminal, no file manager, no browser (2026-08-11). The
+		// environment ids are what a Workstation install actually uses:
+		//
+		//   workstation-product-environment  1708 pkgs, gdm,     ptyxis
+		//   kde-desktop-environment          2025 pkgs, NO DM,   konsole
+		//   xfce-desktop-environment         1532 pkgs, lightdm, xfce4-terminal
+		//
+		// Counted in a container rather than guessed. KDE still ships no
+		// display manager even as an environment, so it names sddm itself
+		// or it installs 2000 packages with no way to log in. Every DM is
+		// enabled explicitly: a no-op when the group already did it, and
+		// insurance against a future group change removing the login screen.
+		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
+		"kde":   {Pkgs: []string{"kde-desktop-environment", "sddm"}, DM: "sddm"},
+		"xfce":  {Pkgs: []string{"xfce-desktop-environment"}, DM: "lightdm"},
 	},
 	"debian": {
 		"gnome": {Pkgs: []string{"task-gnome-desktop"}},
@@ -135,6 +142,10 @@ func desktopPostInstall(distro, desktop string) string {
 	var install string
 	switch distro {
 	case "fedora":
+		// `dnf group install <id>` handles environment ids too. An earlier
+		// check used `install "@id"`, which dnf5 rejects — and the false
+		// negative is what sent this to the bare -product groups and shipped
+		// a desktop with no applications.
 		install = "dnf group install -y " + strings.Join(r.Pkgs, " ")
 	case "debian", "ubuntu":
 		// noninteractive or tasksel stops to ask about keyboard layout and

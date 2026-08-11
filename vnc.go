@@ -416,6 +416,13 @@ func (v *vncViewer) focus() {
 func (v *vncViewer) Tapped(*fyne.PointEvent) { v.focus() }
 
 func (v *vncViewer) MouseDown(e *desktop.MouseEvent) {
+	// Focus on the press, not only on Tapped. A click the guest consumes,
+	// or a click that turns into a drag, may never produce a Tapped — and
+	// without Fyne focus the viewer receives no TypedRune at all, so the
+	// guest sees a working mouse and a dead keyboard. Reported 2026-08-11
+	// at a GDM password prompt: the desktop was up, the pointer moved, and
+	// nothing could be typed.
+	v.focus()
 	v.focus()
 	v.mask |= mouseBit(e.Button)
 	x, y := v.fbCoords(e.Position)

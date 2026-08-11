@@ -963,6 +963,10 @@ func runGUI(rs *Ruleset) {
 		}
 		v := newVNCViewer(conn)
 		curVNC = v
+		// Focus it as soon as it is on screen. Waiting for a click means the
+		// first thing an operator meets — a login prompt — cannot be typed
+		// into until they happen to click the right place first.
+		defer fyne.Do(func() { v.focus() })
 		vncHost.Objects = []fyne.CanvasObject{v}
 		vncHost.Refresh()
 	}

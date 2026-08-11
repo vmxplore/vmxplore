@@ -10,7 +10,7 @@ import (
 // failure mode the whole table exists to prevent.
 func TestVerifiedPairsAllProduceAnInstall(t *testing.T) {
 	want := map[string][]string{
-		"fedora":   {"workstation-product", "kde-desktop", "xfce-desktop"},
+		"fedora":   {"workstation-product-environment", "kde-desktop-environment", "xfce-desktop-environment"},
 		"debian":   {"task-gnome-desktop", "task-kde-desktop", "task-xfce-desktop"},
 		"ubuntu":   {"ubuntu-desktop-minimal", "kubuntu-desktop", "xubuntu-desktop"},
 		"opensuse": {"patterns-gnome-gnome", "patterns-kde-kde", "patterns-xfce-xfce"},
@@ -133,5 +133,22 @@ func TestEveryFedoraDesktopGetsADisplayManager(t *testing.T) {
 	// kde-desktop brings none, so the package has to be requested too.
 	if !strings.Contains(desktopPostInstall("fedora", "kde"), "sddm") {
 		t.Error("fedora/kde must install sddm — its group does not pull one")
+	}
+}
+
+// The -product/-desktop groups are CORES: workstation-product is "Fedora
+// Workstation product core" and produced a guest with no terminal, no file
+// manager and no browser. The environment ids are what a real Workstation
+// install uses. Verified in a container 2026-08-11.
+func TestFedoraUsesEnvironmentGroupsNotCores(t *testing.T) {
+	for _, d := range []string{"gnome", "kde", "xfce"} {
+		out := desktopPostInstall("fedora", d)
+		if !strings.Contains(out, "-environment") {
+			t.Errorf("fedora/%s must install an environment group, not a core:\n%s", d, out)
+		}
+	}
+	// The exact regression: the bare core.
+	if strings.Contains(desktopPostInstall("fedora", "gnome"), "workstation-product ") {
+		t.Error("fedora/gnome must not install the bare workstation-product core")
 	}
 }
