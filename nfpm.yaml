@@ -1,0 +1,41 @@
+# nfpm.yaml — one config → rpm/deb/Arch packages of the STATIC terminal
+# binary (vmx). Consumed by .github/workflows/release.yml, which
+# injects VERSION/ARCH/BINARY. The GUI binary is cgo and stays distro-built
+# (see packaging/). If this file is missing, releases ship bare binaries only.
+name: vmx
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: Anthony <admin@vmxplore.dev>
+description: |
+  Keyboard-driven terminal console for OpenZFS — a primitives tool, not a
+  dashboard. Browse datasets and snapshots with full property dossiers,
+  replicate over SSH (encrypted datasets travel raw), restore files from any
+  snapshot, and manage boot environments. Fully static binary; needs only
+  the zfs/zpool CLI at runtime. Every action is a plain zfs/zpool command.
+homepage: https://github.com/vmxplore/vmxplore
+license: BSD-3-Clause
+contents:
+  # Fixed staging path: nfpm expands ${VERSION}/${ARCH} from the environment
+  # but does NOT expand env vars in contents globs — the release workflow
+  # copies the per-arch binary here before each nfpm invocation.
+  - src: dist/.stage/vmx
+    dst: /usr/bin/vmx
+  - src: docs/vmxplore.1
+    dst: /usr/share/man/man1/vmxplore.1
+  - src: LICENSE
+    dst: /usr/share/doc/vmx/LICENSE
+# Runtime ZFS package names differ per ecosystem; recommends (not depends) so
+# the package also installs cleanly on zfs-from-source / root-on-ZFS systems.
+overrides:
+  rpm:
+    recommends:
+      - zfs
+  deb:
+    recommends:
+      - zfsutils-linux
+  archlinux:
+    recommends:
+      - zfs-utils

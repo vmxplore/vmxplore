@@ -107,12 +107,36 @@ jobs:
         with:
           merge-multiple: true
           path: dist
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Linux packages (rpm / deb / Arch) via nfpm
+        # The STATIC binary only. The GUI is cgo, and a cgo binary built on
+        # one glibc is a portability lie — GUI users build from source or use
+        # the native packaging under packaging/, which builds on the target
+        # distro.
+        run: |
+          set -Eeuo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          export VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/.stage
+          for arch in amd64 arm64; do
+            export ARCH="$arch"
+            # nfpm expands ${VERSION}/${ARCH} but NOT env vars inside
+            # contents.src — stage the per-arch binary at the fixed path
+            # nfpm.yaml points at.
+            cp "dist/vmx-linux-${arch}" dist/.stage/vmx
+            for pkg in rpm deb archlinux; do
+              nfpm package -f nfpm.yaml -p "$pkg" -t dist/
+            done
+          done
+          rm -rf dist/.stage
       - name: checksums
         run: |
           set -Eeuo pipefail
           cd dist
           chmod +x vmx-* vmxplore-*
-          sha256sum vmx-* vmxplore-* > SHA256SUMS
+          sha256sum vmx-* vmxplore-* *.rpm *.deb *.zst > SHA256SUMS
           cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
@@ -120,6 +144,9 @@ jobs:
             dist/vmx-linux-amd64
             dist/vmx-linux-arm64
             dist/vmxplore-linux-amd64
+            dist/*.rpm
+            dist/*.deb
+            dist/*.zst
             dist/SHA256SUMS
           generate_release_notes: true
           body: |
