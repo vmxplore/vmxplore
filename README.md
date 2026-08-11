@@ -53,36 +53,45 @@ gesture. None of them asks you to read a wiki first.
   two-way clipboard. **No websockify, no noVNC, no virt-viewer — no bridge process at all.** 
   It talks straight to qemu's VNC server (over loopback locally, over ssh for a remote
   host), and the GUI runs natively on **Wayland** (and X11).
+
 - **An in-app serial console** — a real terminal on `virsh console`, in the
   same window: boot messages, login prompts, headless ttys, copy-paste and all.
+
 - **Remote management over `qemu+ssh`** — `--connect` a headless hypervisor and
   the entire tool follows: estate, verbs, the ZFS join, *and* both consoles,
   authenticated with the same ssh key as your shell. No agent on the far side.
+
 - **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
   zero-copy clones in one gesture; blocks are shared until a clone diverges.
+
 - **Apps — a self-hosted application as one button** — pick an app, fill in its
   two or three fields, and get a configured VM running it. Every "how to
   self-host X" writeup is the same four moves (fetch a pinned artifact, write a
   config, init a database, drop a unit file); the catalog encodes that once per
   app, so a weekend of following a blog post becomes a click.
+
 - **New VM your way** — a cloud image (cloud-init) *or* boot the distro's own
   installer ISO and do it by hand; either way with a custom first-boot script.
+
 - **Knows what the hardware can do** — the host's GPUs are probed from sysfs
   (and over ssh for a remote hypervisor, because the card that matters is the
   one attached to the VMs). Find an NVIDIA card and New VM offers to install
   the drivers in the guest; find none and the option never appears.
+
 - **Batch operations** — check many VMs and Start / Stop / Reboot / Delete them
   all at once.
+
 - **No confirmation theatre** — clicking delete deletes, and a running VM is
   forced off rather than refused. These are cattle: a VM here is made from a
   golden in seconds. Every command still shows in the status line as it runs
   and lands in an audit log with who ran it and its exit code.
+
 - **One static binary, capability-tiered** — copy `vmx` to any libvirt box; the
   extra powers light up by probe (ZFS, then kldload), never a licence check.
 
-## The console tabs
+## The Screen tab
 
-The console pane is the heart of it — pick a running VM and the right tab
+The screen pane is the heart of it — pick a running VM and the right tab
 attaches automatically, in-window, no external viewer. Five tabs, in the
 order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
 machine you have, then make one, with the substrate's own toolset last.
@@ -143,6 +152,7 @@ the abilities light up by capability probe, never a licence check.
 **New VM** — a cloud image (cloud-init configures it, boots ready-to-ssh) *or*
 an installer ISO (boot the distro's own installer and run apt/dnf/pacman the
 normal way — any ISO, incl. an Arch live ISO or a RHEL DVD). Paste a
+
 **post-install script** and it runs as root on first boot: build your own
 appliance, then seal it into a golden.
 
@@ -491,16 +501,21 @@ center where the hard things are already done. Point vmxplore at a kldload box
 - **Spin up a cluster from nothing** — `kspawn` conjures a multi-node cluster of
   instant ZFS clones on its own encrypted WireGuard backplane; `kube-cluster`
   brings up Kubernetes-on-ZFS (Cilium eBPF, MetalLB, the ZFS CSI) in one command.
+
 - **Golden images, everywhere** — `kimage` builds a sealed cloud-init golden;
   `kexport` ships any VM to **nine formats** (qcow2, raw, vhd, vmdk, ova, oci,
   lxc, firecracker, all) — feed them to Packer, any cloud, any hypervisor.
+
 - **Windows, unattended** — `kvm-win` builds a Win11/Server golden fully
   hands-off: OVMF Secure Boot, TPM 2.0, virtio, even WSL2 nested — then clones
   it like any other golden.
+
 - **Snapshot everything, undo anything** — every install and change snapshots
   first; roll back the whole transaction, not just a package.
+
 - **Air-gapped and reproducible** — the image *is* the repo; provision a fleet
   from one USB with the network unplugged.
+
 - **The rest of the estate** — a self-forming WireGuard mesh (no DNS, no IPs),
   live eBPF flow maps and tracing, GPU sharing, an on-box model — all on by
   default.
