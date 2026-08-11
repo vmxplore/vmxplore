@@ -428,6 +428,26 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		return runStep(progress, root, argv...)
 	}
 
+	// Every resource created below registers its undo here. Disarmed by
+	// rb.commit() once virt-install has defined the domain; until then any
+	// return path unwinds what was made. See rollback.go.
+	rb := &rollback{}
+	defer rb.run(progress)
+
+	// destroyZvol / removeFile are the two undo shapes this build needs.
+	destroyZvol := func(ds string) func() {
+		return func() {
+			progress("cleanup: destroying orphaned zvol " + ds)
+			_ = runStep(progress, true, "zfs", "destroy", "-r", ds)
+		}
+	}
+	removeFile := func(path string) func() {
+		return func() {
+			progress("cleanup: removing " + path)
+			_ = runStep(progress, true, "rm", "-f", path)
+		}
+	}
+
 	// ── install mode: blank disk + installer ISO, boot the installer ────
 	// No cloud image, no seed — the guest's own installer runs in the
 	// Screen tab and you drive apt/dnf/pacman the normal way. Any
@@ -440,12 +460,22 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 				fmt.Sprintf("%dG", s.DiskGB), ds); err != nil {
 				return err
 			}
+			// `zfs create` fails when the dataset exists, so reaching here
+			// means this build made it and may safely destroy it.
+			rb.add(destroyZvol(ds))
 			diskArg = "path=/dev/zvol/" + ds + ",bus=virtio,format=raw"
 		} else {
 			f := "/var/lib/libvirt/images/" + s.Name + ".qcow2"
+			// qemu-img create refuses an existing file, but check anyway:
+			// registering a delete for someone else's disk is the one
+			// mistake this whole mechanism must never make.
+			fresh := fileAbsent(f)
 			if err := run(true, "qemu-img", "create", "-f", "qcow2", f,
 				fmt.Sprintf("%dG", s.DiskGB)); err != nil {
 				return err
+			}
+			if fresh {
+				rb.add(removeFile(f))
 			}
 			diskArg = "path=" + f + ",bus=virtio,format=qcow2"
 		}
@@ -468,6 +498,8 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		if err := run(false, argv...); err != nil {
 			return err
 		}
+		// The domain exists; its disk belongs to it now, not to this build.
+		rb.commit()
 		progress(s.Name + " created — open the Screen tab and run the installer")
 		return nil
 	}
@@ -507,6 +539,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			fmt.Sprintf("%dG", s.DiskGB), ds); err != nil {
 			return err
 		}
+		rb.add(destroyZvol(ds))
 		// WHY: `zfs create -V` returns before udev has published
 		// /dev/zvol/<ds>. qemu-img does not care — it happily *creates* a
 		// regular file at a missing path, so the convert below would land
@@ -524,8 +557,14 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		diskArg = "path=/dev/zvol/" + ds + ",bus=virtio,format=raw"
 	} else {
 		f := "/var/lib/libvirt/images/" + s.Name + ".qcow2"
+		// convert OVERWRITES silently, so the pre-existence check is what
+		// stops a failed rebuild from deleting the disk it clobbered.
+		fresh := fileAbsent(f)
 		if err := run(true, "qemu-img", "convert", "-O", "qcow2", img, f); err != nil {
 			return err
+		}
+		if fresh {
+			rb.add(removeFile(f))
 		}
 		if err := run(true, "qemu-img", "resize", f,
 			fmt.Sprintf("%dG", s.DiskGB)); err != nil {
@@ -568,8 +607,12 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	// "cloud-init finished" signal from inside the guest, which is a
 	// guest-agent dependency this does not yet take. Hashing the password
 	// is what makes the persistence tolerable rather than a leak.
+	seedFresh := fileAbsent(seedISO)
 	if err := run(true, "install", "-m0600", tmpISO, seedISO); err != nil {
 		return err
+	}
+	if seedFresh {
+		rb.add(removeFile(seedISO))
 	}
 
 	// 4 — virt-install (the webui's exact device choices). The catalog's
@@ -600,6 +643,14 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	if err != nil {
 		return err
 	}
+	// virt-install leaves a TRANSIENT domain running off the disk. Register
+	// its teardown now so it unwinds BEFORE the disk (undos run newest
+	// first) — otherwise `zfs destroy` hits a zvol still open by qemu and
+	// fails with "dataset is busy", leaving both behind.
+	rb.add(func() {
+		progress("cleanup: destroying transient domain " + s.Name)
+		_ = runStep(progress, false, "virsh", "-c", "qemu:///system", "destroy", s.Name)
+	})
 
 	// 5 — persistence: re-define from live XML (see banner)
 	xmlOut, err := exec.Command("virsh", "-c", "qemu:///system",
@@ -614,6 +665,12 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	if err := run(false, "virsh", "-c", "qemu:///system", "define", xf); err != nil {
 		return err
 	}
+	// Committed only here: everything up to the persistent define is still
+	// this build's to unwind. A failure at dumpxml or define leaves a
+	// running transient domain, so the cleanup destroys the disk out from
+	// under it — which is correct, because a VM that does not survive a
+	// host reboot is not the VM that was asked for.
+	rb.commit()
 	progress(s.Name + " is up — cloud-init finishes the first boot (1–3 min)")
 	return nil
 }
