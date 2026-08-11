@@ -372,14 +372,29 @@ func (r *vmRow) TappedSecondary(e *fyne.PointEvent) {
 // newTile is one launcher card: icon + bold coloured title + a faint
 // wrapped description — big enough that a screenshot of the grid explains
 // the product on its own (the operator's ask, verbatim).
+// tileSize is THE tile footprint. Every grid in the app uses it, so a tile
+// is the same object wherever it appears and the tabs stop looking subtly
+// unlike each other. 220 is the compromise the three former sizes were
+// circling: wide enough for the longest tool label, narrow enough that a
+// section of six fits one row on a 1080p window instead of wrapping into
+// the next heading.
+var tileSize = fyne.NewSize(220, 92)
+
 func newTile(icon fyne.Resource, title, desc string, col color.Color, onTap func()) fyne.CanvasObject {
 	bg := canvas.NewRectangle(tileColor())
 	bg.CornerRadius = 8
 	tt := canvas.NewText(title, col)
 	tt.TextStyle = fyne.TextStyle{Bold: true}
 	tt.TextSize = 15
+	// Truncate rather than wrap. Wrapping made every tile a different
+	// height inside a fixed grid cell: a short description left half the
+	// tile empty and a long one pushed past the bottom edge, so a grid of
+	// them looked ragged however carefully the cell was sized. One line,
+	// ellipsised, means every tile is the same object — which is the whole
+	// point of a tile. The full text still arrives on hover.
 	d := widget.NewLabel(desc)
-	d.Wrapping = fyne.TextWrapWord
+	d.Wrapping = fyne.TextWrapOff
+	d.Truncation = fyne.TextTruncateEllipsis
 	content := container.NewVBox(
 		container.NewHBox(widget.NewIcon(icon), tt), d)
 	return newTapArea(container.NewStack(bg, container.NewPadded(content)), onTap)
@@ -1307,7 +1322,7 @@ func runGUI(rs *Ruleset) {
 			func() { showToolTiles() })
 		bar := container.NewBorder(nil, nil, back, nil,
 			container.NewCenter(pageHeading(tool, acGold)))
-		grid := container.NewGridWrap(fyne.NewSize(250, 96), tiles...)
+		grid := container.NewGridWrap(tileSize, tiles...)
 		toolsHost.Objects = []fyne.CanvasObject{container.NewBorder(
 			bar, nil, nil, nil,
 			container.NewVScroll(container.NewPadded(grid)))}
@@ -1358,7 +1373,7 @@ func runGUI(rs *Ruleset) {
 			}
 			sections = append(sections,
 				container.NewPadded(h),
-				container.NewGridWrap(fyne.NewSize(210, 92), row...),
+				container.NewGridWrap(tileSize, row...),
 				widget.NewSeparator())
 		}
 		for _, g := range KldloadToolGroups() {
@@ -2379,7 +2394,7 @@ func runGUI(rs *Ruleset) {
 	// so the pane behaves identically wherever you are.
 	tileGrid := func(tiles ...fyne.CanvasObject) fyne.CanvasObject {
 		return container.NewVScroll(container.NewPadded(
-			container.NewGridWrap(fyne.NewSize(250, 96), tiles...)))
+			container.NewGridWrap(tileSize, tiles...)))
 	}
 	vmsHost := container.NewBorder(
 		container.NewCenter(pageHeading("NEW VM", acBrand)), nil, nil, nil,
