@@ -42,8 +42,9 @@ type recipe struct {
 	// Pkgs is the install command's arguments — a group, a pattern or a
 	// task package, whatever that distro actually uses.
 	Pkgs []string
-	// DM is the display-manager unit to enable, when the package set does
-	// not pull and enable one itself. Arch is the case that needs it.
+	// DM is the display-manager unit to enable. Named explicitly wherever
+	// it is known, because "the group pulls one" is an assumption that was
+	// FALSE for Fedora's kde-desktop — it pulls none at all.
 	DM string
 }
 
@@ -51,9 +52,17 @@ type recipe struct {
 // 2026-08-10 — see the file banner before editing.
 var desktopRecipes = map[string]map[string]recipe{
 	"fedora": {
-		"gnome": {Pkgs: []string{"workstation-product"}},
-		"kde":   {Pkgs: []string{"kde-desktop"}},
-		"xfce":  {Pkgs: []string{"xfce-desktop"}},
+		// Each group's display manager was checked, not assumed:
+		//   workstation-product -> gdm
+		//   xfce-desktop        -> lightdm
+		//   kde-desktop         -> NONE
+		// So Fedora KDE names sddm itself, or it installs a desktop with
+		// nothing to log in with. The DM is enabled explicitly in every
+		// case: enabling an already-enabled unit is a no-op, and it stops a
+		// future group change from quietly removing the login screen.
+		"gnome": {Pkgs: []string{"workstation-product"}, DM: "gdm"},
+		"kde":   {Pkgs: []string{"kde-desktop", "sddm"}, DM: "sddm"},
+		"xfce":  {Pkgs: []string{"xfce-desktop"}, DM: "lightdm"},
 	},
 	"debian": {
 		"gnome": {Pkgs: []string{"task-gnome-desktop"}},
@@ -146,13 +155,14 @@ func desktopPostInstall(distro, desktop string) string {
 	fmt.Fprintf(&b, "echo 'vmxplore: installing %s — this takes several minutes'\n", desktop)
 	fmt.Fprintf(&b, "if %s; then\n", install)
 	if r.DM != "" {
-		// Only Arch needs this; elsewhere the task/group enables its own.
+		// Idempotent, and it is the difference between a desktop and a
+		// desktop you cannot log into.
 		fmt.Fprintf(&b, "  systemctl enable %s\n", r.DM)
 	}
 	// Without this the packages are installed and the machine still boots to
 	// a text console, which reads as "the desktop did not install".
 	b.WriteString("  systemctl set-default graphical.target\n")
-	fmt.Fprintf(&b, "  echo 'vmxplore: %s installed — reboot for the login screen'\n", desktop)
+	fmt.Fprintf(&b, "  echo 'vmxplore: %s installed — rebooting into the login screen'\n", desktop)
 	b.WriteString("else\n")
 	fmt.Fprintf(&b, "  echo 'vmxplore: %s install FAILED — the VM is still a working server' >&2\n", desktop)
 	b.WriteString("fi\n")

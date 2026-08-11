@@ -411,6 +411,19 @@ func userData(s NewVMSpec) string {
 	b.WriteString("output: {all: '| tee -a /var/log/cloud-init-output.log " +
 		"/dev/tty0 > /dev/console'}\n")
 	b.WriteString("ssh_pwauth: true\n")
+	// A desktop is only reachable after a reboot: set-default changes the
+	// NEXT boot, so the running system stays in multi-user and the operator
+	// gets a text console forever. Verified on 192.168.122.124, 2026-08-11 —
+	// GNOME fully installed, gdm enabled, graphical.target set as default,
+	// and the machine still sat at a login prompt.
+	//
+	// power_state is cloud-init's own mechanism and runs AFTER every module
+	// finishes, which `systemctl isolate` from inside runcmd would not: that
+	// isolates away the very unit the script is running under.
+	if desktopPostInstall(s.Distro, s.Desktop) != "" {
+		b.WriteString("power_state:\n  mode: reboot\n  condition: true\n" +
+			"  message: 'vmxplore: desktop installed — rebooting into it'\n")
+	}
 	b.WriteString("growpart:\n  mode: auto\n  devices: ['/']\n")
 	fmt.Fprintf(&b, "users:\n  - name: %s\n", yamlQuote(s.User))
 	b.WriteString("    sudo: ALL=(ALL) NOPASSWD:ALL\n")

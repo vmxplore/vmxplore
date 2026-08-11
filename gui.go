@@ -27,6 +27,7 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"image/color"
 	"net/url"
@@ -398,6 +399,17 @@ func newTile(icon fyne.Resource, title, desc string, col color.Color, onTap func
 	content := container.NewVBox(
 		container.NewHBox(widget.NewIcon(icon), tt), d)
 	return newTapArea(container.NewStack(bg, container.NewPadded(content)), onTap)
+}
+
+// guardConfirm reports whether the form is good enough to submit. When it
+// is not it shows why and re-opens the dialog with everything still typed.
+func guardConfirm(err error, redo func(), w fyne.Window) bool {
+	if err == nil {
+		return true
+	}
+	dialog.ShowError(err, w)
+	redo()
+	return false
 }
 
 // guiState is everything the refresh goroutine and the widgets share. All
@@ -1596,9 +1608,14 @@ func runGUI(rs *Ruleset) {
 	// New VM: the native cloud-image pipeline (newvm.go). The dialog is a
 	// form; the pipeline streams its exact commands into the status bar
 	// and the estate refreshes when the domain lands.
-	newVMDialog := func() {
+	// Declared before assignment so the dialog can re-open ITSELF on
+	// invalid input — a closure cannot reference a variable that :=
+	// has not finished binding.
+	var newVMDialog func()
+	newVMDialog = func() {
 		name := widget.NewEntry()
 		name.SetPlaceHolder("vm name")
+		name.Validator = nameValidator()
 		// build mode: a cloud image (fast — cloud-init, preset user) or an
 		// installer ISO (boot the distro's own installer in the Screen
 		// tab, run apt/dnf/pacman the normal way; any ISO — Debian, Fedora,
@@ -1637,10 +1654,13 @@ func runGUI(rs *Ruleset) {
 		isoPath.SetPlaceHolder("/path/to/installer.iso")
 		vcpus := widget.NewEntry()
 		vcpus.SetText("2")
+		vcpus.Validator = numValidator(1, "vcpu")
 		ram := widget.NewEntry()
 		ram.SetText("2048")
+		ram.Validator = numValidator(256, "MB of RAM")
 		diskGB := widget.NewEntry()
 		diskGB.SetText("20")
+		diskGB.Validator = numValidator(2, "GB of disk")
 		// Prefilled, not placeholdered: an empty password box and an
 		// empty key box build a VM with no way in, and a grey hint is
 		// too easy to read as "already handled".
@@ -1793,6 +1813,13 @@ func runGUI(rs *Ruleset) {
 							spec.Desktop = desktop.Selected
 						}
 					}
+				}
+				// The spec knows the rules; ask it before doing anything
+				// destructive-adjacent. Invalid input re-opens THIS dialog
+				// with the fields intact rather than failing later in the
+				// pipeline with the form already gone.
+				if !guardConfirm(spec.validate(), newVMDialog, w) {
+					return
 				}
 				done := "created — cloud-init finishes the first boot"
 				if spec.install() {
@@ -1989,17 +2016,25 @@ func runGUI(rs *Ruleset) {
 
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
 	// proposition in a gesture ("give me 5 Fedora boxes").
-	fleetDialog := func() {
+	// Declared before assignment so the dialog can re-open ITSELF on
+	// invalid input — a closure cannot reference a variable that :=
+	// has not finished binding.
+	var fleetDialog func()
+	fleetDialog = func() {
 		name := widget.NewEntry()
 		name.SetText("fleet")
+		name.Validator = nameValidator()
 		distro := widget.NewSelect(CloudDistros(), nil)
 		distro.SetSelected("fedora")
 		count := widget.NewEntry()
 		count.SetText("5")
+		count.Validator = numValidator(1, "clone")
 		ram := widget.NewEntry()
 		ram.SetText("2048")
+		ram.Validator = numValidator(256, "MB of RAM")
 		diskGB := widget.NewEntry()
 		diskGB.SetText("20")
+		diskGB.Validator = numValidator(2, "GB of disk")
 		post := widget.NewMultiLineEntry()
 		post.SetPlaceHolder("# optional post-install bash — baked into every clone")
 		post.SetMinRowsVisible(4)
@@ -2025,6 +2060,20 @@ func runGUI(rs *Ruleset) {
 					Name: strings.TrimSpace(name.Text), Distro: distro.Selected,
 					VCPUs: 2, RAMMB: m, DiskGB: g,
 					User: "admin", Password: "kldload", PostInst: post.Text,
+				}
+				// Same guard as New VM. A fleet builds a golden AND n clones,
+				// so a bad field here wastes considerably more of the
+				// operator's evening than a single VM would.
+				if err := spec.validate(); err != nil {
+					if !guardConfirm(err, fleetDialog, w) {
+						return
+					}
+				}
+				if n < 1 {
+					if !guardConfirm(errors.New("a fleet needs at least 1 clone"),
+						fleetDialog, w) {
+						return
+					}
 				}
 				parent := ZFSVMParent(st.visibleRows())
 				// the golden appears first; the clones land under it

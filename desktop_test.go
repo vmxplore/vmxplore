@@ -97,3 +97,41 @@ func TestArchEnablesItsDisplayManager(t *testing.T) {
 		}
 	}
 }
+
+// The fault found on 192.168.122.124: GNOME installed, gdm enabled,
+// graphical.target set as DEFAULT — and the running system still in
+// multi-user, so the operator saw a text console and concluded the desktop
+// had not installed. set-default changes the next boot; something has to
+// cause that boot.
+func TestDesktopGuestsRebootIntoIt(t *testing.T) {
+	ud := userData(NewVMSpec{Name: "x", User: "admin", Distro: "fedora", Desktop: "gnome"})
+	if !strings.Contains(ud, "power_state:") || !strings.Contains(ud, "mode: reboot") {
+		t.Errorf("a desktop guest must reboot into the desktop:\n%s", ud)
+	}
+}
+
+// A headless guest must NOT reboot — nothing changed that needs one, and a
+// surprise reboot mid-provision is its own bug.
+func TestHeadlessGuestsDoNotReboot(t *testing.T) {
+	ud := userData(NewVMSpec{Name: "x", User: "admin", Distro: "fedora"})
+	if strings.Contains(ud, "power_state:") {
+		t.Errorf("a server guest must not reboot itself:\n%s", ud)
+	}
+}
+
+// Fedora's kde-desktop group pulls NO display manager — verified in a
+// container, 2026-08-11. A desktop with no way to log in is not a desktop.
+func TestEveryFedoraDesktopGetsADisplayManager(t *testing.T) {
+	for desktop, dm := range map[string]string{
+		"gnome": "gdm", "kde": "sddm", "xfce": "lightdm",
+	} {
+		out := desktopPostInstall("fedora", desktop)
+		if !strings.Contains(out, "systemctl enable "+dm) {
+			t.Errorf("fedora/%s must enable %s:\n%s", desktop, dm, out)
+		}
+	}
+	// kde-desktop brings none, so the package has to be requested too.
+	if !strings.Contains(desktopPostInstall("fedora", "kde"), "sddm") {
+		t.Error("fedora/kde must install sddm — its group does not pull one")
+	}
+}
