@@ -31,8 +31,7 @@ is never fought, only shown.
 
 ## Push-button machines
 
-Pick a distro. Pick a desktop. Click. That is the whole gesture, and it ends
-at a login screen.
+Pick a distro. Select your desktop. Done.
 
 | | |
 |---|---|
@@ -51,7 +50,7 @@ gesture. None of them asks you to read a wiki first.
 - **A modern VNC client, built from scratch** — the graphics console is a
   hand-rolled RFB implementation rendering the guest's framebuffer natively
   into the window, with full mouse, keyboard, and two-way clipboard. **No
-  websockify, no noVNC, no virt-viewer** — no bridge process at all. It talks
+  websockify, no noVNC, no virt-viewer — no bridge process at all.** It talks
   straight to qemu's VNC server (over loopback locally, over ssh for a remote
   host), and the GUI runs natively on **Wayland** (and X11).
 - **An in-app serial console** — a real terminal on `virsh console`, in the
