@@ -665,7 +665,17 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	if err := os.WriteFile(ud, []byte(userData(s)), 0600); err != nil {
 		return err
 	}
-	meta := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", s.Name, s.Name)
+	// QUOTED, both of them. Unquoted, a numeric VM name is parsed by YAML as
+	// an INTEGER — instance-id: 11 is the number eleven, not the string "11"
+	// — and cloud-init's NoCloud datasource never initialises, so nothing in
+	// user-data is applied at all: no user, no password, no runcmd. The VM
+	// boots as a bare image and looks like the seed was ignored.
+	//
+	// Found 2026-08-11 by diffing a working seed against a failing one: the
+	// only meaningful difference between "www" (worked) and "11" (did not)
+	// was the quoting the number forced. user-data escaped this because its
+	// hostname goes through yamlQuote already.
+	meta := metaData(s.Name)
 	if err := os.WriteFile(md, []byte(meta), 0600); err != nil {
 		return err
 	}
@@ -921,4 +931,21 @@ func rhelPostInstall(s NewVMSpec) string {
 // would be shell syntax rather than a password.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// metaData renders the NoCloud meta-data for a VM name.
+//
+// Both values are QUOTED. Unquoted, a numeric name is parsed by YAML as an
+// INTEGER — instance-id: 11 is the number eleven, not the string "11" — and
+// cloud-init's NoCloud datasource never initialises. Nothing in user-data is
+// then applied: no user, no password, no runcmd. The VM boots as a bare
+// image and looks for all the world like the seed was ignored.
+//
+// Found 2026-08-11 by diffing a working seed against a failing one. The only
+// meaningful difference between "www" (worked) and "11" (did not) was what
+// the number did to the quoting. user-data escaped this because its hostname
+// already went through yamlQuote.
+func metaData(name string) string {
+	return fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n",
+		yamlQuote(name), yamlQuote(name))
 }
