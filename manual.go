@@ -1,3 +1,5 @@
+//go:build gui
+
 // manual.go — the manual, shipped inside the binary.
 //
 // What it does, in order:

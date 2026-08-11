@@ -16,15 +16,19 @@
 // must be a finished system, which an unattended cloud image is and a
 // half-run ISO installer is not.
 //
-// Notes: the settle wait is a fixed pause, not a probe — cloud-init has no
-// host-visible "done" without a guest agent round-trip; 90s covers a base
-// image plus a short post-install. A longer post-install just means the
-// first clones boot a little earlier in its tail; the golden is still sealed
-// from a shut-down disk, so they are consistent.
+// Notes: cloud-init has no host-visible "done" without a guest-agent
+// round-trip, so the settle watches the DISK instead — a first boot that is
+// still working grows the zvol, and one that has finished stops. That
+// matters because the pause used to be a fixed 90 seconds, tuned for a base
+// image plus a short post-install. A desktop takes five to ten minutes, so
+// the golden would have been sealed mid-install and every clone stamped
+// from a half-built system.
 package main
 
 import (
 	"fmt"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -47,9 +51,11 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 		return fmt.Errorf("build source: %w", err)
 	}
 
-	// let the base image (and any post-install) settle before sealing
-	progress("[2/3] letting first boot settle (90s), then sealing golden…")
-	time.Sleep(90 * time.Second)
+	// Wait for first boot to actually finish, rather than for 90 seconds.
+	if err := waitFirstBoot(zfsParent+"/"+spec.Name, spec.Desktop != "" &&
+		spec.Desktop != "none", progress); err != nil {
+		return err
+	}
 	src := Row{
 		D:  Dom{Name: spec.Name, State: "running"},
 		DS: &Dataset{Name: zfsParent + "/" + spec.Name},
@@ -72,4 +78,87 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 	}
 	progress(fmt.Sprintf("fleet ready: %s (golden) + %d clones", spec.Name, count))
 	return nil
+}
+
+// waitFirstBoot blocks until the guest's first boot stops changing its disk.
+//
+// WHY the disk: cloud-init reports "done" only inside the guest, and reaching
+// in needs either a guest agent or credentials and an ssh round-trip. The
+// zvol is visible from here and tells the same story — a first boot that is
+// installing grows it, and one that has finished stops. Sealing a golden is
+// the one moment where being early is unrecoverable: every clone inherits
+// whatever state the disk was in.
+//
+// Args:    ds        the golden's dataset
+//
+//	desktop   true when a desktop was requested, which changes the
+//	          budget from "a base image settles" to "1.5-3GB installs"
+//	progress  the pipeline's narrator
+//
+// Returns: nil once the disk has been quiet for quietFor, or when the cap is
+// reached — the cap returns nil, not an error, because a slow guest is not a
+// failed one and refusing to seal would strand the fleet entirely.
+// Failure modes callers must handle: `zfs list` failing outright, which is
+// reported, because that means the dataset is not there at all.
+func waitFirstBoot(ds string, desktop bool, progress func(string)) error {
+	const (
+		poll     = 15 * time.Second
+		quietFor = 3 // consecutive quiet samples
+		// A rewritten block or a log line moves `used` by a little even on
+		// an idle guest; only growth above this counts as work.
+		growthMB = 8
+	)
+	cap := 4 * time.Minute
+	what := "first boot"
+	if desktop {
+		// A desktop is 1.5-3GB over a network that may be slow.
+		cap = 25 * time.Minute
+		what = "desktop install"
+	}
+	progress(fmt.Sprintf("[2/3] waiting for %s to finish (watching the disk)…", what))
+
+	deadline := time.Now().Add(cap)
+	var last int64
+	quiet := 0
+	// A floor, so a guest that has not started writing yet is not mistaken
+	// for one that has finished.
+	time.Sleep(45 * time.Second)
+	for time.Now().Before(deadline) {
+		used, err := zvolUsed(ds)
+		if err != nil {
+			return fmt.Errorf("watching %s: %w", ds, err)
+		}
+		if grew := used - last; grew > int64(growthMB)<<20 {
+			quiet = 0
+			progress(fmt.Sprintf("  still working — %d MB written", used>>20))
+		} else {
+			quiet++
+			if quiet >= quietFor {
+				progress(fmt.Sprintf("  settled at %d MB; sealing golden…", used>>20))
+				return nil
+			}
+		}
+		last = used
+		time.Sleep(poll)
+	}
+	progress(fmt.Sprintf("  %s still busy after %s — sealing anyway", what, cap))
+	return nil
+}
+
+// zvolUsed returns a dataset's used bytes.
+//
+// -Hp: no headers, and PARSABLE — plain bytes rather than "1.03G", which is
+// unparseable and, worse, rounds away exactly the small deltas this watch
+// depends on.
+func zvolUsed(ds string) (int64, error) {
+	out, err := exec.Command(zfsArgv("list", "-Hpo", "used", ds)[0],
+		zfsArgv("list", "-Hpo", "used", ds)[1:]...).Output()
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n); err != nil {
+		return 0, fmt.Errorf("unparsable used value %q: %w", out, err)
+	}
+	return n, nil
 }

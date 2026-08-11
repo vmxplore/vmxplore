@@ -958,9 +958,9 @@ func runGUI(rs *Ruleset) {
 		}
 		vncConn, vncName = conn, name
 		// guest clipboard → host clipboard (ServerCutText)
-		conn.onCutText = func(s string) {
-			fyne.Do(func() { w.Clipboard().SetContent(s) })
-		}
+		conn.SetOnCutText(func(s string) {
+			fyne.Do(func() { a.Clipboard().SetContent(s) })
+		})
 		v := newVNCViewer(conn)
 		curVNC = v
 		// Focus it as soon as it is on screen. Waiting for a click means the
@@ -2624,7 +2624,7 @@ func runGUI(rs *Ruleset) {
 			guiStatus("paste: no screen attached — select a running VM")
 			return
 		}
-		text := w.Clipboard().Content()
+		text := a.Clipboard().Content()
 		if text == "" {
 			guiStatus("paste: the host clipboard is empty")
 			return
@@ -2795,14 +2795,13 @@ func runGUI(rs *Ruleset) {
 	// The GNOME light/dark variant may not be resolved while the widgets
 	// were built — repaint the hand-colored canvas objects once shortly
 	// after show, and again on every theme change (the zxplore fix).
-	settingsCh := make(chan fyne.Settings, 1)
-	a.Settings().AddChangeListener(settingsCh)
+	// AddListener, not the deprecated AddChangeListener: the callback form
+	// is guaranteed to run on the app goroutine, so applyPalette no longer
+	// needs its own fyne.Do hop and cannot race a repaint.
+	a.Settings().AddListener(func(fyne.Settings) { applyPalette() })
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		fyne.Do(applyPalette)
-		for range settingsCh {
-			fyne.Do(applyPalette)
-		}
 	}()
 	w.ShowAndRun()
 }

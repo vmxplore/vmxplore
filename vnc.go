@@ -67,12 +67,19 @@ func vncPort(lv *LV, name string) (int, error) {
 // ── the RFB connection ──────────────────────────────────────────────────────
 
 type rfbConn struct {
-	c         net.Conn
-	mu        sync.Mutex // serialises all writes
-	fbW       int
-	fbH       int
-	imgMu     sync.Mutex // guards img swap on DesktopSize
-	img       *image.RGBA
+	c     net.Conn
+	mu    sync.Mutex // serialises all writes
+	fbW   int
+	fbH   int
+	imgMu sync.Mutex // guards img swap on DesktopSize
+	img   *image.RGBA
+	// cbMu guards the two callbacks. dialRFB starts readLoop BEFORE the
+	// caller has a connection to hang callbacks on, so every assignment
+	// races the read goroutine that invokes them — a real data race in
+	// shipped code, not only in tests, since gui.go assigns onCutText the
+	// same way. Found by the race detector when CI was added, 2026-08-11.
+	// Use SetOnFrame/SetOnCutText; do not touch these directly.
+	cbMu      sync.Mutex
 	onFrame   func()            // fired after each complete FramebufferUpdate
 	onCutText func(text string) // guest clipboard arrived (ServerCutText)
 	err       error
@@ -244,8 +251,8 @@ func (r *rfbConn) readLoop() {
 					return
 				}
 			}
-			if r.onFrame != nil {
-				r.onFrame()
+			if cb := r.frameCB(); cb != nil {
+				cb()
 			}
 			r.requestUpdate(true)
 		case 1: // SetColourMapEntries — can't happen in truecolour; drain
@@ -279,8 +286,8 @@ func (r *rfbConn) readLoop() {
 				r.err = err
 				return
 			}
-			if r.onCutText != nil {
-				r.onCutText(string(b)) // RFB cut text is latin-1; close enough
+			if cb := r.cutTextCB(); cb != nil {
+				cb(string(b)) // RFB cut text is latin-1; close enough
 			}
 		default:
 			r.err = fmt.Errorf("unknown server message %d", hdr[0])
@@ -365,14 +372,14 @@ func newVNCViewer(conn *rfbConn) *vncViewer {
 	v.img = canvas.NewImageFromImage(conn.img)
 	v.img.FillMode = canvas.ImageFillContain
 	v.img.ScaleMode = canvas.ImageScaleFastest
-	conn.onFrame = func() {
+	conn.SetOnFrame(func() {
 		fyne.Do(func() {
 			conn.imgMu.Lock()
 			v.img.Image = conn.img // DesktopSize may have swapped it
 			conn.imgMu.Unlock()
 			v.img.Refresh()
 		})
-	}
+	})
 	v.ExtendBaseWidget(v)
 	return v
 }
@@ -529,6 +536,9 @@ func (v *vncViewer) pasteText(text string) {
 	}()
 }
 
+// the fallback for guests where a clipboard paste is unavailable, and
+// deleting it would delete the decision along with the code.
+//
 // typeString feeds text as paced key events.
 //
 // The pace is a compromise between two failure modes: too fast and a
@@ -541,6 +551,8 @@ func (v *vncViewer) pasteText(text string) {
 // price of typing rather than pasting, and the reason the real fix is a
 // clipboard agent in the guest (qemu-vdagent) so cutText lands as an
 // actual paste and this path is never taken.
+//
+//lint:ignore U1000 kept deliberately — see the note above pasteText: this is
 func (v *vncViewer) typeString(text string) {
 	for _, r := range text {
 		sym := uint32(r)
@@ -624,4 +636,34 @@ var specialKeysyms = map[fyne.KeyName]uint32{
 	fyne.KeyF4: 0xffc1, fyne.KeyF5: 0xffc2, fyne.KeyF6: 0xffc3,
 	fyne.KeyF7: 0xffc4, fyne.KeyF8: 0xffc5, fyne.KeyF9: 0xffc6,
 	fyne.KeyF10: 0xffc7, fyne.KeyF11: 0xffc8, fyne.KeyF12: 0xffc9,
+}
+
+// SetOnFrame installs the per-frame callback. Safe to call after dialRFB has
+// already started reading, which is the only time anyone calls it.
+func (r *rfbConn) SetOnFrame(f func()) {
+	r.cbMu.Lock()
+	r.onFrame = f
+	r.cbMu.Unlock()
+}
+
+// SetOnCutText installs the guest-clipboard callback.
+func (r *rfbConn) SetOnCutText(f func(string)) {
+	r.cbMu.Lock()
+	r.onCutText = f
+	r.cbMu.Unlock()
+}
+
+// frameCB / cutTextCB read a callback under the lock and return it, so the
+// call itself happens OUTSIDE the lock — a callback that blocks (both hop to
+// the Fyne goroutine) must never hold up the read loop's next frame.
+func (r *rfbConn) frameCB() func() {
+	r.cbMu.Lock()
+	defer r.cbMu.Unlock()
+	return r.onFrame
+}
+
+func (r *rfbConn) cutTextCB() func(string) {
+	r.cbMu.Lock()
+	defer r.cbMu.Unlock()
+	return r.onCutText
 }

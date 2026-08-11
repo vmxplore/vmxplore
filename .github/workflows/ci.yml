@@ -1,0 +1,119 @@
+# ci.yml — vet + test both build flavors (plus -race), static analysis
+# (staticcheck, govulncheck), man page lint, and cross-compile proof for the
+# platforms a release ships. On tag pushes, version-guard enforces that the
+# tag equals "v" + the version constant in main.go — the binary must never
+# lie about itself.
+#
+# Mirrors zxplore's ci.yml deliberately: the two consoles are meant to be one
+# product, and a gate that exists in one and not the other is how they drift.
+# vmxplore had NO CI before this — only release-on-tag — so nothing but the
+# operator caught a regression.
+#
+# The suite needs no hypervisor: the live tests are gated behind
+# VMX_NEWVM_E2E / VMX_DESKTOP_E2E / VMX_CATALOG_LIVE and skip by default.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: GUI build dependencies (cgo + GL + X/Wayland + fontconfig)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libgl1-mesa-dev xorg-dev \
+            libwayland-dev libxkbcommon-dev libfontconfig1-dev mandoc
+          # The runner image ships a stale mandoc.db; without this, mandoc
+          # emits WARNING "outdated mandoc.db lacks ssh(1) entry" on every
+          # cross-reference and the lint gate fails on runner state rather
+          # than on our page.
+          sudo makewhatis /usr/share/man
+      - name: gofmt clean
+        run: test -z "$(gofmt -l .)"
+      - name: Vet + test (static flavor)
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Vet + test (GUI flavor)
+        run: |
+          go vet -tags gui ./...
+          go test -tags gui ./...
+      - name: Race detector (both flavors)
+        run: |
+          go test -race ./...
+          go test -race -tags gui ./...
+      - name: staticcheck (both flavors)
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+          staticcheck -tags gui ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Man page lint
+        # Fail on WARNING/ERROR, tolerate STYLE. -T lint implies -W all and
+        # ignores a -W override, so filter explicitly. STYLE is mostly
+        # "referenced manual not found" — a property of which man pages the
+        # runner happens to have, not of our page.
+        run: |
+          mandoc -T lint docs/vmxplore.1 > /tmp/lint.txt 2>&1 || true
+          # Drop STYLE, and drop the "outdated mandoc.db" notes too: those
+          # are about which man pages the RUNNER has indexed, not about our
+          # page, and they are not tagged STYLE so the filter above misses
+          # them. makewhatis above normally prevents them; this is the belt
+          # to that braces.
+          out=$(grep -v ' STYLE: ' /tmp/lint.txt | grep -v 'outdated mandoc.db' || true)
+          if [ -n "$out" ]; then
+            echo "$out"
+            echo "::error::mandoc lint failed — $(echo "$out" | head -1)"
+            exit 1
+          fi
+      - name: Build both binaries
+        run: make build
+
+  version-guard:
+    # A tag that disagrees with the version constant ships a binary that
+    # misreports itself, and "which build am I looking at" becomes
+    # unanswerable on a box you did not build.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches main.go version constant
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          ver=$(grep -oE 'const version = "[0-9.]+"' main.go | grep -oE '[0-9.]+')
+          echo "tag=$tag  main.go=$ver"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag v$tag does not match version constant $ver"
+            exit 1
+          fi
+
+  cross:
+    # The static TUI is the thing people copy onto a strange machine, so
+    # proving it still compiles for each target is worth more than it costs.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Static TUI cross-compiles (${{ matrix.goos }}/${{ matrix.goarch }})
+        run: >
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+          go build -trimpath -o /dev/null .

@@ -47,12 +47,12 @@ func TestRFBLiveFramebuffer(t *testing.T) {
 	}
 
 	frames := make(chan struct{}, 1)
-	conn.onFrame = func() {
+	conn.SetOnFrame(func() {
 		select {
 		case frames <- struct{}{}:
 		default:
 		}
-	}
+	})
 	select {
 	case <-frames:
 	case <-time.After(5 * time.Second):
