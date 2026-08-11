@@ -23,6 +23,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +38,16 @@ import (
 type CloudImage struct {
 	URL     string
 	Variant string
+	// SumURL is the vendor's OWN checksum manifest, not a hash pinned here.
+	// Every one of these image URLs is a "latest" pointer that moves when
+	// the vendor rebuilds, so a hardcoded digest would be wrong within days
+	// and the pressure would be to delete the check rather than chase it.
+	// Fetching the manifest beside the image verifies the bytes actually
+	// published for that URL, and keeps working across rebuilds.
+	SumURL string
+	// SumAlgo is "sha256" or "sha512" — Debian publishes SHA512SUMS while
+	// everyone else publishes SHA256.
+	SumAlgo string
 }
 
 // DefaultGuestPassword is what a cloud-mode VM gets when the operator gave
@@ -46,12 +57,42 @@ type CloudImage struct {
 const DefaultGuestPassword = "kldload"
 
 var cloudImages = map[string]CloudImage{
-	"fedora": {"https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2", "fedora44"},
-	"debian": {"https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2", "debian12"},
-	"ubuntu": {"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", "ubuntu24.04"},
-	"centos": {"https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2", "centos-stream9"},
-	"rocky":  {"https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2", "centos-stream9"},
-	"arch":   {"https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2", "archlinux"},
+	"fedora": {
+		"https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+		"fedora44",
+		"https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-44-1.7-x86_64-CHECKSUM",
+		"sha256",
+	},
+	"debian": {
+		"https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2",
+		"debian12",
+		"https://cloud.debian.org/images/cloud/trixie/daily/latest/SHA512SUMS",
+		"sha512",
+	},
+	"ubuntu": {
+		"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+		"ubuntu24.04",
+		"https://cloud-images.ubuntu.com/noble/current/SHA256SUMS",
+		"sha256",
+	},
+	"centos": {
+		"https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2",
+		"centos-stream9",
+		"https://cloud.centos.org/centos/9-stream/x86_64/images/CHECKSUM",
+		"sha256",
+	},
+	"rocky": {
+		"https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+		"centos-stream9",
+		"https://dl.rockylinux.org/pub/rocky/9/images/x86_64/CHECKSUM",
+		"sha256",
+	},
+	"arch": {
+		"https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
+		"archlinux",
+		"https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256",
+		"sha256",
+	},
 }
 
 // CloudDistros lists the presets in menu order.
@@ -334,9 +375,26 @@ func userData(s NewVMSpec) string {
 		pw = DefaultGuestPassword
 	}
 	if pw != "" {
-		b.WriteString("chpasswd:\n  expire: false\n  users:\n")
-		fmt.Fprintf(&b, "    - {name: %s, password: %s, type: text}\n",
-			yamlQuote(s.User), yamlQuote(pw))
+		// The password goes in HASHED. A NoCloud seed is an ISO9660 image
+		// that stays attached to the guest as a cdrom, so `type: text` put
+		// the guest's admin password in cleartext in two places at once: on
+		// the hypervisor under /var/lib/libvirt/images, and inside the guest
+		// where any local user could mount /dev/sr0 and read it. A hash is
+		// what /etc/shadow would have held anyway.
+		// HISTORY: 2026-08-10 security pass. Falls back to cleartext ONLY
+		// when no hashing tool exists, because a VM nobody can log into is
+		// a broken VM — but it says so, loudly, in the rendered seed.
+		if h, err := hashPassword(pw); err == nil {
+			b.WriteString("chpasswd:\n  expire: false\n  users:\n")
+			fmt.Fprintf(&b, "    - {name: %s, password: %s, type: hash}\n",
+				yamlQuote(s.User), yamlQuote(h))
+		} else {
+			b.WriteString("# WARNING: no openssl/mkpasswd on the hypervisor, so this\n" +
+				"# seed carries a CLEARTEXT password. Install either and rebuild.\n")
+			b.WriteString("chpasswd:\n  expire: false\n  users:\n")
+			fmt.Fprintf(&b, "    - {name: %s, password: %s, type: text}\n",
+				yamlQuote(s.User), yamlQuote(pw))
+		}
 	}
 	// the custom post-installer: the operator's bash, written to a script
 	// and run once as root on first boot via runcmd — output lands in the
@@ -432,6 +490,12 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			if err := run(true, "curl", "-L", "--fail", "-o", img, ci.URL); err != nil {
 				return err
 			}
+			// Verify BEFORE the image is used, and before it becomes the
+			// cache for every later build. A failure here deletes the file,
+			// so a retry re-downloads instead of reusing bad bytes.
+			if err := VerifyImage(img, ci, progress); err != nil {
+				return fmt.Errorf("cloud image verification failed: %w", err)
+			}
 		}
 	}
 
@@ -494,7 +558,17 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		return err
 	}
 	seedISO := "/var/lib/libvirt/images/" + s.Name + "-seed.iso"
-	if err := run(true, "cp", tmpISO, seedISO); err != nil {
+	// install -m0600, not cp: cp leaves the seed 0644 under a directory
+	// every local account can read. The seed is a credential even hashed —
+	// it also carries the operator's ssh key and any post-installer.
+	//
+	// WARN: this image stays attached as a cdrom for the life of the guest.
+	// cloud-init only needs it on first boot, so ejecting it afterwards
+	// would be strictly better; doing that safely needs a reliable
+	// "cloud-init finished" signal from inside the guest, which is a
+	// guest-agent dependency this does not yet take. Hashing the password
+	// is what makes the persistence tolerable rather than a leak.
+	if err := run(true, "install", "-m0600", tmpISO, seedISO); err != nil {
 		return err
 	}
 
@@ -612,4 +686,42 @@ func ZFSVMParent(rows []Row) string {
 		}
 	}
 	return best
+}
+
+// hashPassword turns a cleartext password into a crypt(3) SHA-512 hash for
+// cloud-init's `chpasswd ... type: hash`.
+//
+// WHY shell out: Go's standard library has no crypt(3), and the alternative
+// is pulling in a dependency to do what every Unix already ships. openssl is
+// first because it is present on effectively every hypervisor; mkpasswd
+// (whois package on Debian, expect on RHEL) is the fallback.
+//
+// Args:    pw  the cleartext password. Never logged, never echoed — note
+//
+//	that both tools take it on STDIN rather than argv, so it does
+//	not appear in the process table.
+//
+// Returns: a "$6$salt$hash" string, or an error when no tool is available.
+// Failure modes callers must handle: no hashing tool installed. The caller
+// falls back to a cleartext seed with a warning rather than building a VM
+// nobody can log into.
+func hashPassword(pw string) (string, error) {
+	for _, try := range [][]string{
+		{"openssl", "passwd", "-6", "-stdin"},
+		{"mkpasswd", "-m", "sha-512", "--stdin"},
+	} {
+		if _, err := exec.LookPath(try[0]); err != nil {
+			continue
+		}
+		cmd := exec.Command(try[0], try[1:]...)
+		cmd.Stdin = strings.NewReader(pw)
+		out, err := cmd.Output()
+		h := strings.TrimSpace(string(out))
+		// A crypt hash always starts with $<id>$; anything else means the
+		// tool printed usage or a prompt, which must not reach the seed.
+		if err == nil && strings.HasPrefix(h, "$6$") {
+			return h, nil
+		}
+	}
+	return "", errors.New("no openssl or mkpasswd to hash the guest password")
 }

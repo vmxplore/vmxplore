@@ -106,17 +106,27 @@ func TestUserDataAlwaysReachable(t *testing.T) {
 	s := NewVMSpec{Name: "x", Distro: "debian", User: "admin",
 		VCPUs: 1, RAMMB: 512, DiskGB: 4}
 	ud := userData(s)
-	if !strings.Contains(ud, "chpasswd:") ||
-		!strings.Contains(ud, DefaultGuestPassword) {
+	// The password is hashed as of 2026-08-10, so "reachable" can no longer
+	// be checked by looking for the cleartext — that is the whole point. It
+	// is checked by the presence of the chpasswd block, which is what makes
+	// the account usable.
+	if !strings.Contains(ud, "chpasswd:") {
 		t.Errorf("no password and no key must fall back to a default:\n%s", ud)
+	}
+	if strings.Contains(ud, DefaultGuestPassword) {
+		t.Errorf("the default password must not appear in cleartext:\n%s", ud)
 	}
 	s.SSHKey = "ssh-ed25519 AAAA test"
 	if strings.Contains(userData(s), "chpasswd:") {
 		t.Error("a key on its own must not force a password")
 	}
 	s.SSHKey, s.Password = "", "hunter2"
-	if !strings.Contains(userData(s), "hunter2") {
-		t.Error("an explicit password must be used verbatim")
+	ud = userData(s)
+	if !strings.Contains(ud, "chpasswd:") {
+		t.Errorf("an explicit password must still produce a login:\n%s", ud)
+	}
+	if strings.Contains(ud, "hunter2") {
+		t.Errorf("an explicit password must not be emitted in cleartext:\n%s", ud)
 	}
 }
 
@@ -133,10 +143,16 @@ func TestUserDataQuotesOperatorValues(t *testing.T) {
 	if !strings.Contains(ud, `- "`+key+`"`) {
 		t.Errorf("ssh key must be a quoted scalar:\n%s", ud)
 	}
-	// the password carries a comma and a brace — both fatal unquoted
-	// inside the chpasswd flow mapping
-	if !strings.Contains(ud, `password: "p, w\"d}"`) {
-		t.Errorf("password must be quoted and escaped:\n%s", ud)
+	// The password is hashed now, so the value in the flow mapping is a
+	// crypt string rather than the operator's text — but it must still be a
+	// QUOTED scalar, because a crypt hash is full of $ and / and can end in
+	// characters YAML would otherwise interpret. Quoting is the invariant
+	// this test exists for; the cleartext was only ever the example.
+	if strings.Contains(ud, `p, w"d}`) {
+		t.Errorf("password must never appear in cleartext:\n%s", ud)
+	}
+	if !strings.Contains(ud, `password: "$6$`) {
+		t.Errorf("hashed password must be a quoted scalar:\n%s", ud)
 	}
 	for _, line := range strings.Split(ud, "\n") {
 		if strings.HasPrefix(line, "hostname:") && !strings.Contains(line, `"`) {
