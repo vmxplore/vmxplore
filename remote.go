@@ -31,6 +31,7 @@ package main
 
 import (
 	"net/url"
+	"os/exec"
 	"strings"
 )
 
@@ -112,3 +113,12 @@ func vncDialHost() string {
 }
 
 // ─── console transport ───────────────────────────────────────────────────
+
+// virshOut runs a read-only virsh subcommand against the current target and
+// returns its stdout. Wrapping it keeps the call sites free of
+// append(virsh()[1:], ...)... noise, and — the point — means no site can
+// quietly hardcode qemu:///system again and work only locally.
+func virshOut(args ...string) ([]byte, error) {
+	argv := append(virsh(), args...)
+	return exec.Command(argv[0], argv[1:]...).Output()
+}

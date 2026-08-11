@@ -2170,9 +2170,15 @@ func runGUI(rs *Ruleset) {
 			return
 		}
 		plan := planClone
-		if r.DS != nil && exec.Command("zfs", "list",
-			r.DS.Name+"@golden").Run() == nil {
-			plan = planCloneGolden
+		// zfsArgv, not a bare zfs: this decides WHICH clone plan runs, and
+		// asking the local box whether a REMOTE dataset has a @golden
+		// snapshot answers about the wrong machine — it would silently pick
+		// the full-copy plan for a golden that exists.
+		if r.DS != nil {
+			chk := zfsArgv("list", r.DS.Name+"@golden")
+			if exec.Command(chk[0], chk[1:]...).Run() == nil {
+				plan = planCloneGolden
+			}
 		}
 		nameDialog("clone — name for the new VM", "new VM name", plan)()
 	}

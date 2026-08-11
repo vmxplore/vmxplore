@@ -39,13 +39,12 @@ func MakeGolden(r Row, progress func(string)) error {
 
 	// 1 — a clean shutdown, waited for
 	state := func() string {
-		out, _ := exec.Command("virsh", "-c", "qemu:///system",
-			"domstate", name).Output()
+		out, _ := virshOut("domstate", name)
 		return strings.TrimSpace(string(out))
 	}
 	if state() == "running" {
 		if err := runStep(progress, false,
-			"virsh", "-c", "qemu:///system", "shutdown", name); err != nil {
+			append(virsh(), "shutdown", name)...); err != nil {
 			return err
 		}
 		progress("waiting for " + name + " to shut down…")
@@ -77,13 +76,14 @@ func MakeGolden(r Row, progress func(string)) error {
 
 	// 3 — the @golden anchor (re-golden replaces the old one; ZFS refuses
 	// while clones depend on it, naming them — the right failure)
-	if exec.Command("zfs", "list", ds+"@golden").Run() == nil {
-		if err := runStep(progress, true, "zfs", "destroy", ds+"@golden"); err != nil {
+	if exec.Command(zfsArgv("list", ds+"@golden")[0],
+		zfsArgv("list", ds+"@golden")[1:]...).Run() == nil {
+		if err := runStep(progress, true, zfsArgv("destroy", ds+"@golden")...); err != nil {
 			return fmt.Errorf("%v — existing clones depend on the old golden; "+
 				"delete or promote them first", err)
 		}
 	}
-	if err := runStep(progress, true, "zfs", "snapshot", ds+"@golden"); err != nil {
+	if err := runStep(progress, true, zfsArgv("snapshot", ds+"@golden")...); err != nil {
 		return err
 	}
 	progress(name + " is golden — right-click → Clone stamps out instant copies")
@@ -109,7 +109,7 @@ func planCloneGolden(r Row, newName string) (verbPlan, error) {
 	}
 	p.title = "clone golden " + r.D.Name + " → " + newName
 	p.cmds = [][]string{
-		{"zfs", "clone", r.DS.Name + "@golden", parent + "/" + newName},
+		zfsArgv("clone", r.DS.Name+"@golden", parent+"/"+newName),
 		p.cmds[2], // the virt-clone leg, unchanged
 	}
 	p.warn = "clone of the sealed @golden — boots as a fresh machine"

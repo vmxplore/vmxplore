@@ -257,7 +257,7 @@ func planClone(r Row, newName string) (verbPlan, error) {
 		cmds: [][]string{
 			zfsArgv("snapshot", snap),
 			zfsArgv("clone", snap, newDS),
-			{"virt-clone", "--connect", "qemu:///system", "--original", r.D.Name,
+			{"virt-clone", "--connect", target.LibvirtURI, "--original", r.D.Name,
 				"--name", newName, "--preserve-data",
 				"--file", "/dev/zvol/" + newDS},
 		},

@@ -519,7 +519,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	destroyZvol := func(ds string) func() {
 		return func() {
 			progress("cleanup: destroying orphaned zvol " + ds)
-			_ = runStep(progress, true, "zfs", "destroy", "-r", ds)
+			_ = runStep(progress, true, zfsArgv("destroy", "-r", ds)...)
 		}
 	}
 	removeFile := func(path string) func() {
@@ -537,8 +537,8 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		var diskArg string
 		if zfsParent != "" {
 			ds := zfsParent + "/" + s.Name
-			if err := run(true, "zfs", "create", "-s", "-V",
-				fmt.Sprintf("%dG", s.DiskGB), ds); err != nil {
+			if err := run(true, zfsArgv("create", "-s", "-V",
+				fmt.Sprintf("%dG", s.DiskGB), ds)...); err != nil {
 				return err
 			}
 			// `zfs create` fails when the dataset exists, so reaching here
@@ -564,7 +564,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		if s.OSVariant != "" {
 			osArg = []string{"--os-variant", s.OSVariant}
 		}
-		argv := append([]string{"virt-install", "--connect", "qemu:///system",
+		argv := append([]string{"virt-install", "--connect", target.LibvirtURI,
 			"--name", s.Name,
 			"--memory", fmt.Sprint(s.RAMMB),
 			"--vcpus", fmt.Sprint(s.VCPUs),
@@ -616,8 +616,8 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	var diskArg string
 	if zfsParent != "" {
 		ds := zfsParent + "/" + s.Name
-		if err := run(true, "zfs", "create", "-s", "-V",
-			fmt.Sprintf("%dG", s.DiskGB), ds); err != nil {
+		if err := run(true, zfsArgv("create", "-s", "-V",
+			fmt.Sprintf("%dG", s.DiskGB), ds)...); err != nil {
 			return err
 		}
 		rb.add(destroyZvol(ds))
@@ -711,7 +711,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	// resolver problem — E2E caught fedora44 unknown on onyx): retry with
 	// osinfo detection, which never hard-fails.
 	installArgs := func(osinfo ...string) []string {
-		argv := []string{"virt-install", "--connect", "qemu:///system",
+		argv := []string{"virt-install", "--connect", target.LibvirtURI,
 			"--name", s.Name,
 			"--memory", fmt.Sprint(s.RAMMB),
 			"--vcpus", fmt.Sprint(s.VCPUs),
@@ -740,12 +740,11 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	// fails with "dataset is busy", leaving both behind.
 	rb.add(func() {
 		progress("cleanup: destroying transient domain " + s.Name)
-		_ = runStep(progress, false, "virsh", "-c", "qemu:///system", "destroy", s.Name)
+		_ = runStep(progress, false, append(virsh(), "destroy", s.Name)...)
 	})
 
 	// 5 — persistence: re-define from live XML (see banner)
-	xmlOut, err := exec.Command("virsh", "-c", "qemu:///system",
-		"dumpxml", s.Name).Output()
+	xmlOut, err := virshOut("dumpxml", s.Name)
 	if err != nil {
 		return fmt.Errorf("dumpxml after install: %v", err)
 	}
@@ -753,7 +752,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	if err := os.WriteFile(xf, xmlOut, 0600); err != nil {
 		return err
 	}
-	if err := run(false, "virsh", "-c", "qemu:///system", "define", xf); err != nil {
+	if err := run(false, append(virsh(), "define", xf)...); err != nil {
 		return err
 	}
 	// Committed only here: everything up to the persistent define is still
