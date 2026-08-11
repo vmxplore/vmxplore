@@ -2026,6 +2026,32 @@ func runGUI(rs *Ruleset) {
 		name.Validator = nameValidator()
 		distro := widget.NewSelect(CloudDistros(), nil)
 		distro.SetSelected("fedora")
+		// The golden carries the desktop and every clone inherits it, so
+		// this is the cheapest place in the product to get a desktop fleet:
+		// the 1.5-3GB install happens ONCE, on the golden, and the clones
+		// are ZFS clones of a disk that already has it.
+		fleetDesktop := widget.NewSelect(DesktopsFor("fedora"), nil)
+		fleetDesktop.SetSelected("none")
+		fleetDesktopNote := widget.NewLabel("")
+		fleetDesktopNote.Wrapping = fyne.TextWrapWord
+		fleetDesktopNote.TextStyle = fyne.TextStyle{Italic: true}
+		fleetDesktopNote.Hide()
+		fleetDesktop.OnChanged = func(d string) {
+			if d == "" || d == "none" {
+				fleetDesktopNote.Hide()
+				return
+			}
+			fleetDesktopNote.SetText("installed once on the golden, then cloned — " +
+				"adds 5–10 minutes to the golden, nothing to each clone")
+			fleetDesktopNote.Show()
+		}
+		distro.OnChanged = func(sel string) {
+			fleetDesktop.Options = DesktopsFor(sel)
+			if !DesktopSupported(sel, fleetDesktop.Selected) {
+				fleetDesktop.SetSelected("none")
+			}
+			fleetDesktop.Refresh()
+		}
 		count := widget.NewEntry()
 		count.SetText("5")
 		count.Validator = numValidator(1, "clone")
@@ -2041,6 +2067,7 @@ func runGUI(rs *Ruleset) {
 		form := container.NewVBox(
 			widget.NewLabel("base name (clones: name-1…name-N)"), name,
 			widget.NewLabel("distro"), distro,
+			widget.NewLabel("desktop"), fleetDesktop, fleetDesktopNote,
 			container.NewGridWithColumns(3,
 				container.NewVBox(widget.NewLabel("clones"), count),
 				container.NewVBox(widget.NewLabel("RAM (MB)"), ram),
@@ -2060,6 +2087,9 @@ func runGUI(rs *Ruleset) {
 					Name: strings.TrimSpace(name.Text), Distro: distro.Selected,
 					VCPUs: 2, RAMMB: m, DiskGB: g,
 					User: "admin", Password: "kldload", PostInst: post.Text,
+				}
+				if DesktopSupported(spec.Distro, fleetDesktop.Selected) {
+					spec.Desktop = fleetDesktop.Selected
 				}
 				// Same guard as New VM. A fleet builds a golden AND n clones,
 				// so a bad field here wastes considerably more of the
