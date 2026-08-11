@@ -1607,6 +1607,29 @@ func runGUI(rs *Ruleset) {
 		mode.SetSelected("cloud image")
 		distro := widget.NewSelect(append(CloudDistros(), "custom image…"), nil)
 		distro.SetSelected("fedora")
+		// Cloud images are headless, so every VM was a server whether or not
+		// that was wanted. This offers the desktops VERIFIED for the selected
+		// distro — the list is generated from the recipe table, so it can
+		// never offer a combination the distro's repositories cannot satisfy
+		// (see desktop.go). A distro with no verified recipes shows "server"
+		// alone rather than a promise nothing can keep.
+		desktop := widget.NewSelect(DesktopsFor("fedora"), nil)
+		desktop.SetSelected("none")
+		desktopNote := widget.NewLabel("")
+		desktopNote.Wrapping = fyne.TextWrapWord
+		desktopNote.TextStyle = fyne.TextStyle{Italic: true}
+		desktopNote.Hide()
+		desktop.OnChanged = func(d string) {
+			// A desktop is 1.5–3GB. Saying so is the difference between a
+			// slow build and one the operator believes has hung.
+			if d == "" || d == "none" {
+				desktopNote.Hide()
+				return
+			}
+			desktopNote.SetText("adds 1.5–3GB on first boot — this VM will take " +
+				"5–10 minutes instead of about a minute, and the console narrates it")
+			desktopNote.Show()
+		}
 		imgPath := widget.NewEntry()
 		imgPath.SetPlaceHolder("/path/to/image.qcow2 (custom only)")
 		imgPath.Hide()
@@ -1686,6 +1709,7 @@ func runGUI(rs *Ruleset) {
 		}
 		cloudOnly := container.NewVBox(
 			widget.NewLabel("distro"), distro, imgPath,
+			widget.NewLabel("desktop"), desktop, desktopNote,
 			widget.NewLabel("user"), user,
 			widget.NewLabel("password"), pass,
 			widget.NewLabel("ssh key"), key,
@@ -1701,6 +1725,15 @@ func runGUI(rs *Ruleset) {
 			} else {
 				imgPath.Hide()
 			}
+			// Re-offer only what THIS distro has verified recipes for, and
+			// drop a selection the new distro cannot honour rather than
+			// carrying it silently into a build that would ignore it.
+			opts := DesktopsFor(s)
+			desktop.Options = opts
+			if !DesktopSupported(s, desktop.Selected) {
+				desktop.SetSelected("none")
+			}
+			desktop.Refresh()
 		}
 		mode.OnChanged = func(s string) {
 			if s == "installer ISO" {
@@ -1751,6 +1784,14 @@ func runGUI(rs *Ruleset) {
 						spec.ImagePath = strings.TrimSpace(imgPath.Text)
 					} else {
 						spec.Distro = distro.Selected
+						// Only carry a desktop the chosen distro has a
+						// verified recipe for. A custom image gets none:
+						// we do not know what is inside it, and guessing
+						// its package manager is how a build fails ten
+						// minutes in.
+						if DesktopSupported(spec.Distro, desktop.Selected) {
+							spec.Desktop = desktop.Selected
+						}
 					}
 				}
 				done := "created — cloud-init finishes the first boot"
