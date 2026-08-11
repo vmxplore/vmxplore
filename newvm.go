@@ -93,11 +93,41 @@ var cloudImages = map[string]CloudImage{
 		"https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256",
 		"sha256",
 	},
+	// EL10 alongside Rocky — same ABI, different governance, and operators
+	// have strong opinions about which one they want.
+	"alma": {
+		"https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2",
+		"almalinux9",
+		"https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/CHECKSUM",
+		"sha256",
+	},
+	// The SUSE family was missing entirely, which made the catalogue read as
+	// "Red Hat, Debian, or Arch" when the substrate has no such opinion.
+	"opensuse": {
+		"https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2",
+		"opensuse15.6",
+		"https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2.sha256",
+		"sha256",
+	},
 }
+
+// NOT in the catalogue, and why — so the next person does not re-derive it:
+//
+//	rhel      Red Hat's KVM guest images are behind an authenticated CDN;
+//	          an unauthenticated fetch returns a login page with HTTP 200,
+//	          which is exactly the shape that would have shipped a broken
+//	          preset. RHEL guests are built from a local ImagePath plus
+//	          subscription-manager registration in the post-installer —
+//	          see rhelPostInstall.
+//	oracle    Oracle Linux publishes the image but no checksum manifest
+//	          beside it (404). VerifyImage fails closed, so an entry with
+//	          nothing to verify against cannot be added.
+//	cachyos   No official cloud qcow2 found. Their ISOs are installer media,
+//	          not cloud images, so it would need the install path instead.
 
 // CloudDistros lists the presets in menu order.
 func CloudDistros() []string {
-	return []string{"fedora", "debian", "ubuntu", "centos", "rocky", "arch"}
+	return []string{"fedora", "debian", "ubuntu", "centos", "rocky", "alma", "opensuse", "arch"}
 }
 
 // NewVMSpec is everything the dialog collects. Two build modes:
@@ -119,6 +149,20 @@ type NewVMSpec struct {
 	Password  string // cloud mode only
 	SSHKey    string // cloud mode only — one authorized_keys line
 	PostInst  string // cloud mode only — bash run as root on first boot
+
+	// RHEL entitlement. Red Hat's KVM guest images sit behind an
+	// authenticated CDN, so unlike every other preset the IMAGE cannot be
+	// fetched for you — point ImagePath at one downloaded from the Red Hat
+	// portal. What these do is register the GUEST once it boots, which is
+	// what turns a RHEL image into a RHEL machine that can install
+	// anything. Same two auth methods the installer accepts: portal
+	// username/password, or activation key + organisation ID.
+	//
+	// Only needed for the golden image. Clones inherit the entitlement.
+	RHELUser string
+	RHELPass string
+	RHELKey  string // activation key
+	RHELOrg  string // organisation ID
 }
 
 var vmNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -400,14 +444,18 @@ func userData(s NewVMSpec) string {
 	// and run once as root on first boot via runcmd — output lands in the
 	// guest's /var/log/cloud-init-output.log. This is what turns a stock
 	// cloud image into somebody's own appliance (then Make Golden → clone).
-	if strings.TrimSpace(s.PostInst) != "" {
+	post := s.PostInst
+	if reg := rhelPostInstall(s); reg != "" {
+		post = reg + "\n" + post
+	}
+	if strings.TrimSpace(post) != "" {
 		b.WriteString("write_files:\n")
 		b.WriteString("  - path: /var/lib/vmxplore-postinstall.sh\n")
 		b.WriteString("    permissions: '0755'\n")
 		b.WriteString("    content: |\n")
 		b.WriteString("      #!/usr/bin/env bash\n")
 		b.WriteString("      set -Eeuo pipefail\n")
-		for _, line := range strings.Split(s.PostInst, "\n") {
+		for _, line := range strings.Split(post, "\n") {
 			// 6-space indent puts each line inside the YAML block scalar
 			b.WriteString("      " + line + "\n")
 		}
@@ -781,4 +829,63 @@ func hashPassword(pw string) (string, error) {
 		}
 	}
 	return "", errors.New("no openssl or mkpasswd to hash the guest password")
+}
+
+// rhelPostInstall returns the cloud-init runcmd lines that register a RHEL
+// guest, or "" when no entitlement was supplied.
+//
+// WHY this is not a catalogue entry like the others: Red Hat's KVM guest
+// images are served from an authenticated CDN. An unauthenticated fetch
+// returns a LOGIN PAGE with HTTP 200 and text/html — so a naive preset would
+// have "downloaded" 4KB of HTML, written it to a zvol, and produced a VM
+// that fails to boot with nothing pointing at the cause. Verified 2026-08-10.
+//
+// So RHEL takes the ImagePath route: the operator downloads the qcow2 from
+// the portal once, and these credentials entitle the guest on first boot.
+//
+// Args:   s  the spec; reads only the RHEL* fields.
+// Returns: bash for the post-installer, or "" when nothing was supplied.
+// Failure modes callers must handle: none here — an unentitled RHEL guest
+// still boots, it just cannot install packages, and the script says so in
+// the guest's cloud-init log rather than failing the build.
+//
+// SAFETY: the credentials reach the guest through the cloud-init seed, which
+// is written 0600 and carries a hashed login password. A subscription
+// password cannot be hashed — it has to be usable — so it IS present in
+// cleartext inside the guest's seed image. That is the same exposure the
+// Red Hat installer has, and the reason to prefer an activation key: a key
+// is scoped and revocable, a portal password is neither.
+func rhelPostInstall(s NewVMSpec) string {
+	var reg string
+	switch {
+	case s.RHELUser != "" && s.RHELPass != "":
+		reg = fmt.Sprintf("subscription-manager register --username %s --password %s --auto-attach",
+			shellQuote(s.RHELUser), shellQuote(s.RHELPass))
+	case s.RHELKey != "" && s.RHELOrg != "":
+		reg = fmt.Sprintf("subscription-manager register --activationkey %s --org %s",
+			shellQuote(s.RHELKey), shellQuote(s.RHELOrg))
+	default:
+		return ""
+	}
+	return "" +
+		"# RHEL entitlement (vmxplore). Without this the guest boots but can\n" +
+		"# install nothing, which looks like a broken image rather than an\n" +
+		"# unregistered one — so say which it is, in the log the operator reads.\n" +
+		"if command -v subscription-manager >/dev/null 2>&1; then\n" +
+		"  if " + reg + "; then\n" +
+		"    echo 'vmxplore: RHEL guest registered'\n" +
+		"  else\n" +
+		"    echo 'vmxplore: RHEL registration FAILED — the guest has no repos' >&2\n" +
+		"  fi\n" +
+		"else\n" +
+		"  echo 'vmxplore: no subscription-manager — is this actually a RHEL image?' >&2\n" +
+		"fi\n"
+}
+
+// shellQuote wraps a value in single quotes for safe use in the generated
+// post-installer. A subscription password is operator-supplied text that
+// ends up inside a bash script; without this a quote or a semicolon in it
+// would be shell syntax rather than a password.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
