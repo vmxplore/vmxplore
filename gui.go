@@ -1337,12 +1337,36 @@ func runGUI(rs *Ruleset) {
 			toolsHost.Refresh()
 			return
 		}
-		tiles := make([]fyne.CanvasObject, 0, len(ktools)+1)
-		for _, t := range append(append([]string{}, ktools...), "shell") {
-			t := t
-			tiles = append(tiles, newTile(toolIcon(t), t, toolDesc[t],
-				toolAccent(t).at(), func() { openTool(t) }))
+		// Sectioned rather than one 27-tile wall. A flat grid meant reading
+		// every label to find anything: the colour language told you what a
+		// tile would DO but not where to look for it. Headings give the eye
+		// somewhere to stop, and each section is small enough to scan.
+		// Tiles are narrower too (250 -> 210) so a section fits on one row
+		// at common widths instead of wrapping into the next heading.
+		sections := make([]fyne.CanvasObject, 0, len(vmKToolGroups)*3+3)
+		addSection := func(name string, names []string) {
+			if len(names) == 0 {
+				return
+			}
+			h := widget.NewLabelWithStyle(name, fyne.TextAlignLeading,
+				fyne.TextStyle{Bold: true})
+			row := make([]fyne.CanvasObject, 0, len(names))
+			for _, t := range names {
+				t := t
+				row = append(row, newTile(toolIcon(t), t, toolDesc[t],
+					toolAccent(t).at(), func() { openTool(t) }))
+			}
+			sections = append(sections,
+				container.NewPadded(h),
+				container.NewGridWrap(fyne.NewSize(210, 92), row...),
+				widget.NewSeparator())
 		}
+		for _, g := range KldloadToolGroups() {
+			addSection(g.Name, g.Tools)
+		}
+		// The plain prompt is not one of the tools and gets its own footer
+		// section, so it never sits inside a category it does not belong to.
+		addSection("Shell", []string{"shell"})
 		// The legend is spelled out because a colour language nobody
 		// explains is decoration. One line, once, at the top.
 		legend := widget.NewLabel(
@@ -1352,10 +1376,10 @@ func runGUI(rs *Ruleset) {
 			pageHeading("kldload tools", acBrand),
 			widget.NewLabel("clusters, goldens, clones, demos — they run right here"),
 			legend)
-		grid := container.NewGridWrap(fyne.NewSize(250, 96), tiles...)
+		body := container.NewVBox(sections...)
 		toolsHost.Objects = []fyne.CanvasObject{container.NewBorder(
 			container.NewPadded(head), nil, nil, nil,
-			container.NewVScroll(container.NewPadded(grid)))}
+			container.NewVScroll(container.NewPadded(body)))}
 		toolsHost.Refresh()
 	}
 	showToolTiles()

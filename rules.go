@@ -155,30 +155,78 @@ func IsKldload() bool {
 
 // vmKTools are the kldload VM tools vmx surfaces delegation flair for when it
 // detects them. vmx stays fully generic without them.
-var vmKTools = []string{
-	"klab", "kube-cluster", "kspawn",
-	"kvm-create", "kvm-clone", "kvm-delete", "kvm-snap", "kvm-list",
-	"kimage", "kexport", "kvm-win", "ksnap",
-	"kvm-demo", "kube-demo",
-	// the ZFS surfaces: kzfs-lab is the OpenZFS Lab (goldens, blue/green
-	// sites, the ZFS test suite and its eBPF metrics), zxplore the
-	// family's storage console, kst the host's pool/health summary. All
-	// three were missing here, so a kldload host showed every way to make
-	// a VM and no way to reach its storage or its tests.
-	"kzfs-lab", "zxplore", "kst",
-	// the sister console: a kldload host runs the WireGuard estate too, and
-	// the operator should not have to remember a second launcher for it
-	"wgx",
-	// the diagnostics: this host's own health, from a one-shot report to a
-	// full observability cockpit. Reachable FROM the estate is the point —
-	// you want them at the moment a machine looks wrong, not in another
-	// window (2026-08-09 operator call).
-	"kst-dashboard", "kldload-sysdiag", "kldload-doctor",
-	// storage and recovery beyond the VM layer: boot environments, host
-	// snapshots, and the path back when a boot goes wrong
-	"kbe", "kldload-snapshot", "krecovery",
-	// the cockpits and the assistant
-	"kldload-console", "kube-init", "bob",
+// toolGroup is one section of the kldload launcher. The tab carries 27
+// tools; ungrouped they were a wall you had to read end to end to find
+// anything. Sections give the eye somewhere to stop.
+//
+// Order is by how often a section is reached for, not alphabetically:
+// machines first, then the things you do to them, then the estate, then
+// the things you open when something is wrong.
+type toolGroup struct {
+	Name  string
+	Tools []string
+}
+
+var vmKToolGroups = []toolGroup{
+	{"Virtual machines", []string{
+		"kvm-create", "kvm-clone", "kspawn", "kvm-win", "kvm-list", "kvm-delete",
+	}},
+	{"Images & snapshots", []string{
+		"kimage", "kvm-snap", "ksnap", "kexport", "kbe", "kldload-snapshot",
+	}},
+	// The storage and network consoles. All three ZFS surfaces were once
+	// missing from this tab entirely, so a kldload host showed every way to
+	// make a VM and no way to reach its storage. wgx joins them because a
+	// kldload host runs the WireGuard estate too and the operator should not
+	// have to remember a second launcher for it.
+	{"Storage & network", []string{
+		"zxplore", "kzfs-lab", "kst", "wgx",
+	}},
+	{"Cluster", []string{
+		"klab", "kube-cluster", "kube-init",
+	}},
+	// Reachable FROM the estate is the point — you want these at the moment
+	// a machine looks wrong, not in another window (2026-08-09 operator
+	// call). Recovery sits with them: it is the same moment, later.
+	{"Health & recovery", []string{
+		"kst-dashboard", "kldload-sysdiag", "kldload-doctor",
+		"kldload-console", "krecovery",
+	}},
+	{"Demos & assistant", []string{
+		"kvm-demo", "kube-demo", "bob",
+	}},
+}
+
+// vmKTools is the flat list, derived from the groups so the two can never
+// disagree about which tools exist.
+var vmKTools = func() []string {
+	var out []string
+	for _, g := range vmKToolGroups {
+		out = append(out, g.Tools...)
+	}
+	return out
+}()
+
+// KldloadToolGroups returns the sections with only the tools actually
+// installed, dropping any section left empty. A host without a cluster
+// should not read a "Cluster" heading over nothing.
+func KldloadToolGroups() []toolGroup {
+	if !IsKldload() {
+		return nil
+	}
+	var out []toolGroup
+	for _, g := range vmKToolGroups {
+		var present []string
+		for _, t := range g.Tools {
+			if _, err := exec.LookPath(t); err == nil {
+				present = append(present, t)
+			}
+		}
+		if len(present) > 0 {
+			out = append(out, toolGroup{g.Name, present})
+		}
+	}
+	return out
 }
 
 // KldloadTools returns the kldload VM tools present on this host (nil on a
