@@ -403,7 +403,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--cdrom", s.ISOPath}, osArg...)
 		argv = append(argv,
 			"--network", "network=default,model=virtio",
-			"--graphics", "vnc,listen=0.0.0.0",
+			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
 			"--channel", vdagentArg,
 			"--noautoconsole")
@@ -513,7 +513,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		argv = append(argv, osinfo...)
 		return append(argv,
 			"--network", "network=default,model=virtio",
-			"--graphics", "vnc,listen=0.0.0.0",
+			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
 			"--channel", vdagentArg,
 			"--noautoconsole")

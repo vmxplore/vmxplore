@@ -8,7 +8,7 @@
 //
 //	local:   virsh -c qemu:///system … ; zfs … ; vnc 127.0.0.1:port
 //	remote:  virsh -c qemu+ssh://host/system … ; ssh host zfs … ;
-//	         vnc <host>:port   (kldload guests listen 0.0.0.0 by design)
+//	         vnc through an ssh -L tunnel to the host's loopback
 //
 // Why one global rather than threading a handle: the whole GUI/TUI is a
 // single connection at a time; a global set once at connect keeps the verb
@@ -18,16 +18,26 @@
 //
 // Notes: the ssh host is parsed from the libvirt URI's user@host, so a
 // working `virsh -c qemu+ssh://…` implies working `ssh host` — same key,
-// same known_hosts. VNC over a remote host needs the guest's VNC port
-// reachable (kldload's virt-install uses listen=0.0.0.0); a future step is
-// an ssh -L tunnel for locked-down hosts.
+// same known_hosts. That is also what carries the console: guests bind VNC
+// to loopback, and a remote console is an ssh -L forward to it.
+//
+// HISTORY 2026-08-10: guests were created with `--graphics vnc,listen=
+// 0.0.0.0` and the console dialled the host's VNC port over plain TCP. RFB
+// with security type None means anyone who could reach that port had
+// keyboard and mouse on the guest, unauthenticated — and the README said
+// the remote console ran over ssh, which it did not. Guests now bind
+// 127.0.0.1 and the tunnel makes the README true.
 package main
 
 import (
+	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // reexec replaces the current process with argv[0] argv[1:], inheriting the
@@ -112,4 +122,75 @@ func vncDialHost() string {
 		h = h[:i]
 	}
 	return h
+}
+
+// ─── console transport ───────────────────────────────────────────────────
+
+// vncEndpoint returns the address the RFB client should dial for a guest's
+// VNC port, plus a function to call when the console closes.
+//
+// Local: the guest binds 127.0.0.1 and we dial it directly; the returned
+// closer is a no-op.
+//
+// Remote: the guest also binds 127.0.0.1 — on the HYPERVISOR's loopback,
+// which is unreachable from here by design. An `ssh -L` forward makes it
+// reachable to this process only, over the same authenticated channel that
+// libvirt is already using. The closer tears the forward down; leaking one
+// per console open would leave a listening port for every VM ever viewed.
+//
+// Args:   port  the guest's VNC port, from the domain's live XML
+// Returns: dial address, closer, error. The closer is always safe to call,
+// including after an error return.
+// Failure modes callers must handle: ssh missing, the forward refused
+// (ExitOnForwardFailure makes that an error rather than a hang), or the
+// forward not ready inside the timeout.
+func vncEndpoint(port int) (string, func(), error) {
+	noop := func() {}
+	if target.Host == "local" || target.SSHHost == "" {
+		return fmt.Sprintf("127.0.0.1:%d", port), noop, nil
+	}
+
+	// Bind :0 to have the kernel pick a free port, then release it. There is
+	// a race between release and ssh binding it; it is small, and losing it
+	// surfaces as a clean "forward failed" rather than a wrong connection,
+	// because ExitOnForwardFailure makes ssh exit instead of continuing.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", noop, fmt.Errorf("no local port for the console tunnel: %w", err)
+	}
+	local := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+
+	// -N: set up the forward and no remote command. BatchMode: never sit at
+	// a password prompt with no terminal to type into — fail instead.
+	cmd := exec.Command("ssh", "-N",
+		"-o", "BatchMode=yes",
+		"-o", "ExitOnForwardFailure=yes",
+		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", local, port),
+		target.SSHHost)
+	if err := cmd.Start(); err != nil {
+		return "", noop, fmt.Errorf("ssh tunnel for the console failed to start: %w", err)
+	}
+	stop := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}
+
+	// ssh reports nothing on success, so readiness is "the forward accepts".
+	addr := fmt.Sprintf("127.0.0.1:%d", local)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c, derr := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+		if derr == nil {
+			_ = c.Close()
+			return addr, stop, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	stop()
+	return "", noop, fmt.Errorf(
+		"console tunnel to %s never came up — is the guest's VNC port %d open on its loopback?",
+		target.SSHHost, port)
 }

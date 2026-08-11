@@ -881,6 +881,9 @@ func runGUI(rs *Ruleset) {
 	vncHost := container.NewStack(conPlaceholder(
 		"select a running VM — its graphical console renders here"))
 	var vncConn *rfbConn
+	// vncTunnel closes the ssh forward carrying a remote console. Nil when
+	// the estate is local, or when nothing is attached.
+	var vncTunnel func()
 	vncName := ""
 	// curVNC is the live viewer, so a control outside the pane (the paste
 	// button in the console header) can drive the session the pane owns.
@@ -890,6 +893,12 @@ func runGUI(rs *Ruleset) {
 		curVNC = nil
 		if vncConn != nil {
 			vncConn.Close()
+		}
+		// Tear the ssh forward down with the console. Without this a remote
+		// estate accumulates one listening local port per VM ever opened.
+		if vncTunnel != nil {
+			vncTunnel()
+			vncTunnel = nil
 		}
 		vncConn, vncName = nil, ""
 	}
@@ -904,8 +913,17 @@ func runGUI(rs *Ruleset) {
 			vncHost.Refresh()
 			return
 		}
-		conn, err := dialRFB(fmt.Sprintf("%s:%d", vncDialHost(), port))
+		addr, stopTunnel, err := vncEndpoint(port)
 		if err != nil {
+			vncHost.Objects = []fyne.CanvasObject{conPlaceholder(err.Error())}
+			vncHost.Refresh()
+			return
+		}
+		vncTunnel = stopTunnel
+		conn, err := dialRFB(addr)
+		if err != nil {
+			stopTunnel()
+			vncTunnel = nil
 			vncHost.Objects = []fyne.CanvasObject{
 				conPlaceholder("vnc: " + err.Error())}
 			vncHost.Refresh()
