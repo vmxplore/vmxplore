@@ -47,7 +47,7 @@ type Dom struct {
 	CPUTimeNs  uint64 // cumulative; CPU%% is a delta between two samples
 	Disks      []Disk
 	AgentUp    bool
-	IPs        []string // guest-agent-reported, non-loopback
+	IPs        []string // non-loopback; guest-agent first, DHCP leases if none
 	Persistent bool     // transient domains vanish on destroy — verbs.go guards
 	Autostart  bool
 }
@@ -215,7 +215,17 @@ func (lv *LV) Estate() ([]Dom, error) {
 			ifs, err := lv.l.DomainInterfaceAddresses(ld,
 				uint32(libvirt.DomainInterfaceAddressesSrcAgent), 0)
 			if err != nil {
-				return // no channel or agent down — AgentUp stays false
+				// No agent. That is the NORMAL case for a cloud image —
+				// none of them ship qemu-guest-agent — so falling back to
+				// the hypervisor's own DHCP leases is the difference
+				// between an estate that shows where every VM landed and
+				// one that shows addresses only for guests somebody else
+				// built. AgentUp stays false either way: the badge is about
+				// the agent, not about whether we found an address.
+				if leased, lerr := lv.leaseAddrs(ld); lerr == nil {
+					d.IPs = append(d.IPs, leased...)
+				}
+				return
 			}
 			d.AgentUp = true
 			for _, i := range ifs {
@@ -258,7 +268,25 @@ func (lv *LV) CPUSample() (map[string]uint64, time.Time, error) {
 	return m, time.Now(), nil
 }
 
-// XML returns the full domain XML (the detail view's raw tab).
+// leaseAddrs is LeaseIPs for a domain handle the caller already has, so the
+// estate sweep does not pay a lookup-by-name per guest.
+func (lv *LV) leaseAddrs(d libvirt.Domain) ([]string, error) {
+	ifs, err := lv.l.DomainInterfaceAddresses(d,
+		uint32(libvirt.DomainInterfaceAddressesSrcLease), 0)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, i := range ifs {
+		for _, a := range i.Addrs {
+			if a.Addr != "" && a.Addr != "127.0.0.1" && a.Addr != "::1" {
+				out = append(out, a.Addr)
+			}
+		}
+	}
+	return out, nil
+}
+
 // LeaseIPs returns a domain's IPv4 addresses from the hypervisor's own
 // DHCP leases.
 //
@@ -291,6 +319,7 @@ func (lv *LV) LeaseIPs(name string) ([]string, error) {
 	return out, nil
 }
 
+// XML returns the full domain XML (the detail view's raw tab).
 func (lv *LV) XML(name string) (string, error) {
 	d, err := lv.l.DomainLookupByName(name)
 	if err != nil {

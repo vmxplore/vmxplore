@@ -691,7 +691,9 @@ func (m *ui) execConsole() tea.Cmd {
 	return tea.ExecProcess(c, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
-// execSSH connects to the guest's first agent-reported IP. User picked from
+// execSSH connects to the guest's first known IPv4 — from the agent when one
+// is running, otherwise from the hypervisor's DHCP leases, so an agentless
+// cloud image is still one keystroke from a shell. User picked from
 // $VMX_SSH_USER; on kldload the installed default is admin.
 func (m *ui) execSSH() tea.Cmd {
 	r, ok := m.curRow()
@@ -700,7 +702,7 @@ func (m *ui) execSSH() tea.Cmd {
 	}
 	ip := firstIPv4(r.D.IPs)
 	if ip == "" {
-		m.status = styWarn.Render("no guest IP (agent down?) — cannot ssh")
+		m.status = styWarn.Render("no guest IP (no agent, no DHCP lease) — cannot ssh")
 		return nil
 	}
 	user := os.Getenv("VMX_SSH_USER")
