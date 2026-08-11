@@ -102,9 +102,14 @@ prompt, a headless server's tty. Copy-paste, resize, the works.
 
 A from-scratch RFB (VNC) client renders the guest's framebuffer directly into
 the window, with full mouse, keyboard, and two-way clipboard. It speaks to
-qemu's VNC server over loopback (or over ssh for a remote host) — **no
-websockify, no noVNC, no virt-viewer.** The picture the web tools bridge to,
-delivered natively, on Wayland.
+qemu's VNC server over loopback — **no websockify, no noVNC, no
+virt-viewer.** The picture the web tools bridge to, delivered natively, on
+Wayland.
+
+Guests bind their console to `127.0.0.1`, never to every interface, and a
+remote hypervisor's console is reached through an `ssh -L` forward over the
+same authenticated channel libvirt is already using. No second credential, no
+extra open port, and nothing on the wire that a passer-by can type into.
 
 ### kldload — the substrate's toolset, one click
 
@@ -139,6 +144,17 @@ normal way — any ISO, incl. an Arch live ISO or a RHEL DVD). Paste a
 **post-install script** and it runs as root on first boot: build your own
 appliance, then seal it into a golden.
 
+**Nine cloud images**, each verified against its vendor's own checksum
+manifest before it is written to disk — Fedora, Debian, Ubuntu, CentOS
+Stream, Rocky, AlmaLinux, Amazon Linux, openSUSE Leap, Arch. RHEL takes a
+downloaded image plus your portal login or activation key, and entitles the
+guest on first boot.
+
+**And a desktop, if you want one.** Cloud images are headless by design, so
+pick GNOME, KDE or XFCE and it installs on first boot and reboots into the
+login screen. Five distros × three desktops, every package group read off
+the distribution's own repository rather than guessed.
+
 </td>
 <td valign="top">
 
@@ -146,6 +162,9 @@ appliance, then seal it into a golden.
 stamps out N zero-copy ZFS clones in a single gesture. "Give me five Fedora
 boxes," done. On a ZFS host cloning is instant and near-free — blocks are
 shared until a clone diverges.
+
+A desktop costs the same here as one machine: the golden installs it once and
+every clone inherits it.
 
 </td>
 </tr>
@@ -231,6 +250,37 @@ It waits for the first boot to finish and prints the appliance's real URL on
 stdout. `WF_ADMIN_PASS` is left out above on purpose: password fields left blank
 are generated from `crypto/rand` and written to `/root/` inside the guest, so
 the happy path needs no typing and no reused password.
+
+## What it refuses to do
+
+A tool that builds machines has to be careful about what it leaves behind.
+
+**Consoles are not open.** Guests bind VNC to loopback. A remote console goes
+through an `ssh -L` forward on libvirt's own channel, so there is no
+unauthenticated port on the network — RFB has no useful auth of its own, and
+an open console is a keyboard on someone else's machine.
+
+**Credentials are not left in cleartext.** The cloud-init seed stays attached
+to a guest as a cdrom for its whole life, so the login password goes in as a
+crypt SHA-512 hash. The seed is installed `0600`; it carries your ssh key and
+your post-install script too.
+
+**Images are verified before they are booted.** Every preset names its
+vendor's own checksum manifest — not a digest pinned here, which would be
+wrong the day the vendor rebuilds. A mismatch deletes the file, because the
+download path is also the cache and one bad transfer would otherwise poison
+every later build. Entries whose vendor publishes no manifest are not offered
+at all.
+
+**A failed build unwinds itself.** A `sudo` refusal partway through used to
+leave an orphan zvol and a seed behind, and the retry then failed on "dataset
+already exists" looking like a different bug. Resources are undone
+newest-first, and never a disk that existed before the build touched it.
+
+**Desktop recipes are verified, not guessed.** Every package group was read
+off the distribution's own repository. Pairs that have not been checked are
+not offered — the menu is generated from the same table that installs them,
+so it cannot promise something a repo will not satisfy.
 
 ## Three ways in
 
