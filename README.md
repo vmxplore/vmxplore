@@ -172,6 +172,17 @@ pick GNOME, KDE or XFCE and it installs on first boot and reboots into the
 login screen. Five distros × three desktops, every package group read off
 the distribution's own repository rather than guessed.
 
+<img src="assets/screenshots/desktop-gnome.png" width="900" alt="Fedora's GDM login screen rendered inside vmxplore's console"/>
+
+<sub><em>Picked from a dropdown, installed on first boot, rebooted into — Fedora
+Workstation's login screen, rendered in the console.</em></sub>
+
+<img src="assets/screenshots/console-4k-video.png" width="900" alt="4K 60fps video playing inside the guest, rendered through the built-in VNC client"/>
+
+<sub><em>And it is a real desktop: 4K/60 video playing in the guest, through the
+hand-rolled RFB client. RFB sends only the rectangles that changed, so a video
+in a window costs a fraction of a full redraw.</em></sub>
+
 </td>
 <td valign="top">
 
