@@ -5,8 +5,10 @@
 // the same BuildEstate the TUI renders — one code path, two surfaces.
 //
 // Output: the headline view from the design doc — group headers, one row per
-// domain: NAME STATE CPU MEM BACKING CLONE-OF SNAPS AGENT NOTES. CPU%% comes
-// from two cpu.time samples 600ms apart (a single sample cannot yield a rate).
+// domain: NAME STATE CPU MEM BACKING CLONE-OF SNAPS AGENT IP NOTES. CPU%%
+// comes from two cpu.time samples 600ms apart (a single sample cannot yield a
+// rate). IP is the same address the TUI and GUI show, so a script can answer
+// "where did this VM land?" without parsing `virsh domifaddr` per domain.
 package main
 
 import (
@@ -55,14 +57,15 @@ func runOnce(rs *Ruleset) int {
 	groups := BuildEstate(doms, dss, snaps, rs, LoadAnnotations())
 
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "  DOMAIN\tSTATE\tCPU\tMEM\tBACKING\tCLONE OF\tSNAPS\tAGENT\tNOTES")
+	fmt.Fprintln(w, "  DOMAIN\tSTATE\tCPU\tMEM\tBACKING\tCLONE OF\tSNAPS\tAGENT\tIP\tNOTES")
 	for _, g := range groups {
-		fmt.Fprintf(w, "▸ %s (%d)\t\t\t\t\t\t\t\t\n", g.Label, len(g.Rows))
+		fmt.Fprintf(w, "▸ %s (%d)\t\t\t\t\t\t\t\t\t\n", g.Label, len(g.Rows))
 		for _, r := range g.Rows {
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				r.D.Name, r.D.State, cpuCell(cpu, r), memCell(r),
 				cellOr(r.Backing, "-"), cellOr(shortOrigin(r.Origin), "-"),
-				snapCell(r), agentCell(r), strings.Join(r.Notes, "; "))
+				snapCell(r), agentCell(r), ipCell(r),
+				strings.Join(r.Notes, "; "))
 		}
 	}
 	w.Flush()
@@ -137,6 +140,15 @@ func snapCell(r Row) string {
 		return fmt.Sprintf("%d✎%d", r.SnapTotal, r.SnapHuman)
 	}
 	return fmt.Sprintf("%d", r.SnapTotal)
+}
+
+// ipCell renders the guest's first IPv4 — "-" when it has none, which for a
+// running domain means neither the agent nor a DHCP lease knows where it is
+// (static addressing, a bridge the hypervisor does not serve, or a guest that
+// has not finished booting). One address only: the column is for identifying
+// the machine, not auditing its NICs — the detail view lists them all.
+func ipCell(r Row) string {
+	return cellOr(firstIPv4(r.D.IPs), "-")
 }
 
 func agentCell(r Row) string {
