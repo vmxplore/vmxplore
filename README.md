@@ -29,6 +29,23 @@ that window: a native GUI (and a static TUI for ssh) over the libvirt you
 already have. Nothing replaced, no appliance, no agent, no reinstall; `virsh`
 is never fought, only shown.
 
+## Push-button machines
+
+Pick a distro. Pick a desktop. Click. That is the whole gesture, and it ends
+at a login screen.
+
+| | |
+|---|---|
+| **Nine cloud images, on tap** | Fedora · Debian · Ubuntu · CentOS Stream · Rocky · AlmaLinux · Amazon Linux · openSUSE Leap · Arch. Each verified against its vendor's own checksum manifest before it touches a disk. Plus RHEL, entitled with your portal login or activation key. |
+| **A desktop, if you want one** | GNOME, KDE or XFCE — installed on first boot and rebooted into. Fifteen verified combinations, every package group read off the distribution's own repository rather than guessed. |
+| **Applications, configured** | Pick an app, fill in two or three fields, get a VM already running it. The catalogue encodes the four moves every "how to self-host X" post makes — pinned artifact, config, database, unit file — so a weekend becomes a click. |
+| **Your own appliances** | Paste a first-boot script and it runs as root. Build the machine you actually want, then seal it into a golden. |
+| **Fleets, near-free** | One golden, N zero-copy ZFS clones. Blocks are shared until a clone diverges, so the tenth machine costs almost nothing — and a desktop is installed once on the golden, not once per clone. |
+| **27 substrate tools** | On a kldload host the estate grows a tile launcher: cluster builds, golden images, ZFS labs, exports, recovery, demos — grouped in six sections, colour-coded by what they do. |
+
+Every one of those is a template that turns into a running machine in a
+gesture. None of them asks you to read a wiki first.
+
 ## Highlights
 
 - **A modern VNC client, built from scratch** — the graphics console is a
