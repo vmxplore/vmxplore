@@ -103,6 +103,19 @@ var cloudImages = map[string]CloudImage{
 	},
 	// The SUSE family was missing entirely, which made the catalogue read as
 	// "Red Hat, Debian, or Arch" when the substrate has no such opinion.
+	// Cloud-first by construction — cloud-init is native rather than a port,
+	// so the one-touch fields work without any coaxing.
+	//
+	// WARN: the filename is version-pinned even though the path says
+	// "latest", so this 404s the day Amazon publishes a new build. There is
+	// no stable alias to point at. VMX_CATALOG_LIVE=1 is what catches it —
+	// run it after any vendor bump.
+	"amazon": {
+		"https://cdn.amazonlinux.com/al2023/os-images/latest/kvm/al2023-kvm-2023.12.20260803.3-kernel-6.1-x86_64.xfs.gpt.qcow2",
+		"almalinux9",
+		"https://cdn.amazonlinux.com/al2023/os-images/latest/kvm/SHA256SUMS",
+		"sha256",
+	},
 	"opensuse": {
 		"https://download.opensuse.org/repositories/Cloud:/Images:/Leap_15.6/images/openSUSE-Leap-15.6.x86_64-NoCloud.qcow2",
 		"opensuse15.6",
@@ -127,7 +140,7 @@ var cloudImages = map[string]CloudImage{
 
 // CloudDistros lists the presets in menu order.
 func CloudDistros() []string {
-	return []string{"fedora", "debian", "ubuntu", "centos", "rocky", "alma", "opensuse", "arch"}
+	return []string{"fedora", "debian", "ubuntu", "centos", "rocky", "alma", "amazon", "opensuse", "arch"}
 }
 
 // NewVMSpec is everything the dialog collects. Two build modes:
@@ -149,6 +162,7 @@ type NewVMSpec struct {
 	Password  string // cloud mode only
 	SSHKey    string // cloud mode only — one authorized_keys line
 	PostInst  string // cloud mode only — bash run as root on first boot
+	Desktop   string // cloud mode only — "", "none", "gnome", "kde", "xfce"
 
 	// RHEL entitlement. Red Hat's KVM guest images sit behind an
 	// authenticated CDN, so unlike every other preset the IMAGE cannot be
@@ -445,6 +459,12 @@ func userData(s NewVMSpec) string {
 	// guest's /var/log/cloud-init-output.log. This is what turns a stock
 	// cloud image into somebody's own appliance (then Make Golden → clone).
 	post := s.PostInst
+	// Order matters: entitle first (nothing installs without repos), then
+	// the desktop, then the operator's own script — which may well want to
+	// configure the desktop the step above just installed.
+	if d := desktopPostInstall(s.Distro, s.Desktop); d != "" {
+		post = d + "\n" + post
+	}
 	if reg := rhelPostInstall(s); reg != "" {
 		post = reg + "\n" + post
 	}
