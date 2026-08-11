@@ -80,20 +80,6 @@ gesture. None of them asks you to read a wiki first.
 - **One static binary, capability-tiered** — copy `vmx` to any libvirt box; the
   extra powers light up by probe (ZFS, then kldload), never a licence check.
 
-**What you're looking at** — one screen, no hidden state:
-
-- **The estate tree, left** — every domain, grouped (off groups collapse
-  themselves), each row two lines deep: name · state · CPU over specs · guest
-  IP · zvol usage · snapshot count · a `⑂` when it's a clone. Colour reads at
-  a glance — green running, brown dormant, amber flagged. Dot-click to batch-
-  select; ctrl/shift-click for a range; then Start / Stop / Reboot / Delete the
-  whole set at once.
-- **The console, right-top** — three tabs (below).
-- **Details & actions, right-bottom** — the full dossier (uuid, disks, IPs,
-  dataset, clone lineage, snapshot classes) and the verb toolbar. Every
-  mutation shows its exact `virsh`/`zfs` command and is audit-logged; the
-  destructive ones arm only when you retype the domain name.
-
 ## The console tabs
 
 The console pane is the heart of it — pick a running VM and the right tab
