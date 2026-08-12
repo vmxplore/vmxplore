@@ -26,16 +26,18 @@ func TestAudioArgsAlwaysGiveTheGuestACard(t *testing.T) {
 	}
 }
 
-// The BACKEND is conditional, and the condition is the reachability probe.
-// Whatever this host's answer is, the two must agree — an --audio argument
-// without a reachable socket is the failure this file exists to prevent.
-func TestAudioBackendTracksReachability(t *testing.T) {
-	args := audioArgs(Target{})
-	offered := slices.Contains(args, "--audio")
-	if reachable := hostAudioReachable(); offered != reachable {
-		t.Errorf("--audio offered = %v but hostAudioReachable() = %v; "+
-			"offering a backend qemu cannot connect to fails VM startup",
-			offered, reachable)
+// The create path must NEVER offer a host audio backend, whatever the probe
+// says. qemu treats an unreachable backend as fatal, and libvirt starts qemu
+// without XDG_RUNTIME_DIR — so a backend that works from a shell can still
+// leave every domain unable to start. Wiring the card to the host is an
+// explicit action on an existing domain, where it can be verified.
+func TestCreatePathNeverOffersAHostBackend(t *testing.T) {
+	for _, tgt := range []Target{{}, {SSHHost: "fiend.unixbox.net"}} {
+		if args := audioArgs(tgt); slices.Contains(args, "--audio") {
+			t.Errorf("audioArgs(%+v) = %v; the create path must not wire "+
+				"the host backend — an unreachable one makes the domain "+
+				"fail to start", tgt, args)
+		}
 	}
 }
 

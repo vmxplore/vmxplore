@@ -161,13 +161,20 @@ func hostAudioReachable() bool {
 	// before it ever reads stdin.
 	probe := []string{"-machine", "none", "-display", "none",
 		"-monitor", "stdio", "-audiodev", "pipewire,id=probe"}
+	// Answer the question libvirt will ask, not the one this shell can.
+	// libvirt starts qemu with a clean environment and points it at the
+	// socket via runtimeDir; a probe that inherits XDG_RUNTIME_DIR from an
+	// interactive session reports success on hosts where every domain fails.
+	runtimeEnv := "PIPEWIRE_RUNTIME_DIR=" + pipewireRuntimeDir()
 	var cmd *exec.Cmd
 	if cur, err := user.Current(); err == nil && cur.Username == who {
 		// Guests already run as us: no sudo, and no passwordless-sudo
 		// requirement just to answer a question about our own session.
-		cmd = exec.CommandContext(ctx, qemuBin, probe...)
+		args := append([]string{"-i", runtimeEnv, qemuBin}, probe...)
+		cmd = exec.CommandContext(ctx, "env", args...)
 	} else {
-		args := append([]string{"-n", "-u", who, qemuBin}, probe...)
+		args := append([]string{"-n", "-u", who, "env", "-i", runtimeEnv,
+			qemuBin}, probe...)
 		cmd = exec.CommandContext(ctx, "sudo", args...)
 	}
 	cmd.Stdin = strings.NewReader("quit\n")
@@ -259,10 +266,34 @@ func pipewireSocket() string {
 func audioArgs(tgt Target) []string {
 	args := []string{"--sound", soundModel}
 	// SSHHost is empty exactly when the target is this machine (see Target).
-	if tgt.SSHHost == "" && hostAudioReachable() {
-		args = append(args, "--audio", "type=pipewire")
-	}
+	//
+	// The host BACKEND is deliberately not wired here. Two reasons, both
+	// measured on 2026-08-12:
+	//
+	//  1. It is unsafe at create time. qemu treats an unreachable audio
+	//     backend as fatal, so a wrong answer does not make a quiet guest —
+	//     it makes a domain that will not start. The probe cannot fully
+	//     answer for libvirt's environment from this process.
+	//  2. virt-install cannot express it. libvirt needs
+	//     <audio type='pipewire' runtimeDir='...'> because it starts qemu
+	//     without XDG_RUNTIME_DIR; --audio does not accept the attribute,
+	//     and injecting it by XPath appends a SECOND <audio> element,
+	//     failing with "Missing required attribute 'id' in element 'audio'".
+	//
+	// So every guest gets a card, and connecting that card to the host's
+	// speakers is an explicit, reversible action on an existing domain —
+	// where it can be verified by starting the machine. See audioHostHint.
+	_ = tgt // the backend decision moved out of the create path; see above
 	return args
+}
+
+// pipewireRuntimeDir is the directory holding the session's PipeWire socket,
+// which libvirt must hand to qemu explicitly.
+func pipewireRuntimeDir() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return dir
+	}
+	return "/run/user/" + strconv.Itoa(os.Getuid())
 }
 
 // audioHostHint is the one-line fix for a host whose qemu user cannot reach
