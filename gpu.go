@@ -67,7 +67,15 @@ func hostShell(script string) string {
 	if target.SSHHost == "" {
 		cmd = exec.Command("sh", "-c", script)
 	} else {
-		cmd = exec.Command("ssh", target.SSHHost, "sh", "-c", script)
+		// Through sshArgv so the script arrives as ONE word. It used to be
+		// exec.Command("ssh", host, "sh", "-c", script): ssh joins its
+		// arguments with spaces and the remote login shell re-parses them, so
+		// `sh -c` received only the first word of a multi-line script and the
+		// rest became positional args — the remote probe answered with shell
+		// syntax errors, hostShell swallowed the non-zero exit, and a remote
+		// hypervisor silently reported no GPUs at all.
+		argv := sshArgv(target.SSHHost, "sh", "-c", script)
+		cmd = exec.Command(argv[0], argv[1:]...)
 	}
 	out, err := cmd.Output()
 	if err != nil {

@@ -35,6 +35,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -119,8 +120,11 @@ func planSnapshot(r Row, suffix string) (verbPlan, error) {
 		suffix = time.Now().Format("20060102-150405")
 	}
 	name := "manual-" + suffix
-	if strings.ContainsAny(suffix, " @/") {
-		return verbPlan{}, fmt.Errorf("snapshot name must not contain spaces, @ or /")
+	// validZFSName, not a blacklist: this suffix ends up inside a zfs argv that
+	// the remote login shell re-parses on an ssh target, so `manual-x;reboot`
+	// was a command on the hypervisor while passing the old " @/" check.
+	if err := validZFSName(suffix); err != nil {
+		return verbPlan{}, fmt.Errorf("snapshot %w", err)
 	}
 	warn := ""
 	if r.D.State == "running" {
@@ -236,8 +240,11 @@ func planClone(r Row, newName string) (verbPlan, error) {
 		return verbPlan{}, fmt.Errorf("virt-clone not found — install virt-install")
 	}
 	newName = strings.TrimSpace(newName)
-	if newName == "" || strings.ContainsAny(newName, " @/") {
-		return verbPlan{}, fmt.Errorf("clone name must be non-empty, no spaces, @ or /")
+	// The name becomes a dataset component, a snapshot suffix AND a libvirt
+	// domain name, so it passes the same allowlist the snapshot suffix does —
+	// see validZFSName for why an allowlist and not a metacharacter check.
+	if err := validZFSName(newName); err != nil {
+		return verbPlan{}, fmt.Errorf("clone %w", err)
 	}
 	if newName == r.D.Name {
 		return verbPlan{}, fmt.Errorf("clone name must differ from the source")
@@ -361,11 +368,17 @@ func runPlan(p verbPlan) error {
 	return nil
 }
 
+// auditLogFailed fires once, ever, when neither audit path can be written.
+// Best-effort must not mean silent: "every mutation is audited" is a claim
+// this tool makes, so an operator on a host where it is not true deserves to
+// know — once, on stderr, without a warning per verb.
+var auditLogFailed sync.Once
+
 // auditLog appends "when | who | command | rc" to /var/log/kldload/vmx.log,
 // falling back to the user's state dir when that path isn't writable (non-
 // root on a non-kldload host). Best-effort by design: an unwritable audit
 // trail must not block an already-confirmed verb, and the command itself
-// still shows in the status line.
+// still shows in the status line — but it does say so once, see above.
 func auditLog(cmdline string, rc int) {
 	who := "?"
 	if u, err := user.Current(); err == nil {
@@ -394,4 +407,10 @@ func auditLog(cmdline string, rc int) {
 			return
 		}
 	}
+	auditLogFailed.Do(func() {
+		fmt.Fprintln(os.Stderr,
+			"vmx: WARNING: audit log not writable (/var/log/kldload/vmx.log or "+
+				"~/.local/state/vmxplore/vmx.log) — commands still run and are "+
+				"shown, but nothing is being recorded")
+	})
 }

@@ -17,9 +17,29 @@
 // different host re-sets it.
 //
 // Notes: the ssh host is parsed from the libvirt URI's user@host, so a
-// working `virsh -c qemu+ssh://…` implies working `ssh host` — same key,
-// same known_hosts. That is also what carries the console: guests bind VNC
-// to loopback, and a remote console is an ssh -L forward to it.
+// working `virsh -c qemu+ssh://…` implies working `ssh host`. That is also
+// what carries the console: guests bind VNC to loopback, and a remote console
+// is an ssh -L forward to it.
+//
+// THE TRUST STORY, because a remote hypervisor is a security boundary and two
+// different ssh implementations are in play here:
+//
+//   - The estate read is go-libvirt's own pure-Go ssh dialer. For the `ssh`
+//     transport it verifies the host against ~/.ssh/known_hosts and FAILS
+//     CLOSED on an unknown or changed key (only ?no_verify=1 in the URI opts
+//     out). It does NOT read ~/.ssh/config, so a Host alias, IdentityFile,
+//     User or ProxyJump there is invisible to it — it tries the agent, then
+//     ~/.ssh/{identity,id_dsa,id_ecdsa,id_ed25519,id_rsa} in that order.
+//   - Everything that shells out (zfs, the console's -L forward) is the system
+//     ssh binary, which DOES read ~/.ssh/config — including a
+//     StrictHostKeyChecking=no that a lab machine may have set globally. So
+//     sshArgv sets the policy explicitly rather than inheriting whatever is
+//     ambient: an unverified channel is not something to discover later, on
+//     the connection that runs `zfs destroy -r`.
+//
+// The practical consequence of the asymmetry: if `ssh myhost` works only
+// because of an ~/.ssh/config stanza, `--connect myhost` may still fail on
+// authentication. Connect with the real user@hostname in that case.
 //
 // HISTORY 2026-08-10: guests were created with `--graphics vnc,listen=
 // 0.0.0.0` and the console dialled the host's VNC port over plain TCP. RFB
@@ -30,6 +50,7 @@
 package main
 
 import (
+	"fmt"
 	"net/url"
 	"os/exec"
 	"strings"
@@ -85,31 +106,102 @@ func virsh(args ...string) []string {
 	return append([]string{"virsh", "-c", target.LibvirtURI}, args...)
 }
 
+// sshFlags is the policy every non-interactive ssh command in this tool runs
+// under. There is exactly one place that builds an ssh argv for a command
+// (sshArgv) and one for the console forward (vncEndpoint), and both use these,
+// so the trust and timeout story cannot drift between them.
+//
+//	BatchMode=yes             — never sit at a password/passphrase prompt.
+//	                            A GUI has no terminal to type into and a TUI
+//	                            would hang mid-render; failing loudly is the
+//	                            only honest outcome.
+//	StrictHostKeyChecking=accept-new
+//	                          — trust on first use, refuse a CHANGED key.
+//	                            Not "no": the estate connection has already
+//	                            verified this host against ~/.ssh/known_hosts
+//	                            (see the banner), so in practice the key is
+//	                            known by the time we get here and this only
+//	                            stops an ambient StrictHostKeyChecking=no from
+//	                            silently downgrading us.
+//	ConnectTimeout=10         — a hypervisor that has gone away must not wedge
+//	                            the 30s ZFS tick forever.
+//
+// Deliberately NOT set: ControlMaster/ControlPersist. Multiplexing would save
+// a handshake on every tick, but a wedged master socket makes every later
+// command hang on a connect that ConnectTimeout does not cover — trading a
+// visible cost for an invisible failure mode.
+var sshFlags = []string{
+	"-o", "BatchMode=yes",
+	"-o", "StrictHostKeyChecking=accept-new",
+	"-o", "ConnectTimeout=10",
+}
+
+// sshArgv builds an ssh argv that runs one command on the target host.
+//
+// The remote command is passed as a SINGLE shell-quoted word, which is the
+// whole point of this helper. ssh does not exec an argv on the far side: it
+// joins the arguments with spaces and hands the result to the remote login
+// shell, which re-parses it. So `ssh host zfs snapshot 'p/v@a;reboot'` runs
+// reboot, while the identical local exec.Command argv cannot. Quoting here
+// gives the remote path the same "argv, never a shell string" property the
+// local path has by construction.
+//
+// Args:    host — user@host; cmd — the argv to run there.
+// Returns: an argv for exec.Command.
+func sshArgv(host string, cmd ...string) []string {
+	argv := append([]string{"ssh"}, sshFlags...)
+	return append(argv, host, shellQuoteArgv(cmd...))
+}
+
+// shellQuoteArgv renders an argv as one shell command string that survives
+// re-parsing on the far side: every element single-quoted (shellQuote, shared
+// with the post-installer generator in newvm.go), joined by spaces. Nothing is
+// special inside single quotes, so this is total rather than a blacklist of
+// metacharacters — which is the property that makes the remote path as safe as
+// exec.Command is locally.
+func shellQuoteArgv(args ...string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
+}
+
 // zfsArgv builds a zfs argv that runs on the hypervisor: locally when the
 // target is local, over ssh when remote (the pool lives on the remote box,
-// not here).
+// not here). Remote args are quoted by sshArgv — see the note there for why
+// that is a safety property and not a formality.
 func zfsArgv(args ...string) []string {
 	if target.SSHHost == "" {
 		return append([]string{"zfs"}, args...)
 	}
-	return append([]string{"ssh", target.SSHHost, "zfs"}, args...)
+	return sshArgv(target.SSHHost, append([]string{"zfs"}, args...)...)
 }
 
-// vncDialHost is where the RFB client connects for a guest's VNC port:
-// loopback locally, the hypervisor host when remote.
-func vncDialHost() string {
-	if target.Host == "local" || target.SSHHost == "" {
-		return "127.0.0.1"
+// validZFSName gates every operator-typed name component before it can reach a
+// zfs argv — a snapshot suffix or a clone name.
+//
+// The allowed set is ZFS's own for a dataset/snapshot component: alphanumerics
+// plus _ - : . — so this rejects nothing ZFS would have accepted. It is an
+// allowlist rather than a check for spaces/@// because the local and remote
+// paths have different safety properties (see sshArgv), and a rule that
+// enumerates the dangerous characters is a rule that misses the next one.
+// Quoting in sshArgv is the belt; this is the braces, and it also turns a
+// remote-shell surprise into an early, readable error.
+func validZFSName(s string) error {
+	if s == "" {
+		return fmt.Errorf("name must not be empty")
 	}
-	h := target.Host
-	if i := strings.IndexByte(target.SSHHost, '@'); i >= 0 {
-		h = target.SSHHost[i+1:]
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == ':' || r == '.':
+		default:
+			return fmt.Errorf(
+				"name may use letters, digits and _-:. only (%q is not allowed)", r)
+		}
 	}
-	// strip any :port from the ssh host spec
-	if i := strings.IndexByte(h, ':'); i >= 0 {
-		h = h[:i]
-	}
-	return h
+	return nil
 }
 
 // ─── console transport ───────────────────────────────────────────────────

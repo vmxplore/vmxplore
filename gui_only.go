@@ -144,13 +144,18 @@ func vncEndpoint(port int) (string, func(), error) {
 	local := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 
-	// -N: set up the forward and no remote command. BatchMode: never sit at
-	// a password prompt with no terminal to type into — fail instead.
-	cmd := exec.Command("ssh", "-N",
-		"-o", "BatchMode=yes",
+	// -N: set up the forward and run no remote command. The shared sshFlags
+	// carry BatchMode (never sit at a password prompt with no terminal to type
+	// into), the host-key policy and the connect timeout — one policy for every
+	// ssh this tool starts, see remote.go. ExitOnForwardFailure is specific to
+	// a forward: without it ssh stays up having bound nothing and the dial
+	// below waits out its timeout for a tunnel that will never exist.
+	sshOpts := append([]string{"-N"}, sshFlags...)
+	sshOpts = append(sshOpts,
 		"-o", "ExitOnForwardFailure=yes",
 		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", local, port),
 		target.SSHHost)
+	cmd := exec.Command("ssh", sshOpts...)
 	if err := cmd.Start(); err != nil {
 		return "", noop, fmt.Errorf("ssh tunnel for the console failed to start: %w", err)
 	}
