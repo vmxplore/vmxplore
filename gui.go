@@ -950,7 +950,7 @@ func runGUI(rs *Ruleset) {
 	// The fullscreen trio is declared here and defined far below, once the
 	// tabs and the window content it swaps between exist. A focused console
 	// needs the toggle at attach time, which is long before that.
-	var enterFullScreen, exitFullScreen, toggleFullScreen func()
+	var exitFullScreen, toggleFullScreen func()
 	detachVNC := func() {
 		if vncConn != nil {
 			vncConn.Close()
@@ -2651,85 +2651,125 @@ func runGUI(rs *Ruleset) {
 	var mainContent fyne.CanvasObject
 	consoleCard := cardTight(container.NewBorder(nil, nil, nil, nil, tabs))
 
-	// ⛶ — the guest, the whole display, nothing else.
+	// ⛶ — the console IS the window.
 	//
-	// Two things happen together: the selected tab's content is handed over
-	// edge to edge with no tab bar, card border or window padding, and the
-	// window itself goes true fullscreen. On a 2560x1440 guest that chrome
-	// is the difference between reading the screen and squinting at it, and
-	// every pixel of it shows controls nobody is using.
+	// One window with one thing in it: the selected tab's content handed over
+	// edge to edge, with no estate pane, no details pane, no tab bar, no card
+	// border and no window padding. On a 2560x1440 guest that chrome is the
+	// difference between reading the screen and squinting at it, and every
+	// pixel of it shows controls nobody is using mid-console.
 	//
-	// HISTORY: this used to fill the WINDOW only and deliberately NOT call
-	// SetFullScreen, because Fyne chooses the target monitor itself and
-	// chooses it badly — read getMonitorForWindow in its glfw driver: under
-	// Wayland it skips the geometry search outright, and on X11 a miss falls
-	// through to GetPrimaryMonitor. On a three-head desktop it threw the
-	// console onto monitor 1 from a window that was on another. But a
-	// fullscreen button that leaves the window exactly the same size reads
-	// as a broken button, and was reported as one. Real fullscreen is what
-	// the icon promises, so that is what it does; if a multi-head desktop
-	// still sends it to the wrong head, the WM's own fullscreen composes
-	// with the chrome-stripping half exactly as it did before.
+	// On X11 the window goes fullscreen from the same toggle, so one key does
+	// the whole job. On Wayland it deliberately does not — see
+	// driveWindowFullScreen for why the toolkit cannot pick the right monitor
+	// there, and why the compositor's own fullscreen key is the correct tool
+	// for the frame. The two compose to the same result either way.
 	//
-	// WARN: the restore control is the ONLY way back out. Escape cannot be
-	// the escape — the VNC widget owns the keyboard and forwards it to the
-	// guest, so anything that wants Escape (vi, a firmware menu, the editor
-	// in the writing appliance) would eat it. It lives in a hover-reveal
-	// corner (see hoverReveal): invisible until the pointer arrives, so it
-	// costs no guest pixels for the whole session to be useful for the one
-	// click that ends it.
+	// HISTORY: two designs sat here before this one and both failed the same
+	// way — by trying to own the window as well as its contents. The second
+	// (b44) inverted the control and polled w.FullScreen() on the theory that
+	// the WM owns fullscreen and vmxplore merely follows it. It cannot: read
+	// fyne/internal/driver/glfw and w.fullScreen is assigned in exactly two
+	// places, SetFullScreen and SetFullScreenSecondary, with no window-state
+	// callback anywhere writing it. FullScreen() reports what WE last asked
+	// for, never what the compositor did, so the WM's own fullscreen key left
+	// the flag false, the poller saw no edge, and the operator got a
+	// fullscreen window still showing three panes — "fullscreen in a 3rd
+	// window instead of fullscreen in 1 window". The poller could only ever
+	// echo our own call back at us.
+	//
+	// WARN: Escape cannot be the escape — the VNC widget owns the keyboard
+	// and forwards it to the guest, so anything that wants Escape (vi, a
+	// firmware menu, the editor in the writing appliance) would eat it. The
+	// two ways back out are the same chord that got you in (the viewer's
+	// TypedShortcut catches it even with the console focused, see vnc.go) and
+	// the restore control, which lives in a hover-reveal corner: invisible
+	// until the pointer arrives, so it costs no guest pixels for the whole
+	// session to be useful for the one click that ends it.
 	//
 	// There is no paste button and no fullscreen button. Both were icons in
 	// the pane's top-right corner and both are gone: paste has always been
 	// Ctrl+V (TypedShortcut sends the host clipboard as RFB cut text AND
 	// types it as keystrokes, so it lands in a guest with or without a
-	// clipboard agent), and fullscreen is Shift+F12. An icon that duplicates
+	// clipboard agent), and fullscreen is a chord (shift+insert by default,
+	// VMX_FULLSCREEN_KEY to change it). An icon that duplicates
 	// a working key is chrome sitting on top of a guest for the whole
 	// session to save one keystroke.
 	restoreBtn := widget.NewButtonWithIcon("", theme.ViewRestoreIcon(), func() {
 		exitFullScreen()
 	})
 	restoreBtn.Importance = widget.LowImportance
-	exitFullScreen = func() {
-		w.SetFullScreen(false)
+	// consoleOnly is the whole mechanism: swap the window's content between
+	// the three-pane view and the selected tab standing alone, and — where
+	// the toolkit can be trusted to do it on the right monitor — put the
+	// window itself fullscreen too.
+	//
+	// It is idempotent and is the ONLY place either half is driven, so the
+	// chord, the viewer's own shortcut and the restore corner cannot disagree
+	// about what state the window is in.
+	driveWindow := driveWindowFullScreen()
+	consoleOnly := false
+	setConsoleOnly := func(on bool) {
+		if on == consoleOnly {
+			return
+		}
+		consoleOnly = on
+		// Window first, then content: Fyne lays the new content out against
+		// the window it is going into, so doing this the other way round
+		// sizes the console for the old frame and then stretches it.
+		if driveWindow {
+			w.SetFullScreen(on)
+		}
+		if on {
+			// The way back, said out loud for a few seconds and then gone.
+			//
+			// WHY: entering this mode removes every visible affordance at
+			// once — the header that prints the chord, the tab bar, the verb
+			// row — so an operator who arrived here by pressing a key they
+			// half-remembered has nothing on screen telling them how to
+			// leave. The restore control is a hover-reveal corner precisely
+			// so it costs no guest pixels, which also makes it invisible to
+			// anyone not already looking for it. A banner that names the key
+			// and then removes itself pays the pixel cost once instead of for
+			// the whole session.
+			exitHint := widget.NewLabel(
+				fullScreenKeyLabel + " or the top-right corner to go back")
+			exitHint.Importance = widget.LowImportance
+			hint := container.NewHBox(layout.NewSpacer(), exitHint,
+				layout.NewSpacer())
+			// SetPadded(false) is the last of the border: Fyne insets window
+			// content by a theme margin, which around a guest that should
+			// reach the window's edges reads as a stray frame.
+			w.SetPadded(false)
+			w.SetContent(container.NewStack(
+				tabs.Selected().Content,
+				container.NewVBox(container.NewHBox(layout.NewSpacer(),
+					newHoverReveal(restoreBtn))),
+				container.NewVBox(hint)))
+			// Captured by value: a second toggle before this fires must not
+			// hide the NEXT banner, and leaving the mode drops the container
+			// on the floor anyway.
+			go func(h *fyne.Container) {
+				time.Sleep(4 * time.Second)
+				fyne.Do(func() { h.Hide() })
+			}(hint)
+			return
+		}
 		w.SetPadded(true) // the window's own margin comes back with the chrome
 		w.SetContent(mainContent)
 		// the borrowed pane is going back into its tab: Fyne needs telling
 		// that the tab's content moved parents and back again
 		tabs.Refresh()
 	}
-	enterFullScreen = func() {
-		pane := tabs.Selected().Content
-		// SetPadded(false) is the last of the border: Fyne insets window
-		// content by a theme margin, which on a fullscreen window is a
-		// visible frame around a guest that should be reaching the edges.
-		w.SetPadded(false)
-		w.SetContent(container.NewStack(
-			pane,
-			container.NewVBox(container.NewHBox(layout.NewSpacer(),
-				newHoverReveal(restoreBtn)))))
-		// The window itself, last: content first means the guest is already
-		// laid out at the new size when the compositor hands us the display,
-		// so there is no frame of letterboxed old geometry on the way in.
-		w.SetFullScreen(true)
-	}
-	toggleFullScreen = func() {
-		if w.FullScreen() {
-			exitFullScreen()
-			return
-		}
-		enterFullScreen()
-	}
+	exitFullScreen = func() { setConsoleOnly(false) }
+	toggleFullScreen = func() { setConsoleOnly(!consoleOnly) }
 	// Two registrations for one key, because there are two worlds it has to
 	// work in. The canvas shortcut covers the window at large — the operator
 	// is in the estate tree or a dialog and wants the console big. The
 	// viewer's own TypedShortcut (see vnc.go) covers the case the canvas
 	// cannot: a focused console swallows the keyboard by design, which is
 	// exactly when this key is most wanted and would otherwise be forwarded
-	// to the guest as an unremarkable F12.
-	fullScreenKey := &desktop.CustomShortcut{
-		KeyName: fyne.KeyF12, Modifier: fyne.KeyModifierShift,
-	}
+	// to the guest as an unremarkable keypress.
 	w.Canvas().AddShortcut(fullScreenKey, func(fyne.Shortcut) { toggleFullScreen() })
 	// ── the manual: the family front page, shipped in the binary ─────────
 	//
@@ -2749,9 +2789,19 @@ func runGUI(rs *Ruleset) {
 	// glyph rather than as the way to the documentation.
 	manualBtn := widget.NewButtonWithIcon("Manual", theme.HelpIcon(),
 		func() { showManual() })
+	// The chord, printed where the console is. It is configurable, it has
+	// changed three times, and an operator who does not know the current
+	// value has no way to discover it — the key is not a menu item, and
+	// guessing wrong sends the guess straight to the guest, which is how
+	// Shift+F12 came to open Chrome's debugger instead of doing anything
+	// here. Rendered as disabled body text so it reads as a caption rather
+	// than a control: it is the header row, not guest pixels, so it costs
+	// nothing to leave up for the whole session.
+	fsHint := widget.NewLabel("⛶ " + fullScreenKeyLabel)
+	fsHint.Importance = widget.LowImportance
 	consoleHead := container.NewBorder(nil, nil,
 		heading("CONSOLE", acGold),
-		container.NewHBox(manualBtn))
+		container.NewHBox(fsHint, manualBtn))
 	consolePane := gap(container.NewBorder(consoleHead, nil, nil, nil,
 		consoleCard))
 	rightBottom := gap(card(container.NewBorder(

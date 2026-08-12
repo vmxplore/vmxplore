@@ -97,6 +97,9 @@ Environment:
   VMX_SSH_USER   user for the TUI's ssh-to-guest verb
                  (default: current user; admin on a kldload host)
   VMX_FULLSCREEN_KEY  the GUI's fullscreen chord (default alt+insert)
+  VMX_FULLSCREEN_WINDOW  always|never — also fullscreen the window itself.
+                      Defaults to on under X11, off under Wayland, where the
+                      toolkit cannot tell which monitor the window is on.
   VMX_THEME      dark | light — override the terminal-background
                  auto-detection for the TUI palette
 

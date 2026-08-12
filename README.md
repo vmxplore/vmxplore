@@ -98,13 +98,19 @@ attaches automatically, in-window, no external viewer. Five tabs, in the
 order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
 machine you have, then make one, with the substrate's own toolset last.
 
-There is no button bar. **Shift+F12** gives the pane the whole display with
-no chrome at all — and asks the guest to change resolution to match, so the
-picture fills the screen instead of sitting letterboxed inside it. **Ctrl+V**
+There is no button bar. **Alt+Insert** collapses the three-pane layout to the
+console alone and puts the window fullscreen on the host in one move — estate,
+details, tabs and border gone, screen filled — and asks the guest to change
+resolution to match, so the picture fills it instead of sitting letterboxed
+inside it. The same chord comes back out. **Ctrl+V**
 pastes the host clipboard into the guest (as RFB cut text *and* as
 keystrokes, so it lands whether or not the guest runs a clipboard agent).
-Both were icons once; an icon in the corner of a console covers guest pixels
-for a whole session to save one keystroke. If your hand is on the mouse, the
+The chord is set with `VMX_FULLSCREEN_KEY` (`alt+delete`, `ctrl+alt+f`,
+whatever your guests leave free — Shift-only chords are rejected at startup,
+see below) — it is the one key a guest can never
+receive, and every candidate collides with something somewhere. Both controls
+were icons once; an icon in the corner of a console covers guest pixels for a
+whole session to save one keystroke. If your hand is on the mouse, the
 top-right corner of a fullscreen console reveals a restore button on hover.
 
 **Ctrl+C, Ctrl+X and Ctrl+A go to the guest**, untouched — so Ctrl+C

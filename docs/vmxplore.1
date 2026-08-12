@@ -243,20 +243,53 @@ Both of its controls are keys, because both used to be icons in the pane's
 top-right corner and an icon there sits on top of guest pixels for an entire
 session — over whatever the guest itself draws in that corner — to save a
 keystroke.
-.Bl -tag -width "Shift+F12"
-.It Ic Shift+F12
+.Bl -tag -width "Alt+Insert"
+.It Ic Alt+Insert
 Toggle fullscreen.
-The selected pane takes the whole display with no tab bar, no card border
-and no window padding, and the guest is asked to change resolution to match
-so the picture fills the screen instead of being letterboxed inside it
+The chord is configurable — see
+.Ev VMX_FULLSCREEN_KEY
+below.
+The selected pane takes the whole
+.Nm
+window — the estate list, the details pane, the tab bar, the card border
+and the window padding all go — and the guest is asked to change its
+resolution to match, so the picture fills it rather than sitting
+letterboxed inside it
 .Pq see Sx GUEST RESOLUTION .
 The same chord comes back out.
 .Pp
+The window goes fullscreen on the host at the same time and from the same
+key, because a console that fills a window-sized window is not what
+.Dq fullscreen
+means to anybody.
+.Pp
+.Sy Caveat on multi-head :
+the toolkit picks the target monitor itself and picks it badly \[u2014] under
+Wayland it skips the geometry search outright, and on X11 a miss falls back
+to the primary monitor \[u2014] so on a multi-head desktop the console may land
+on the wrong head.
+If that bites, use the window manager's own fullscreen key for the frame:
+the two compose, and a compositor never picks the wrong head.
+.Pp
 It is bound twice, once on the window and once inside the console widget,
 because a focused console forwards the whole keyboard to the guest: without
-the second binding the key would reach the guest as an ordinary
+the second binding the key would reach the guest as an ordinary keypress at
+precisely the moment it is most wanted.
+.Pp
+This is the only chord a guest can never receive, which is why it can be
+changed.
+Every candidate collides with something:
 .Ic F12
-at precisely the moment it is most wanted.
+is the firmware boot menu,
+.Ic F11
+is fullscreen in every browser, and
+.Ic Alt+Insert
+generates code in some IDEs.
+Pick the one that is wrong for the guests you do not run.
+.Pp
+The chord in force is printed in the console header beside
+.Ic Manual ,
+so it is never a guess.
 .It Ic Ctrl+V
 Send the host clipboard to the guest.
 See
@@ -617,6 +650,69 @@ Copy the built-in profile to
 and add
 .Cm group
 lines to teach it your convention.
+.Sh ENVIRONMENT
+.Bl -tag -width "VMX_FULLSCREEN_KEY"
+.It Ev VMX_FULLSCREEN_KEY
+The fullscreen chord, as modifiers and a key joined by
+.Ql + ,
+case-insensitive — for example
+.Ql alt+delete ,
+.Ql ctrl+alt+f
+or
+.Ql ctrl+shift+f .
+Defaults to
+.Ql alt+insert .
+At least one modifier is required: a bare key would be taken from the guest
+with no way left to send it.
+.Pp
+Two families of chord are refused at startup because the toolkit never
+delivers them, however well they parse.
+Anything whose only modifier is
+.Ic Shift
+never arrives as a custom binding at all, so the key would go to the guest
+instead; and
+.Ic Ctrl
+with
+.Ic Z , Y , V , C , X , A
+or
+.Ic Insert
+is one of the toolkit's own editing shortcuts and is rewritten before any
+custom binding is consulted.
+Adding a second modifier takes a chord back out of that set, so
+.Ql ctrl+shift+c
+is bindable where
+.Ql ctrl+c
+is not.
+.Pp
+A value that is unparseable or undeliverable warns on standard error and
+falls back to the default, because a typo here must not cost the only way
+out of a fullscreen console.
+.It Ev VMX_FULLSCREEN_WINDOW
+.Ql always
+or
+.Ql never :
+whether the fullscreen chord also puts the window itself fullscreen, as well
+as collapsing the panes.
+.Pp
+Defaults to on under X11 and off under Wayland.
+The toolkit chooses the target monitor itself, and under Wayland it cannot
+choose correctly \[u2014] the protocol never tells a client where its own window
+is, so the geometry search is skipped and the primary monitor is used.
+On a multi-head Wayland desktop that sends the console to a screen the
+operator was not working on.
+Set
+.Ql always
+on a single-monitor Wayland desktop, where there is no wrong head to pick.
+Where it is off, use the window manager's own fullscreen key for the frame:
+it always uses the head the window is on, and the two compose.
+.It Ev VMX_THEME
+.Ql dark
+or
+.Ql light ,
+overriding the detected terminal background.
+.It Ev VMX_SSH_USER
+The login the TUI's ssh-to-guest verb uses.
+.El
 .Sh FILES
 .Bl -tag -width "~/.local/state/vmxplore/vmx.log"
 .It Pa /var/log/kldload/vmx.log
