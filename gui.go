@@ -894,6 +894,13 @@ func runGUI(rs *Ruleset) {
 		},
 	)
 
+	// The fullscreen pair is declared here and defined far below, once the
+	// tabs and the window content it swaps between exist. Everything that
+	// swallows the keyboard — the serial terminal, the tools terminal, the
+	// VNC viewer — needs the toggle at construction time, which is long
+	// before that, so the declaration has to come before all three.
+	var exitFullScreen, toggleFullScreen func()
+
 	// ── right-top: the console pane ──────────────────────────────────────
 	// Zero-interaction contract (operator ask): selecting a running VM
 	// attaches its serial console here; moving the selection swaps it;
@@ -930,6 +937,16 @@ func runGUI(rs *Ruleset) {
 		}
 		st.conCmd, st.conPty, st.conName = cmd, p, name
 		term := fyneterm.New()
+		// A focused terminal swallows the whole keyboard, exactly as the VNC
+		// viewer does, so a canvas-level shortcut never fires while the
+		// operator is in it — and fullscreen becomes a room with no door.
+		// fyneterm delegates CustomShortcuts to its embedded ShortcutHandler
+		// before consuming them, so registering there is all it takes.
+		term.AddShortcut(fullScreenKey, func(fyne.Shortcut) {
+			if toggleFullScreen != nil {
+				toggleFullScreen()
+			}
+		})
 		go func() {
 			_ = term.RunWithConnection(p, p)
 		}()
@@ -947,10 +964,6 @@ func runGUI(rs *Ruleset) {
 	// the estate is local, or when nothing is attached.
 	var vncTunnel func()
 	vncName := ""
-	// The fullscreen trio is declared here and defined far below, once the
-	// tabs and the window content it swaps between exist. A focused console
-	// needs the toggle at attach time, which is long before that.
-	var exitFullScreen, toggleFullScreen func()
 	detachVNC := func() {
 		if vncConn != nil {
 			vncConn.Close()
@@ -1077,6 +1090,16 @@ func runGUI(rs *Ruleset) {
 		}
 		toolCmd, toolPty = cmd, p
 		term := fyneterm.New()
+		// A focused terminal swallows the whole keyboard, exactly as the VNC
+		// viewer does, so a canvas-level shortcut never fires while the
+		// operator is in it — and fullscreen becomes a room with no door.
+		// fyneterm delegates CustomShortcuts to its embedded ShortcutHandler
+		// before consuming them, so registering there is all it takes.
+		term.AddShortcut(fullScreenKey, func(fyne.Shortcut) {
+			if toggleFullScreen != nil {
+				toggleFullScreen()
+			}
+		})
 		barLabel := widget.NewLabel(label)
 		start := time.Now()
 		go func() {
