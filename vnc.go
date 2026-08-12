@@ -609,6 +609,9 @@ type vncViewer struct {
 	// size the operator stopped at is worth asking for.
 	fitMu    sync.Mutex
 	fitTimer *time.Timer
+	// onFullScreen is the console's fullscreen toggle, owned by the GUI and
+	// reached from here because a focused viewer eats the key that fires it.
+	onFullScreen func()
 }
 
 func newVNCViewer(conn *rfbConn) *vncViewer {
@@ -798,6 +801,17 @@ func (v *vncViewer) TypedShortcut(s fyne.Shortcut) {
 	case *fyne.ShortcutSelectAll:
 		v.tapKey('a')
 		return
+	}
+	// Shift+F12 must be caught HERE as well as on the canvas. A focused
+	// vncViewer is the one widget that swallows the keyboard wholesale —
+	// that is its job, it is forwarding to a guest — so a canvas-level
+	// shortcut never fires while the operator is actually using the
+	// console, which is precisely when they want to toggle fullscreen.
+	if c, ok := s.(*desktop.CustomShortcut); ok &&
+		c.KeyName == fyne.KeyF12 && c.Modifier == fyne.KeyModifierShift {
+		if v.onFullScreen != nil {
+			v.onFullScreen()
+		}
 	}
 }
 

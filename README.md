@@ -98,9 +98,19 @@ attaches automatically, in-window, no external viewer. Five tabs, in the
 order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
 machine you have, then make one, with the substrate's own toolset last.
 
-⛶ hands the pane the whole window with no chrome at all, and 📋 pastes the
-host clipboard into the guest (as RFB cut text *and* as keystrokes, so it
-lands whether or not the guest runs a clipboard agent).
+There is no button bar. **Shift+F12** gives the pane the whole display with
+no chrome at all — and asks the guest to change resolution to match, so the
+picture fills the screen instead of sitting letterboxed inside it. **Ctrl+V**
+pastes the host clipboard into the guest (as RFB cut text *and* as
+keystrokes, so it lands whether or not the guest runs a clipboard agent).
+Both were icons once; an icon in the corner of a console covers guest pixels
+for a whole session to save one keystroke. If your hand is on the mouse, the
+top-right corner of a fullscreen console reveals a restore button on hover.
+
+**Ctrl+C, Ctrl+X and Ctrl+A go to the guest**, untouched — so Ctrl+C
+interrupts a process in a guest terminal, which is what it is for most of the
+time. Copying needs no key here: the guest copies, and its clipboard agent
+puts the text on your host clipboard by itself.
 
 ### Serial
 

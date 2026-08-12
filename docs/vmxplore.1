@@ -196,6 +196,29 @@ running there.
 Every machine
 .Nm
 builds is given the channel it needs.
+.Ss Guest resolution
+The console asks the guest to match the pane.
+When the pane settles at a new size — a window drag, or entering fullscreen —
+.Nm
+sends an RFB
+.Sy SetDesktopSize
+and the guest changes video mode, so the picture fills the pane at 1:1
+instead of being scaled up from whatever resolution the guest happened to
+boot at.
+The request is debounced: a drag fires dozens of resize events and each mode
+change costs the guest a black flash and a driver reprobe, so only the size
+you stop at is asked for.
+.Pp
+Two things have to be true for it to work, and both fail softly.
+The server must advertise the
+.Sy ExtendedDesktopSize
+pseudo-encoding — qemu does — and the guest's video driver must be able to
+change mode, which
+.Sy virtio-gpu
+with a driver loaded can and a guest sitting in legacy VGA text mode cannot.
+Where either is missing the framebuffer keeps its own size and is
+letterboxed to fit, exactly as before: this improves the view, it is never
+required for one.
 .Ss Apps
 The catalog: a self-hosted application delivered as a configured machine.
 See
@@ -215,20 +238,54 @@ tool's real usage banner rather than guessed.
 .Pp
 On any other host the tab explains what a kldload substrate adds.
 .Ss Console controls
-.Bl -tag -width "the paste button"
-.It Ic \(sh
-Hand the selected pane the whole window, with no tab bar, no card border
-and no window padding.
-The restore control floats in the top-right corner and is the only way
-back — a key chord cannot be, because the guest owns the keyboard and
-anything that wants
-.Ic Escape
-would swallow it.
-.It Ic paste
+The console has no button bar.
+Both of its controls are keys, because both used to be icons in the pane's
+top-right corner and an icon there sits on top of guest pixels for an entire
+session — over whatever the guest itself draws in that corner — to save a
+keystroke.
+.Bl -tag -width "Shift+F12"
+.It Ic Shift+F12
+Toggle fullscreen.
+The selected pane takes the whole display with no tab bar, no card border
+and no window padding, and the guest is asked to change resolution to match
+so the picture fills the screen instead of being letterboxed inside it
+.Pq see Sx GUEST RESOLUTION .
+The same chord comes back out.
+.Pp
+It is bound twice, once on the window and once inside the console widget,
+because a focused console forwards the whole keyboard to the guest: without
+the second binding the key would reach the guest as an ordinary
+.Ic F12
+at precisely the moment it is most wanted.
+.It Ic Ctrl+V
 Send the host clipboard to the guest.
 See
 .Sx CLIPBOARD .
+.It Ic Ctrl+C , Ctrl+X , Ctrl+A
+Forwarded to the guest untouched, like every other key.
+.Nm
+does not implement copy: the guest copies, its clipboard agent sends the
+text back, and it lands on the host clipboard on its own.
+.Pp
+This is worth stating because the toolkit makes it a decision rather than a
+default.
+Fyne intercepts these three chords before they reach the console widget, and
+a client that quietly ignores one does not pass it through — it eats it.
+.Nm
+hands them back, so
+.Ic Ctrl+C
+interrupts a process in a guest terminal, which is what it is for far more
+often than copying.
 .El
+.Pp
+If the pointer is the only thing to hand, moving it into the top-right
+corner of a fullscreen console reveals a restore button; it is invisible
+until then.
+.Ic Escape
+is deliberately not bound to anything: the guest owns it, and a firmware
+menu or a
+.Xr vi 1
+session would lose it.
 .Sh VERBS
 Every mutation is a plan: a title, an exact list of commands, and a
 warning when there is a consequence worth stating.
