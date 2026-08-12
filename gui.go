@@ -963,6 +963,28 @@ func runGUI(rs *Ruleset) {
 		})
 		v := newVNCViewer(conn)
 		curVNC = v
+		// Say when the console dies. The read loop closes done on any terminal
+		// error — the guest powered off, the hypervisor went away, the ssh
+		// forward dropped, a write failed — and without this the pane keeps
+		// showing the last frame it received, which reads as "the console
+		// froze" rather than "the connection ended". Err() is nil for a
+		// deliberate detach, so only real failures replace the pane, and the
+		// identity check means a stale watcher cannot clobber a newer console.
+		go func(dead *rfbConn) {
+			<-dead.done
+			derr := dead.Err()
+			if derr == nil {
+				return
+			}
+			fyne.Do(func() {
+				if vncConn != dead {
+					return
+				}
+				vncHost.Objects = []fyne.CanvasObject{
+					conPlaceholder("console disconnected: " + derr.Error())}
+				vncHost.Refresh()
+			})
+		}(conn)
 		// Focus it as soon as it is on screen. Waiting for a click means the
 		// first thing an operator meets — a login prompt — cannot be typed
 		// into until they happen to click the right place first.

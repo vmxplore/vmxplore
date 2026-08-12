@@ -42,32 +42,45 @@ func TestRFBLiveFramebuffer(t *testing.T) {
 		t.Fatalf("dial %s: %v", name, err)
 	}
 	defer conn.Close()
-	if conn.fbW <= 0 || conn.fbH <= 0 {
-		t.Fatalf("bad framebuffer size %dx%d", conn.fbW, conn.fbH)
+	// Through the accessor: the read loop is already running, so touching
+	// conn.fbW directly here is the same race the client itself had.
+	fbW, fbH := conn.size()
+	if fbW <= 0 || fbH <= 0 {
+		t.Fatalf("bad framebuffer size %dx%d", fbW, fbH)
 	}
 
-	frames := make(chan struct{}, 1)
+	// A real frame has non-zero pixels somewhere (the guest paints SOMETHING —
+	// even a boot console has text).
+	//
+	// The pixels are inspected INSIDE the frame callback, which the read loop
+	// invokes between frames on its own goroutine. Reading img.Pix from the
+	// test goroutine instead would race blitRaw's writes, and imgMu would not
+	// save it: that mutex guards the framebuffer SWAP, not the pixel writes
+	// into the buffer it points at. Same goroutine, no race, no lock.
+	type frameInfo struct {
+		w, h    int
+		nonZero bool
+	}
+	frames := make(chan frameInfo, 1)
 	conn.SetOnFrame(func() {
+		info := frameInfo{}
+		info.w, info.h = conn.size()
+		for _, px := range conn.frame().Pix {
+			if px != 0 && px != 0xff { // skip bare alpha
+				info.nonZero = true
+				break
+			}
+		}
 		select {
-		case frames <- struct{}{}:
+		case frames <- info:
 		default:
 		}
 	})
 	select {
-	case <-frames:
+	case info := <-frames:
+		t.Logf("%s: %dx%d framebuffer, non-zero pixels: %v",
+			name, info.w, info.h, info.nonZero)
 	case <-time.After(5 * time.Second):
 		t.Fatal("no framebuffer update within 5s")
 	}
-	// a real frame has non-zero pixels somewhere (the guest paints
-	// SOMETHING — even a boot console has text)
-	conn.imgMu.Lock()
-	nonZero := false
-	for _, px := range conn.img.Pix {
-		if px != 0 && px != 0xff { // skip bare alpha
-			nonZero = true
-			break
-		}
-	}
-	conn.imgMu.Unlock()
-	t.Logf("%s: %dx%d framebuffer, non-zero pixels: %v", name, conn.fbW, conn.fbH, nonZero)
 }

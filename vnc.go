@@ -19,9 +19,18 @@
 // websockify+noVNC; this is the native path, no bridge.
 //
 // Notes: writes are mutex-serialised (input events race the update-request
-// loop otherwise). DesktopSize reallocates the framebuffer mid-stream —
-// guests resize at boot. A read error just closes the loop; the pane shows
-// whatever rendered last until the selection moves.
+// loop otherwise). DesktopSize reallocates the framebuffer mid-stream — guests
+// resize at boot — so fbW/fbH/img are read through size()/frame() under imgMu,
+// never directly: fbCoords runs on the Fyne goroutine and a guest that resizes
+// mid-click would otherwise be a data race and a misplaced pointer event.
+// A terminal error (read or write) lands in Err() and closes done, which the
+// GUI watches so a dead console says so instead of showing a frozen frame.
+//
+// There is deliberately NO application-level idle read timeout: RFB is
+// demand-driven, a server answers an incremental update request only when
+// something changes, and an idle desktop legitimately sends nothing for
+// minutes. TCP keepalive (set on dial) is what detects a peer that went away
+// without closing — a read deadline here would kill healthy idle sessions.
 package main
 
 import (
@@ -40,8 +49,37 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// RFB message types and encodings, named so the wire handling below reads as
+// protocol rather than as magic numbers.
+const (
+	msgFramebufferUpdate   = 0 // server → client
+	msgSetColourMapEntries = 1
+	msgBell                = 2
+	msgServerCutText       = 3
+
+	msgSetPixelFormat       = 0 // client → server
+	msgSetEncodings         = 2
+	msgFramebufferUpdateReq = 3
+	msgKeyEvent             = 4
+	msgPointerEvent         = 5
+	msgClientCutText        = 6
+
+	encRaw         = 0    // the only real encoding we ask for
+	encDesktopSize = -223 // pseudo-encoding: the guest resized
+
+	// handshakeTimeout bounds the whole pre-stream conversation. DialTimeout
+	// only covers the TCP connect, so without this a peer that accepts and
+	// then stalls mid-handshake hangs the dialling goroutine forever — a
+	// wedged console pane with no error to show.
+	handshakeTimeout = 10 * time.Second
+)
+
 // vncPort parses the domain's live XML for the VNC graphics port. Autoport
 // domains only carry a real port while running (-1 otherwise).
+//
+// First vnc display wins: a domain with two graphics devices (spice + vnc, or
+// two vnc) is unusual, and picking the first is both deterministic and what
+// virt-viewer does.
 func vncPort(lv *LV, name string) (int, error) {
 	x, err := lv.XML(name)
 	if err != nil {
@@ -82,8 +120,16 @@ type rfbConn struct {
 	cbMu      sync.Mutex
 	onFrame   func()            // fired after each complete FramebufferUpdate
 	onCutText func(text string) // guest clipboard arrived (ServerCutText)
-	err       error
-	done      chan struct{}
+	// errMu guards err+closing. The read loop, every input writer and the
+	// GUI's disconnect watcher all touch them from different goroutines.
+	errMu   sync.Mutex
+	err     error
+	closing bool // Close() was called: later errors are expected, not faults
+	done    chan struct{}
+	// scratch is blitRaw's row buffer, grown as needed and reused. Only the
+	// read loop touches it, so it needs no lock; allocating a w*4 row per
+	// rectangle per frame was steady GC pressure on the render hot path.
+	scratch []byte
 }
 
 const rfbVersion = "RFB 003.008\n"
@@ -91,7 +137,21 @@ const rfbVersion = "RFB 003.008\n"
 // dialRFB connects and completes the handshake through the first update
 // request; the read loop then runs until error or Close.
 func dialRFB(addr string) (*rfbConn, error) {
-	c, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	// Keepalive, not a read deadline: see the banner. A hypervisor that OOMs
+	// or a network that partitions leaves the socket open forever otherwise,
+	// and the pane shows a frozen frame with no error. 30s idle / 10s probes /
+	// 3 failures ends a dead connection in about a minute, and the read loop
+	// then reports it like any other error.
+	d := &net.Dialer{
+		Timeout: 3 * time.Second,
+		KeepAliveConfig: net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     30 * time.Second,
+			Interval: 10 * time.Second,
+			Count:    3,
+		},
+	}
+	c, err := d.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +166,17 @@ func dialRFB(addr string) (*rfbConn, error) {
 }
 
 func (r *rfbConn) handshake() error {
+	// Bounded for the whole handshake, then cleared: every read below is a
+	// fixed-size io.ReadFull against a peer that has not yet proven it is a
+	// VNC server at all.
+	if err := r.c.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+	defer func() {
+		// error ignored: clearing the deadline can only fail on a connection
+		// that is already dead, which the read loop reports on its first read
+		_ = r.c.SetDeadline(time.Time{})
+	}()
 	buf := make([]byte, 12)
 	if _, err := io.ReadFull(r.c, buf); err != nil {
 		return fmt.Errorf("version: %w", err)
@@ -194,19 +265,72 @@ func (r *rfbConn) readReason() string {
 	return string(b)
 }
 
+// size returns the framebuffer dimensions under the lock that guards the
+// DesktopSize swap. Every reader outside the read loop must come through here:
+// fbCoords runs on the Fyne goroutine, DesktopSize writes from the read loop,
+// and a guest that resizes while the operator is clicking is a real scenario
+// (they resize at boot) — unlocked, that is a data race and a pointer event
+// scaled against a framebuffer that no longer exists.
+func (r *rfbConn) size() (int, int) {
+	r.imgMu.Lock()
+	defer r.imgMu.Unlock()
+	return r.fbW, r.fbH
+}
+
+// frame returns the current framebuffer under imgMu, for a caller that wants
+// to hand it to the canvas.
+func (r *rfbConn) frame() *image.RGBA {
+	r.imgMu.Lock()
+	defer r.imgMu.Unlock()
+	return r.img
+}
+
+// setErr records the FIRST terminal error on the connection; later ones are
+// consequences of it. Silent after Close, because "use of closed network
+// connection" from a deliberate detach is not a fault to report.
+func (r *rfbConn) setErr(err error) {
+	if err == nil {
+		return
+	}
+	r.errMu.Lock()
+	if r.err == nil && !r.closing {
+		r.err = err
+	}
+	r.errMu.Unlock()
+}
+
+// Err reports why the connection ended, or nil if it ended on request (or has
+// not ended). Read it after done closes.
+func (r *rfbConn) Err() error {
+	r.errMu.Lock()
+	defer r.errMu.Unlock()
+	return r.err
+}
+
+// write serialises every outbound message and captures a failure. Input events
+// and the update-request loop both write, so the mutex is not optional; the
+// error capture is what stops a broken pipe from being invisible — before it,
+// a write failure left the last frame on screen and silently swallowed every
+// keystroke and mouse move, which reads as "the console froze".
+func (r *rfbConn) write(b []byte) {
+	r.mu.Lock()
+	_, err := r.c.Write(b)
+	r.mu.Unlock()
+	r.setErr(err)
+}
+
 func (r *rfbConn) requestUpdate(incremental bool) {
 	inc := byte(0)
 	if incremental {
 		inc = 1
 	}
+	w, h := r.size()
 	msg := make([]byte, 10)
-	msg[0] = 3
+	msg[0] = msgFramebufferUpdateReq
 	msg[1] = inc
-	binary.BigEndian.PutUint16(msg[6:8], uint16(r.fbW))
-	binary.BigEndian.PutUint16(msg[8:10], uint16(r.fbH))
-	r.mu.Lock()
-	_, _ = r.c.Write(msg)
-	r.mu.Unlock()
+	binary.BigEndian.PutUint16(msg[6:8], uint16(w))
+	binary.BigEndian.PutUint16(msg[8:10], uint16(h))
+	r.write(msg)
 }
 
 func (r *rfbConn) readLoop() {
@@ -215,19 +339,19 @@ func (r *rfbConn) readLoop() {
 	rect := make([]byte, 12)
 	for {
 		if _, err := io.ReadFull(r.c, hdr[:1]); err != nil {
-			r.err = err
+			r.setErr(err)
 			return
 		}
 		switch hdr[0] {
-		case 0: // FramebufferUpdate
+		case msgFramebufferUpdate:
 			if _, err := io.ReadFull(r.c, hdr[1:4]); err != nil {
-				r.err = err
+				r.setErr(err)
 				return
 			}
 			rects := int(binary.BigEndian.Uint16(hdr[2:4]))
 			for i := 0; i < rects; i++ {
 				if _, err := io.ReadFull(r.c, rect); err != nil {
-					r.err = err
+					r.setErr(err)
 					return
 				}
 				x := int(binary.BigEndian.Uint16(rect[0:2]))
@@ -236,18 +360,18 @@ func (r *rfbConn) readLoop() {
 				rh := int(binary.BigEndian.Uint16(rect[6:8]))
 				enc := int32(binary.BigEndian.Uint32(rect[8:12]))
 				switch enc {
-				case 0: // Raw BGRX
+				case encRaw: // BGRX pixels
 					if err := r.blitRaw(x, y, rw, rh); err != nil {
-						r.err = err
+						r.setErr(err)
 						return
 					}
-				case -223: // DesktopSize: guest resized its framebuffer
+				case encDesktopSize: // the guest resized its framebuffer
 					r.imgMu.Lock()
 					r.fbW, r.fbH = rw, rh
 					r.img = image.NewRGBA(image.Rect(0, 0, rw, rh))
 					r.imgMu.Unlock()
 				default:
-					r.err = fmt.Errorf("unrequested encoding %d", enc)
+					r.setErr(fmt.Errorf("unrequested encoding %d", enc))
 					return
 				}
 			}
@@ -255,53 +379,59 @@ func (r *rfbConn) readLoop() {
 				cb()
 			}
 			r.requestUpdate(true)
-		case 1: // SetColourMapEntries — can't happen in truecolour; drain
+		case msgSetColourMapEntries: // can't happen in truecolour; drain
 			var h [5]byte
 			if _, err := io.ReadFull(r.c, h[:]); err != nil {
-				r.err = err
+				r.setErr(err)
 				return
 			}
 			n := int64(binary.BigEndian.Uint16(h[3:5]))
 			if _, err := io.CopyN(io.Discard, r.c, n*6); err != nil {
-				r.err = err
+				r.setErr(err)
 				return
 			}
-		case 2: // Bell — ignore
-		case 3: // ServerCutText — the guest's clipboard, forwarded up
+		case msgBell: // ignore
+		case msgServerCutText: // the guest's clipboard, forwarded up
 			var h [7]byte
 			if _, err := io.ReadFull(r.c, h[:]); err != nil {
-				r.err = err
+				r.setErr(err)
 				return
 			}
 			n := int64(binary.BigEndian.Uint32(h[3:7]))
 			if n > 1<<20 { // a clipboard, not a firehose
 				if _, err := io.CopyN(io.Discard, r.c, n); err != nil {
-					r.err = err
+					r.setErr(err)
 					return
 				}
 				continue
 			}
 			b := make([]byte, n)
 			if _, err := io.ReadFull(r.c, b); err != nil {
-				r.err = err
+				r.setErr(err)
 				return
 			}
 			if cb := r.cutTextCB(); cb != nil {
 				cb(string(b)) // RFB cut text is latin-1; close enough
 			}
 		default:
-			r.err = fmt.Errorf("unknown server message %d", hdr[0])
+			r.setErr(fmt.Errorf("unknown server message %d", hdr[0]))
 			return
 		}
 	}
 }
 
 // blitRaw copies one Raw rectangle (BGRX) into the RGBA framebuffer.
+//
+// The row buffer is the connection's scratch space, grown once and reused: a
+// scrolling or playing guest sends many rectangles per frame at 30+ frames a
+// second, and a fresh w*4 allocation for each was pure GC pressure on the
+// hottest path in the client. Only the read loop calls this, so no lock.
 func (r *rfbConn) blitRaw(x, y, w, h int) error {
-	row := make([]byte, w*4)
-	r.imgMu.Lock()
-	img := r.img
-	r.imgMu.Unlock()
+	if need := w * 4; len(r.scratch) < need {
+		r.scratch = make([]byte, need)
+	}
+	row := r.scratch[:w*4]
+	img := r.frame()
 	for j := 0; j < h; j++ {
 		if _, err := io.ReadFull(r.c, row); err != nil {
 			return err
@@ -321,12 +451,10 @@ func (r *rfbConn) blitRaw(x, y, w, h int) error {
 }
 
 func (r *rfbConn) pointer(mask uint8, x, y int) {
-	msg := []byte{5, mask, 0, 0, 0, 0}
+	msg := []byte{msgPointerEvent, mask, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(msg[2:4], uint16(x))
 	binary.BigEndian.PutUint16(msg[4:6], uint16(y))
-	r.mu.Lock()
-	_, _ = r.c.Write(msg)
-	r.mu.Unlock()
+	r.write(msg)
 }
 
 func (r *rfbConn) key(sym uint32, down bool) {
@@ -334,11 +462,9 @@ func (r *rfbConn) key(sym uint32, down bool) {
 	if down {
 		d = 1
 	}
-	msg := []byte{4, d, 0, 0, 0, 0, 0, 0}
+	msg := []byte{msgKeyEvent, d, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint32(msg[4:8], sym)
-	r.mu.Lock()
-	_, _ = r.c.Write(msg)
-	r.mu.Unlock()
+	r.write(msg)
 }
 
 // cutText hands text to the server's clipboard buffer (ClientCutText) —
@@ -346,15 +472,22 @@ func (r *rfbConn) key(sym uint32, down bool) {
 func (r *rfbConn) cutText(s string) {
 	b := []byte(s)
 	msg := make([]byte, 8, 8+len(b))
-	msg[0] = 6
+	msg[0] = msgClientCutText
 	binary.BigEndian.PutUint32(msg[4:8], uint32(len(b)))
 	msg = append(msg, b...)
-	r.mu.Lock()
-	_, _ = r.c.Write(msg)
-	r.mu.Unlock()
+	r.write(msg)
 }
 
-func (r *rfbConn) Close() { r.c.Close() }
+// Close ends the session. The flag goes up first so the read loop's inevitable
+// "use of closed network connection" is not reported as a fault: a detach is
+// not a disconnect, and the GUI tells them apart by Err() being nil.
+func (r *rfbConn) Close() {
+	r.errMu.Lock()
+	r.closing = true
+	r.errMu.Unlock()
+	// error ignored: closing an already-dead socket has no recovery
+	_ = r.c.Close()
+}
 
 // ── the viewer widget ───────────────────────────────────────────────────────
 
@@ -369,14 +502,15 @@ type vncViewer struct {
 
 func newVNCViewer(conn *rfbConn) *vncViewer {
 	v := &vncViewer{conn: conn}
-	v.img = canvas.NewImageFromImage(conn.img)
+	// frame(), not conn.img: dialRFB has already started the read loop by the
+	// time anyone constructs a viewer, so an unlocked read here races a
+	// DesktopSize swap.
+	v.img = canvas.NewImageFromImage(conn.frame())
 	v.img.FillMode = canvas.ImageFillContain
 	v.img.ScaleMode = canvas.ImageScaleFastest
 	conn.SetOnFrame(func() {
 		fyne.Do(func() {
-			conn.imgMu.Lock()
-			v.img.Image = conn.img // DesktopSize may have swapped it
-			conn.imgMu.Unlock()
+			v.img.Image = conn.frame() // DesktopSize may have swapped it
 			v.img.Refresh()
 		})
 	})
@@ -395,7 +529,11 @@ func (v *vncViewer) MinSize() fyne.Size { return fyne.NewSize(320, 240) }
 // guest cursor off into the void).
 func (v *vncViewer) fbCoords(p fyne.Position) (int, int) {
 	sz := v.Size()
-	fw, fh := float32(v.conn.fbW), float32(v.conn.fbH)
+	// One locked read of both dimensions: taking them separately (or unlocked)
+	// lets a DesktopSize land between them and scale the click against half of
+	// the old framebuffer and half of the new one.
+	fbW, fbH := v.conn.size()
+	fw, fh := float32(fbW), float32(fbH)
 	if fw == 0 || fh == 0 || sz.Width == 0 || sz.Height == 0 {
 		return 0, 0
 	}
@@ -407,8 +545,8 @@ func (v *vncViewer) fbCoords(p fyne.Position) (int, int) {
 	oy := (sz.Height - fh*scale) / 2
 	x := int((p.X - ox) / scale)
 	y := int((p.Y - oy) / scale)
-	x = max(0, min(x, v.conn.fbW-1))
-	y = max(0, min(y, v.conn.fbH-1))
+	x = max(0, min(x, fbW-1))
+	y = max(0, min(y, fbH-1))
 	return x, y
 }
 
@@ -528,7 +666,14 @@ func (v *vncViewer) pasteText(text string) {
 	// case — synthetic keys reach a boot console or an agent-less image —
 	// but it is deliberately no longer on the default path.
 	go func() {
-		time.Sleep(120 * time.Millisecond)
+		// Abandon the paste if the console closes inside the pause — a pane is
+		// torn down whenever the selection moves, and writing the keystrokes
+		// into a closed socket is a pointless (if harmless) write-after-close.
+		select {
+		case <-time.After(120 * time.Millisecond):
+		case <-v.conn.done:
+			return
+		}
 		v.conn.key(0xffe3, true) // Control_L
 		v.conn.key(0x0076, true) // v
 		v.conn.key(0x0076, false)
