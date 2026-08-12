@@ -68,9 +68,12 @@ may be a host name, a
 .Ar user Ns @ Ns Ar host
 pair, or a full libvirt URI such as
 .Pa qemu+ssh://host/system .
-Estate, verbs, the ZFS join and both consoles all follow, authenticated
-with the same SSH key as your shell.
+Estate, verbs, the ZFS join and both consoles all follow.
 No agent is installed on the far side.
+See
+.Sx REMOTE TRUST
+for which SSH implementation authenticates what, and the one asymmetry it
+creates.
 .It Fl -rules Ar file
 Grouping and classification rules.
 Defaults to
@@ -174,6 +177,25 @@ target is remote.
 Mouse and keyboard are forwarded, including modifiers; pointer position is
 mapped through the letterbox so clicks land where they appear to.
 The guest's own clipboard changes arrive on the host clipboard.
+.Pp
+The client asks for Raw pixels only, plus the DesktopSize pseudo-encoding so
+a guest that resizes at boot is followed.
+Tight and ZRLE trade CPU for bandwidth, and the peer here is always local
+qemu — reached over loopback or an
+.Xr ssh 1
+forward — so there is no bandwidth to trade for, and no codec to carry or
+to defend.
+.Pp
+Clipboard text from the guest arrives as RFB latin-1, which is the
+protocol's limit: a non-Latin character from a guest with no clipboard agent
+degrades.
+In the other direction the host clipboard is handed to the guest and the
+guest performs its own paste, so full UTF-8 needs
+.Sy qemu-vdagent
+running there.
+Every machine
+.Nm
+builds is given the channel it needs.
 .Ss Apps
 The catalog: a self-hosted application delivered as a configured machine.
 See
@@ -431,8 +453,7 @@ about to run.
 .Fl -connect
 points the whole tool at another hypervisor.
 The estate read, every verb, the ZFS join, the serial console and the
-graphical console all follow, authenticated with the same SSH key as your
-shell.
+graphical console all follow.
 Nothing is installed on the far side.
 .Pp
 Only the ZFS mutations are elevated, and only locally; the libvirt calls
@@ -440,6 +461,68 @@ are not wrapped in
 .Xr sudo 8 ,
 because running them as root on a remote target would use root's SSH keys
 and a connection the operator never authorised.
+.Sh REMOTE TRUST
+A remote hypervisor is a security boundary, and two SSH implementations
+are involved.
+.Pp
+The estate read is
+.Xr libvirt 3 Ns 's
+Go client speaking its own SSH.
+It verifies the host against
+.Pa ~/.ssh/known_hosts
+and fails closed on an unknown or changed key; only
+.Ar ?no_verify=1
+in the URI opts out.
+It does
+.Em not
+read
+.Pa ~/.ssh/config ,
+so a
+.Ic Host
+alias,
+.Ic IdentityFile ,
+.Ic User
+or
+.Ic ProxyJump
+there is invisible to it: it offers the agent, then
+.Pa ~/.ssh/identity ,
+.Pa id_dsa ,
+.Pa id_ecdsa ,
+.Pa id_ed25519 ,
+.Pa id_rsa
+in that order.
+.Pp
+Everything that shells out — the ZFS reads and mutations, and the
+console's
+.Fl L
+forward — runs the system
+.Xr ssh 1
+with the policy stated rather than inherited:
+.Ic BatchMode=yes
+so it fails instead of waiting at a prompt no GUI can answer,
+.Ic StrictHostKeyChecking=accept-new
+so a first connection is trusted, a
+.Em changed
+key is refused, and an ambient
+.Ic StrictHostKeyChecking no
+in the operator's config cannot silently downgrade the channel that runs
+.Cm zfs destroy Fl r ,
+and
+.Ic ConnectTimeout=10
+so a host that has gone away cannot wedge the estate's ZFS tick.
+Each remote command is passed as a single shell-quoted word, so a dataset
+or snapshot name is never re-parsed by the far side's shell.
+.Pp
+The asymmetry is worth knowing: if
+.Ic ssh Ar myhost
+works only because of an
+.Pa ~/.ssh/config
+stanza, then
+.Fl -connect Ar myhost
+may still fail to authenticate.
+Connect with the real
+.Ar user Ns @ Ns Ar hostname
+in that case.
 .Sh CLIPBOARD
 Copying inside a guest puts the text on the host clipboard.
 .Pp

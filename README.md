@@ -117,6 +117,19 @@ qemu's VNC server over loopback — **no websockify, no noVNC, no
 virt-viewer.** The picture the web tools bridge to, delivered natively, on
 Wayland.
 
+Two deliberate limits, both consequences of the peer always being local qemu:
+
+- **Raw encoding only** (plus the DesktopSize pseudo-encoding, so a guest that
+  resizes at boot is followed). Tight and ZRLE exist to buy bandwidth with CPU;
+  over loopback or a local ssh forward there is no bandwidth to buy, and every
+  codec is decode complexity and attack surface in the client. Pixels go
+  uncompressed, on purpose.
+- **The guest's clipboard arrives as RFB latin-1**, which is the protocol's
+  own limit, so a non-Latin character from an agent-less guest degrades.
+  Pasting *into* a guest is done by setting its clipboard and letting the guest
+  paste, so full UTF-8 in that direction needs `qemu-vdagent` in the guest —
+  which every machine vmxplore builds gets the channel for.
+
 Guests bind their console to `127.0.0.1`, never to every interface, and a
 remote hypervisor's console is reached through an `ssh -L` forward over the
 same authenticated channel libvirt is already using. No second credential, no
@@ -312,6 +325,11 @@ vmxplore is tiered by what the host *can do* — probes, never licence checks.
 Start anywhere; each layer unlocks more, and the top one you don't build at all.
 Hardware is probed the same way: [an NVIDIA card](#gpus--offered-only-where-they-could-work)
 on the hypervisor adds a driver option to New VM, and its absence removes it.
+
+**Linux on amd64 or arm64.** The GUI toolkit is cross-platform but the premise
+is not: KVM, libvirt and ZFS-on-root are what this drives, so there is no
+Windows or macOS build and no plan for one. A remote hypervisor is reached from
+a Linux client the same way.
 
 | You have… | You get… | Effort |
 |---|---|---|
@@ -529,9 +547,29 @@ recruits the user; kldload is what the console makes effortless.
 
 `--connect <host | user@host | qemu+ssh://host/system>` points the whole tool at
 a headless hypervisor over ssh — the estate, the verbs, the ZFS join, the serial
-and VNC consoles all follow. Same key and `known_hosts` as your shell; nothing
-new to configure. (In the GUI, the **Connect** button on the estate header does
-the same.)
+and VNC consoles all follow. (In the GUI, the **Connect** button on the estate
+header does the same.)
+
+**The trust anchor**, because a remote hypervisor is a security boundary and
+two ssh implementations are involved:
+
+- The estate connection is go-libvirt's pure-Go ssh client. It checks the host
+  against your `~/.ssh/known_hosts` and **fails closed** on an unknown or
+  changed key. It does *not* read `~/.ssh/config` — so a `Host` alias,
+  `IdentityFile`, `User` or `ProxyJump` there is invisible to it; it tries your
+  agent, then `~/.ssh/{identity,id_dsa,id_ecdsa,id_ed25519,id_rsa}`. If `ssh
+  myhost` only works because of a config stanza, connect with the real
+  `user@hostname`.
+- Everything that shells out — the ZFS reads and mutations, the console's
+  `ssh -L` forward — runs the system `ssh` with the policy set explicitly:
+  `BatchMode=yes` (fail instead of hanging on a password prompt no GUI can
+  answer), `StrictHostKeyChecking=accept-new` (trust on first use, refuse a
+  *changed* key, and ignore an ambient `StrictHostKeyChecking no`) and
+  `ConnectTimeout=10`. Every remote command is shell-quoted as a single word,
+  so a dataset name can never be re-parsed by the far side's shell.
+
+No second credential and no extra open port either way: the console rides the
+same authenticated channel libvirt is already using.
 
 ## Grouping rules
 

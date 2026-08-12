@@ -40,6 +40,28 @@ been there from the start.
 
 ### Security
 
+- **One ssh policy, stated instead of inherited.** Every non-interactive ssh
+  this tool runs — the ZFS reads and mutations, the console's `-L` forward —
+  goes through one helper that sets `BatchMode=yes`,
+  `StrictHostKeyChecking=accept-new` and `ConnectTimeout=10`. The ZFS path had
+  no flags at all: it inherited whatever `~/.ssh/config` said, so a lab
+  machine's global `StrictHostKeyChecking no` silently applied to the
+  connection that runs `zfs destroy -r`, and a host that wanted a password hung
+  the GUI on a prompt with no terminal to answer it.
+- **Remote commands are shell-quoted.** `ssh host zfs snapshot NAME` does not
+  exec an argv on the far side: ssh joins the arguments and the remote login
+  shell re-parses them. So the local path (`exec.Command`, immune) and the
+  remote path had *different* safety properties for the same argv, and
+  `manual-x;reboot` was a command on the hypervisor. Remote commands now cross
+  as single quoted words, and a new `validZFSName` gate rejects anything
+  outside ZFS's own character set before it can reach an argv at all — the old
+  check only looked for spaces, `@` and `/`.
+- **The trust story is documented** in the README and a new man-page section,
+  including the asymmetry that matters in practice: the estate connection is
+  go-libvirt's own ssh (verifies against `~/.ssh/known_hosts`, fails closed,
+  **ignores `~/.ssh/config`**) while everything else is the system `ssh` (which
+  reads it). A host that only resolves through a config stanza needs its real
+  `user@hostname` on `--connect`.
 - **Guest consoles bind loopback.** They were created with
   `--graphics vnc,listen=0.0.0.0` and no password, and the RFB client speaks
   only security type *None* — so nothing authenticated anything. A remote
@@ -75,6 +97,27 @@ been there from the start.
 - **A data race** between `readLoop` and callers assigning the console's frame
   and clipboard callbacks, in shipped code. Found by the race detector the
   hour CI was added.
+- **A second one, on the framebuffer size.** A guest resizing its display —
+  which they do at boot — writes `fbW`/`fbH` from the read loop while the UI
+  goroutine reads them on every mouse event, unsynchronised. Now behind
+  accessors, and pinned by a test that talks to a fake RFB server, so
+  `go test -race` covers it without needing a running guest: reverting the fix
+  makes it fail.
+- **A dead console now says so.** Every input write dropped its error, so a
+  broken pipe left the last frame on screen while keystrokes and mouse moves
+  went nowhere — indistinguishable from a frozen guest. Read and write errors
+  land in one place, and the pane is replaced with "console disconnected: …"
+  when the connection ends for any reason other than the operator detaching.
+- **A stalled peer cannot wedge a console pane.** `DialTimeout` covers the TCP
+  connect only, so a server that accepted and then said nothing hung the
+  dialling goroutine forever; the handshake now runs under a deadline. TCP
+  keepalive (30s/10s/3) detects a hypervisor that went away without closing.
+  Deliberately *not* an idle read timeout: RFB is demand-driven and an idle
+  desktop legitimately sends nothing for minutes.
+- **The remote GPU probe never worked.** `ssh host sh -c <script>` let the
+  remote login shell re-split a multi-line script, so `sh -c` received one word
+  of it and the probe answered with shell syntax errors — swallowed, reported
+  as "no GPUs". Remote hypervisors now probe like local ones.
 - The console takes keyboard focus when it attaches, not only when clicked —
   a guest could show a working pointer and a dead keyboard at a login prompt.
 - EZ Fleet waited a fixed 90 seconds before sealing the golden. A desktop
@@ -90,6 +133,11 @@ been there from the start.
 - The mark is violet, matching zxplore and wgxplore in one icon idiom.
 - **`vmx --once` prints an IP column**, so a script or a cron check can answer
   "where did this VM land?" without a `virsh domifaddr` per domain.
+- An **unwritable audit log says so once**, on stderr, instead of silently
+  keeping no record while the tool claims every mutation is audited.
+- The README and man page now state the console's two deliberate limits — Raw
+  encoding only, and latin-1 clipboard from an agent-less guest — as the design
+  choices they are rather than leaving them to be discovered.
 
 ### Project
 
