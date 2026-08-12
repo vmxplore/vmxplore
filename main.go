@@ -96,6 +96,7 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
 Environment:
   VMX_SSH_USER   user for the TUI's ssh-to-guest verb
                  (default: current user; admin on a kldload host)
+  VMX_FULLSCREEN_KEY  the GUI's fullscreen chord (default alt+insert)
   VMX_THEME      dark | light — override the terminal-background
                  auto-detection for the TUI palette
 

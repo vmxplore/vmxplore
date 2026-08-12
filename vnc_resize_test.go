@@ -173,6 +173,55 @@ func TestRequestSizeSkipsNoOp(t *testing.T) {
 	}
 }
 
+// The fullscreen chord is the one key a guest can never receive, so parsing
+// it wrong is not a cosmetic failure: a typo that resolved to something
+// plausible would silently steal a key from every guest, and one that
+// resolved to nothing would leave fullscreen with no way out.
+func TestParseChord(t *testing.T) {
+	ok := map[string]struct {
+		key fyne.KeyName
+		mod fyne.KeyModifier
+	}{
+		"alt+delete":   {fyne.KeyDelete, fyne.KeyModifierAlt},
+		"ALT+Del":      {fyne.KeyDelete, fyne.KeyModifierAlt},
+		"alt+f11":      {fyne.KeyF11, fyne.KeyModifierAlt},
+		"ctrl+shift+f": {"F", fyne.KeyModifierControl | fyne.KeyModifierShift},
+		"super+space":  {fyne.KeySpace, fyne.KeyModifierSuper},
+	}
+	for in, want := range ok {
+		sc, err := parseChord(in)
+		if err != nil {
+			t.Errorf("parseChord(%q) failed: %v", in, err)
+			continue
+		}
+		if sc.KeyName != want.key || sc.Modifier != want.mod {
+			t.Errorf("parseChord(%q) = %v/%v, want %v/%v",
+				in, sc.KeyName, sc.Modifier, want.key, want.mod)
+		}
+	}
+	// A bare key is refused on purpose: it would be taken from the guest
+	// with no way left to type it. Shift-only chords are refused for a
+	// different reason — Fyne never delivers them as custom shortcuts, so
+	// they are unbindable however well they parse. This case used to assert
+	// that "shift+f11" was ACCEPTED, which is how a dead default shipped;
+	// see chordDeliverable and gui_keys_test.go.
+	for _, bad := range []string{
+		"f11", "", "hyper+f1", "alt+nosuchkey", "alt+", "shift+f11",
+	} {
+		if _, err := parseChord(bad); err == nil {
+			t.Errorf("parseChord(%q) accepted, want an error", bad)
+		}
+	}
+}
+
+// The default must parse, or the fallback path in resolveFullScreenKey has
+// nothing to fall back to.
+func TestDefaultChordParses(t *testing.T) {
+	if _, err := parseChord(defaultFullScreenChord); err != nil {
+		t.Fatalf("the shipped default does not parse: %v", err)
+	}
+}
+
 // The SetEncodings message, decoded back into the numbers it is supposed to
 // carry. The first version of this message hand-wrote -308 as 0xfffffed4,
 // which is -300; qemu ignored the unknown encoding, never advertised
