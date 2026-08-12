@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,8 +54,74 @@ type Dom struct {
 }
 
 // LV wraps the libvirt connection for the estate reads.
+//
+// uri is retained so a dropped connection can be rebuilt. WHY that matters:
+// the connection is opened once at startup and held for the process lifetime,
+// so anything that restarts libvirt — `systemctl restart virtqemud`, a package
+// upgrade, an OOM kill — severs it. Before this, every subsequent read failed
+// and the GUI kept painting its LAST GOOD snapshot, because a failed refresh
+// left the previous data on screen. Meanwhile the verbs shell out to virsh,
+// which opens a FRESH connection each time and therefore kept working.
+//
+// That combination is the dangerous one: a console that force-offs and deletes,
+// showing state it can no longer confirm, while its actions still land.
+//
+// HISTORY: 2026-08-12 — restarting virtqemud during a session left every domain
+// displayed as "running" indefinitely. A delete issued against one of those
+// frozen rows powered off a production VM and then failed before undefining it.
 type LV struct {
-	l *libvirt.Libvirt
+	l   *libvirt.Libvirt
+	uri string // what to redial; empty disables reconnect (tests)
+}
+
+// deadConn reports whether an error means the connection is gone rather than
+// the request being invalid. Redialing on a genuine request error would turn
+// one bad call into an endless reconnect loop.
+func deadConn(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		// go-libvirt's own wording when the RPC socket has gone away. This
+		// is the one that actually fires on `systemctl restart virtqemud`,
+		// and it was MISSING from the first version of this list — the unit
+		// tests passed against errors I had guessed at, and the live test
+		// caught it in one run. Keep it first as a reminder.
+		"socket is closed",
+		"broken pipe", "connection reset", "use of closed network connection",
+		"eof", "connection refused", "no such file or directory",
+		"transport endpoint is not connected", "not connected",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// redial rebuilds the connection in place.
+//
+// Returns: nil when reconnected. The caller retries its request ONCE — never
+// in a loop, so a libvirt that is down stays an honest error instead of a
+// spin.
+func (lv *LV) redial() error {
+	if lv.uri == "" {
+		return fmt.Errorf("no uri retained for reconnect")
+	}
+	u, err := url.Parse(lv.uri)
+	if err != nil {
+		return err
+	}
+	nl, err := libvirt.ConnectToURI(u)
+	if err != nil {
+		return err
+	}
+	if lv.l != nil {
+		_ = lv.l.Disconnect() // best effort: it is already gone
+	}
+	lv.l = nl
+	return nil
 }
 
 // ConnectSystem connects to the current target's libvirt URI (local
@@ -70,7 +137,7 @@ func ConnectSystem() (*LV, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &LV{l: l}, nil
+	return &LV{l: l, uri: target.LibvirtURI}, nil
 }
 
 // ConnectTarget points the process at a host (see ParseTarget) and connects.
@@ -130,6 +197,15 @@ func asUint(v interface{}) (uint64, bool) {
 func (lv *LV) Estate() ([]Dom, error) {
 	doms, _, err := lv.l.ConnectListAllDomains(1,
 		libvirt.ConnectListDomainsActive|libvirt.ConnectListDomainsInactive)
+	if deadConn(err) {
+		// One redial, one retry. The estate poll is the first thing to notice
+		// a restarted libvirt, so healing here restores the whole GUI without
+		// the operator knowing anything happened.
+		if rerr := lv.redial(); rerr == nil {
+			doms, _, err = lv.l.ConnectListAllDomains(1,
+				libvirt.ConnectListDomainsActive|libvirt.ConnectListDomainsInactive)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list domains: %w", err)
 	}

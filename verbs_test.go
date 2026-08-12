@@ -253,3 +253,51 @@ func TestPlanAutostartToggle(t *testing.T) {
 		t.Errorf("autostart disable cmd = %v", p.cmds[0])
 	}
 }
+
+// A delete plan is destroy-then-undefine. If the domain is already off,
+// destroy exits non-zero and — before this — aborted the plan, leaving the
+// machine powered off but still defined, with every retry failing identically.
+//
+// HISTORY: 2026-08-12, hit on a production VM. The estate had cached the row
+// as running while the domain was already stopped, so the plan kept emitting
+// the same doomed first command.
+func TestAlreadyInDesiredState(t *testing.T) {
+	const notRunning = "error: Failed to destroy domain 'blog'\n" +
+		"error: Requested operation is not valid: domain is not running"
+
+	for _, tc := range []struct {
+		name string
+		argv []string
+		msg  string
+		want bool
+	}{
+		{"destroy on a stopped domain is not a failure",
+			[]string{"virsh", "destroy", "blog"}, notRunning, true},
+		{"destroy through a remote target still forgiven",
+			[]string{"virsh", "-c", "qemu+ssh://h/system", "destroy", "blog"},
+			notRunning, true},
+
+		// Everything below must NOT be forgiven.
+		{"destroy failing for any other reason",
+			[]string{"virsh", "destroy", "blog"},
+			"error: Failed to destroy domain 'blog': permission denied", false},
+		{"undefine on a missing domain must still abort",
+			[]string{"virsh", "undefine", "blog"},
+			"error: failed to get domain 'blog'", false},
+		{"zfs destroy is never forgiven — wrong dataset is the nightmare",
+			[]string{"zfs", "destroy", "-r", "rpool/vms/blog"},
+			"cannot open 'rpool/vms/blog': domain is not running", false},
+		{"start failing is a real failure",
+			[]string{"virsh", "start", "blog"},
+			"error: domain is not running", false},
+		{"a malformed argv is not forgiven",
+			[]string{"virsh"}, notRunning, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := alreadyInDesiredState(tc.argv, tc.msg); got != tc.want {
+				t.Errorf("alreadyInDesiredState(%v) = %v, want %v",
+					tc.argv, got, tc.want)
+			}
+		})
+	}
+}

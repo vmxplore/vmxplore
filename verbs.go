@@ -337,6 +337,48 @@ func planAutostart(r Row) (verbPlan, error) {
 
 // ─── execution & audit ──────────────────────────────────────────────────────
 
+// alreadyInDesiredState reports whether a failed command failed only because
+// the domain was ALREADY in the state that command was trying to reach.
+//
+// Args:    argv — the command that failed; msg — its combined output.
+// Returns: true when the failure is semantically a success.
+//
+// WHY this exists: runPlan stops at the first failure, which is right for
+// almost everything and wrong for `virsh destroy`. A delete plan is
+// destroy-then-undefine; a force-off plan is destroy alone. If the domain is
+// already off, destroy exits non-zero with "domain is not running" and the
+// plan aborts BEFORE undefine — leaving the machine powered off but still
+// defined, and every retry failing at the same first step.
+//
+// HISTORY: 2026-08-12. A delete was issued against a row the estate had
+// cached as running while the domain was in fact already stopped. The plan
+// force-stopped nothing, failed, and never reached undefine. The operator
+// retried and got the identical error, because the stale row kept producing
+// the same first command. Cost: a production VM powered off but not removed,
+// and an hour spent looking for a build failure that had not happened.
+//
+// This is deliberately NARROW. Only destroy is forgiven, and only for this one
+// message. undefine failing "not found" is NOT forgiven — that would hide a
+// plan operating on the wrong domain, which is the opposite of this bug.
+func alreadyInDesiredState(argv []string, msg string) bool {
+	if len(argv) < 2 {
+		return false
+	}
+	isDestroy := false
+	for _, a := range argv[1:] {
+		if a == "destroy" {
+			isDestroy = true
+			break
+		}
+	}
+	// `zfs destroy` shares the word and must never be forgiven: a dataset
+	// that is "not found" means the plan is pointed somewhere unexpected.
+	if !isDestroy || argv[0] == "zfs" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(msg), "domain is not running")
+}
+
 // runPlan executes the plan's commands in order, stopping at the first
 // failure. zfs mutations need root; when we aren't root, sudo -n is tried so
 // a NOPASSWD host works and a password host fails loudly instead of hanging
@@ -361,6 +403,12 @@ func runPlan(p verbPlan) error {
 			msg := strings.TrimSpace(string(out))
 			if msg == "" {
 				msg = err.Error()
+			}
+			if alreadyInDesiredState(argv, msg) {
+				// Not a failure: the step asked for a state the domain is
+				// already in. Continuing is the whole point — see the
+				// function's comment for what aborting here cost.
+				continue
 			}
 			return fmt.Errorf("%s: %s", argv[0], msg)
 		}
