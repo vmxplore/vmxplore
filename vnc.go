@@ -64,8 +64,18 @@ const (
 	msgPointerEvent         = 5
 	msgClientCutText        = 6
 
+	msgSetDesktopSize = 251 // client → server: please become this size
+
 	encRaw         = 0    // the only real encoding we ask for
 	encDesktopSize = -223 // pseudo-encoding: the guest resized
+	// encExtendedDesktopSize is the two-way version of the above: the server
+	// announces support by sending one of these rects, and a client that
+	// asked for the encoding may then send SetDesktopSize to drive the
+	// guest's resolution. This is the whole reason the console can fill a
+	// screen without letterbox bars — DesktopSize alone is a notification,
+	// so a 1280x720 guest on a 2560x1440 display stayed 1280x720 and got
+	// scaled up with black margins.
+	encExtendedDesktopSize = -308
 
 	// handshakeTimeout bounds the whole pre-stream conversation. DialTimeout
 	// only covers the TCP connect, so without this a peer that accepts and
@@ -130,6 +140,13 @@ type rfbConn struct {
 	// read loop touches it, so it needs no lock; allocating a w*4 row per
 	// rectangle per frame was steady GC pressure on the render hot path.
 	scratch []byte
+	// extMu guards the ExtendedDesktopSize state: the read loop learns it
+	// from the server's rect, the Fyne goroutine reads it to decide whether
+	// asking for a resize is even meaningful.
+	extMu       sync.Mutex
+	extOK       bool   // server sent an ExtendedDesktopSize rect: it supports resize
+	screenID    uint32 // the screen id it advertised — echoed back on request
+	screenFlags uint32
 }
 
 const rfbVersion = "RFB 003.008\n"
@@ -240,12 +257,61 @@ func (r *rfbConn) handshake() error {
 	if _, err := r.c.Write(pf); err != nil {
 		return err
 	}
-	// SetEncodings: Raw + DesktopSize (pseudo) — loopback needs nothing more
-	enc := []byte{2, 0, 0, 2,
+	// SetEncodings: Raw + DesktopSize + ExtendedDesktopSize. No compressed
+	// encoding: the peer is local qemu (or an ssh tunnel to one), so Raw
+	// costs bandwidth we have and saves decode complexity and attack
+	// surface we would rather not carry. The two pseudo-encodings are
+	// notification and negotiation for guest resolution changes.
+	enc := []byte{2, 0, 0, 3,
 		0, 0, 0, 0, // Raw
-		0xff, 0xff, 0xff, 0x21} // -223 DesktopSize
+		0xff, 0xff, 0xff, 0x21, // -223 DesktopSize
+		0xff, 0xff, 0xfe, 0xd4} // -308 ExtendedDesktopSize
 	_, err := r.c.Write(enc)
 	return err
+}
+
+// requestSize asks the guest to become w×h.
+//
+// Only meaningful once the server has announced ExtendedDesktopSize support
+// (it does so by sending one such rect after the encodings are set), and only
+// meaningful at all if the guest's video driver can change mode — qemu with
+// virtio-gpu and a guest driver can; a guest sitting in legacy VGA text mode
+// cannot, and will simply not resize. Both cases are silent no-ops rather
+// than errors: this is an optimisation of the view, never a precondition for
+// it, and the letterboxed fallback is a working console.
+//
+// Args:    w, h — the wanted framebuffer size in guest pixels.
+// Returns: nothing. Failure is invisible by design (see above).
+func (r *rfbConn) requestSize(w, h int) {
+	if w <= 0 || h <= 0 || w > 0xffff || h > 0xffff {
+		return
+	}
+	r.extMu.Lock()
+	ok, id, flags := r.extOK, r.screenID, r.screenFlags
+	r.extMu.Unlock()
+	if !ok {
+		return
+	}
+	if cw, ch := r.size(); cw == w && ch == h {
+		return // already there — a redundant mode change flickers the guest
+	}
+	b := make([]byte, 8+16)
+	b[0] = msgSetDesktopSize
+	// b[1] is padding
+	binary.BigEndian.PutUint16(b[2:4], uint16(w))
+	binary.BigEndian.PutUint16(b[4:6], uint16(h))
+	b[6] = 1 // one screen: this is a console, not a video wall
+	// b[7] is padding
+	binary.BigEndian.PutUint32(b[8:12], id)
+	// x, y stay 0 — the single screen starts at the origin
+	binary.BigEndian.PutUint16(b[16:18], uint16(w))
+	binary.BigEndian.PutUint16(b[18:20], uint16(h))
+	binary.BigEndian.PutUint32(b[20:24], flags)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.c.Write(b); err != nil {
+		r.setErr(err)
+	}
 }
 
 // readReason drains an RFB failure-reason string (best effort, for errors).
@@ -370,6 +436,44 @@ func (r *rfbConn) readLoop() {
 					r.fbW, r.fbH = rw, rh
 					r.img = image.NewRGBA(image.Rect(0, 0, rw, rh))
 					r.imgMu.Unlock()
+				case encExtendedDesktopSize:
+					// Same resize notification, plus a screen layout — and,
+					// the first time it arrives, proof that the server will
+					// accept SetDesktopSize from us. x carries the reason
+					// and y the result code; a non-zero result means a
+					// request was refused, which we treat as "stay as we
+					// are" rather than an error (see requestSize).
+					//
+					// The payload MUST be drained whatever we do with it:
+					// leaving those bytes in the stream desynchronises every
+					// rect after this one.
+					var sh [4]byte
+					if _, err := io.ReadFull(r.c, sh[:]); err != nil {
+						r.setErr(err)
+						return
+					}
+					screens := int(sh[0])
+					layout := make([]byte, 16*screens)
+					if _, err := io.ReadFull(r.c, layout); err != nil {
+						r.setErr(err)
+						return
+					}
+					r.extMu.Lock()
+					r.extOK = true
+					if screens > 0 {
+						r.screenID = binary.BigEndian.Uint32(layout[0:4])
+						r.screenFlags = binary.BigEndian.Uint32(layout[12:16])
+					}
+					r.extMu.Unlock()
+					// y == 0 is success (or a server-initiated change); a
+					// refusal leaves the framebuffer as it was, so only
+					// resize on success.
+					if y == 0 {
+						r.imgMu.Lock()
+						r.fbW, r.fbH = rw, rh
+						r.img = image.NewRGBA(image.Rect(0, 0, rw, rh))
+						r.imgMu.Unlock()
+					}
 				default:
 					r.setErr(fmt.Errorf("unrequested encoding %d", enc))
 					return
@@ -498,6 +602,13 @@ type vncViewer struct {
 	conn *rfbConn
 	img  *canvas.Image
 	mask uint8
+	// fit debounces the "become my size" request. Dragging a window edge or
+	// entering fullscreen fires Resize many times in a few hundred
+	// milliseconds, and every one of those would be a guest mode change —
+	// which on a real guest means a black flash and a reprobe. Only the
+	// size the operator stopped at is worth asking for.
+	fitMu    sync.Mutex
+	fitTimer *time.Timer
 }
 
 func newVNCViewer(conn *rfbConn) *vncViewer {
@@ -523,6 +634,37 @@ func (v *vncViewer) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func (v *vncViewer) MinSize() fyne.Size { return fyne.NewSize(320, 240) }
+
+// Resize takes the pane's new size and asks the guest to match it, so the
+// framebuffer fills the pane instead of being letterboxed inside it.
+//
+// The size Fyne hands us is in device-independent units; the guest wants
+// pixels, so it goes through the canvas scale — on a 2x display, asking for
+// the unscaled number would give a guest at half the resolution of the screen
+// it is filling, which is the blurry-upscale bug wearing a different hat.
+//
+// Everything here degrades to today's behaviour: no canvas yet, a server
+// without ExtendedDesktopSize, or a guest that refuses the mode all end with
+// FillContain letterboxing exactly as before.
+func (v *vncViewer) Resize(s fyne.Size) {
+	v.BaseWidget.Resize(s)
+	if v.conn == nil {
+		return
+	}
+	scale := float32(1)
+	if c := fyne.CurrentApp().Driver().CanvasForObject(v); c != nil {
+		scale = c.Scale()
+	}
+	w, h := int(s.Width*scale), int(s.Height*scale)
+	v.fitMu.Lock()
+	defer v.fitMu.Unlock()
+	if v.fitTimer != nil {
+		v.fitTimer.Stop()
+	}
+	v.fitTimer = time.AfterFunc(400*time.Millisecond, func() {
+		v.conn.requestSize(w, h)
+	})
+}
 
 // fbCoords maps a widget position onto framebuffer pixels through the
 // letterbox (FillContain keeps aspect; the margins must not scroll the
@@ -623,11 +765,6 @@ func (v *vncViewer) TypedShortcut(s fyne.Shortcut) {
 	}
 }
 
-// pasteText is the paste itself, split out so a button can reach it as
-// well as Ctrl+V. Both routes are always taken: cut text is instant and
-// exact for a guest running a clipboard agent, and the typed fallback
-// works on everything else — a boot console, a firmware menu, a fresh
-// cloud image with no agent installed at all.
 func (v *vncViewer) pasteText(text string) {
 	if text == "" {
 		return
