@@ -48,18 +48,20 @@ gesture. None of them asks you to read a wiki first.
 ## Highlights
 
 - **A modern VNC client, built from scratch** — the graphics console is a
-  hand-rolled RFB (**Remote Frame Buffer**) implementation rendering the guest's 
-  framebuffer natively into the window, with full mouse, keyboard, and 
-  two-way clipboard. **No websockify, VNC, virt-viewer or bridge process at all.** 
-  It talks straight to qemu's VNC server (over loopback locally, over ssh for a remote
-  host), and the GUI runs natively on **Wayland** (and X11).
+  hand-rolled RFB (**Remote Frame Buffer**) implementation rendering the guest's
+  framebuffer natively into the window, with full mouse, keyboard, and
+  two-way clipboard. **No websockify, no noVNC, no virt-viewer — no bridge
+  process at all.** It talks straight to qemu's VNC server (over loopback
+  locally, over an ssh forward for a remote host), and the GUI runs natively on
+  **Wayland** (and X11).
 
 - **An in-app serial console** — a real terminal on `virsh console`, in the
   same window: boot messages, login prompts, headless ttys, copy-paste and all.
 
 - **Remote management over `qemu+ssh`** — `--connect` a headless hypervisor and
-  the entire tool follows: estate, verbs, the ZFS join, *and* both consoles,
-  authenticated with the same ssh key as your shell. No agent on the far side.
+  the entire tool follows: estate, verbs, the ZFS join, *and* both consoles, over
+  ssh with your own key and `known_hosts` ([the exact trust story](#remote)). No
+  agent on the far side.
 
 - **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
   zero-copy clones in one gesture; blocks are shared until a clone diverges.
