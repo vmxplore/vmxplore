@@ -33,11 +33,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/exec"
 	"os/user"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -47,10 +50,64 @@ import (
 // virtio-sound needs a guest kernel new enough to have the driver at all.
 const soundModel = "ich9"
 
-// qemuUser is the account libvirt runs system-connection guests as. Matches
-// the `user` setting in /etc/libvirt/qemu.conf, whose default is "qemu" on
-// every distro in the matrix.
-const qemuUser = "qemu"
+// defaultQemuUser is the account libvirt runs system-connection guests as
+// when qemu.conf does not say otherwise. "qemu" on every distro in the matrix.
+const defaultQemuUser = "qemu"
+
+// qemuConfPath is where the `user` setting lives. World-readable on every
+// distro here, which is why this can be parsed without privilege.
+const qemuConfPath = "/etc/libvirt/qemu.conf"
+
+// libvirtQemuUser returns the account guests will actually run as.
+//
+// Returns: the configured user, or defaultQemuUser when the file is absent,
+// unreadable or says nothing.
+//
+// WHY this is read rather than assumed: giving guests access to the host's
+// audio session is done by setting `user` here, so the very configuration
+// that makes audio work is the one that moves the account out from under a
+// hardcoded "qemu". A probe testing the wrong account reports "unreachable"
+// on exactly the hosts where it now works, and the operator sees no sound
+// after doing the thing that enables sound.
+//
+// The LAST uncommented assignment wins, matching libvirt's own parser: the
+// file ships with commented examples and operators append rather than edit.
+func libvirtQemuUser() string {
+	f, err := os.Open(qemuConfPath)
+	if err != nil {
+		// /etc/libvirt is mode 0700 on every distro here, so this is the
+		// NORMAL path for an unprivileged GUI — not an edge case. Falling
+		// straight through to the default would answer "qemu" on a host
+		// configured otherwise, probe the wrong account, and disable audio
+		// on exactly the machines where it works. A running guest is ground
+		// truth and costs nothing to read.
+		if who := runningQemuOwner(); who != "" {
+			return who
+		}
+		return defaultQemuUser
+	}
+	defer f.Close()
+	user := defaultQemuUser
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rest, ok := strings.CutPrefix(line, "user")
+		if !ok {
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		if rest, ok = strings.CutPrefix(rest, "="); !ok {
+			continue
+		}
+		if v := strings.Trim(strings.TrimSpace(rest), `"`); v != "" {
+			user = v
+		}
+	}
+	return user
+}
 
 // audioProbeTimeout bounds the reachability test. It runs on the path that
 // builds a VM, so it must never be the reason a build appears to hang.
@@ -83,7 +140,8 @@ func hostAudioReachable() bool {
 	if pipewireSocket() == "" {
 		return false
 	}
-	if _, err := user.Lookup(qemuUser); err != nil {
+	who := libvirtQemuUser()
+	if _, err := user.Lookup(who); err != nil {
 		return false
 	}
 	qemuBin, err := exec.LookPath("qemu-system-x86_64")
@@ -93,13 +151,66 @@ func hostAudioReachable() bool {
 	ctx, cancel := context.WithTimeout(
 		context.Background(), audioProbeTimeout)
 	defer cancel()
-	// -machine none so nothing is emulated but the audio backend, and no
-	// monitor or serial so it cannot wait for anyone. qemu exits 0 when the
-	// backend opens and 1 when it cannot.
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "-u", qemuUser, qemuBin,
-		"-machine", "none", "-audiodev", "pipewire,id=probe",
-		"-monitor", "none", "-serial", "none")
+	// -machine none emulates nothing but the audio backend. The monitor on
+	// stdin is what makes this answerable: qemu that OPENS the backend goes
+	// on running happily and never exits, so an earlier version of this
+	// could only ever observe failure — success looked identical to a hung
+	// probe and timed out into a false negative, leaving the backend off on
+	// exactly the hosts where it works. Feeding "quit" to the monitor makes
+	// the success path exit 0; a backend that cannot open still exits 1
+	// before it ever reads stdin.
+	probe := []string{"-machine", "none", "-display", "none",
+		"-monitor", "stdio", "-audiodev", "pipewire,id=probe"}
+	var cmd *exec.Cmd
+	if cur, err := user.Current(); err == nil && cur.Username == who {
+		// Guests already run as us: no sudo, and no passwordless-sudo
+		// requirement just to answer a question about our own session.
+		cmd = exec.CommandContext(ctx, qemuBin, probe...)
+	} else {
+		args := append([]string{"-n", "-u", who, qemuBin}, probe...)
+		cmd = exec.CommandContext(ctx, "sudo", args...)
+	}
+	cmd.Stdin = strings.NewReader("quit\n")
 	return cmd.Run() == nil
+}
+
+// runningQemuOwner returns the username a live guest's qemu is running as, or
+// "" when no guest is running.
+//
+// Returns: the owner of the first qemu-system-* process found.
+//
+// WHY /proc rather than a config file: the config is root-only, and this is
+// the answer it would have given anyway — with the config's own mistakes and
+// any override already applied. It is only available while something is
+// running, which is why it is a fallback and not the first choice.
+func runningQemuOwner() string {
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil || !strings.HasPrefix(string(comm), "qemu-system-") {
+			continue
+		}
+		fi, err := os.Stat("/proc/" + e.Name())
+		if err != nil {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+		if err != nil {
+			continue
+		}
+		return u.Username
+	}
+	return ""
 }
 
 // pipewireSocket returns the path to this session's PipeWire socket, or "" if
@@ -179,7 +290,7 @@ func audioHostHint() string {
 	// audio session, is the route that actually works; it also drops the
 	// isolation between guests and the desktop user, which is why this is
 	// printed for a human to decide rather than applied.
-	return "guest audio is silent: qemu (running as " + qemuUser +
+	return "guest audio is silent: qemu (running as " + libvirtQemuUser() +
 		") cannot open " + sock + ". Granting an ACL on " + dir +
 		" is not sufficient on PipeWire; set user=\"" +
 		os.Getenv("USER") + "\" in /etc/libvirt/qemu.conf and restart " +

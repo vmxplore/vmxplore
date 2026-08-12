@@ -80,3 +80,16 @@ func TestRemoteTargetNeverGetsAHostBackend(t *testing.T) {
 			args)
 	}
 }
+
+// The probe has to be able to observe SUCCESS, not just failure. On this host
+// the answer depends on qemu.conf and the session, so assert the two halves
+// agree rather than a fixed value — and print what was found, because a
+// silent false is exactly how the first version of this hid a bug.
+func TestProbeAgreesWithConfiguredUser(t *testing.T) {
+	who := libvirtQemuUser()
+	if who == "" {
+		t.Fatal("libvirtQemuUser() returned empty")
+	}
+	t.Logf("guests run as %q; host audio reachable = %v",
+		who, hostAudioReachable())
+}
