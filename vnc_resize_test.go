@@ -172,3 +172,40 @@ func TestRequestSizeSkipsNoOp(t *testing.T) {
 		t.Fatal("asked the guest to resize to the size it already was")
 	}
 }
+
+// The SetEncodings message, decoded back into the numbers it is supposed to
+// carry. The first version of this message hand-wrote -308 as 0xfffffed4,
+// which is -300; qemu ignored the unknown encoding, never advertised
+// ExtendedDesktopSize, and the resize feature was dead on arrival with no
+// symptom other than a letterboxed picture. Two's complement by hand is the
+// bug; asserting the round trip is the guard.
+func TestSetEncodingsCarriesTheRightNumbers(t *testing.T) {
+	r, peer := pipeConn(t)
+	go func() { _ = r.setEncodings() }()
+
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(peer, head); err != nil {
+		t.Fatalf("no SetEncodings: %v", err)
+	}
+	if head[0] != msgSetEncodings {
+		t.Fatalf("message type = %d, want %d", head[0], msgSetEncodings)
+	}
+	n := int(binary.BigEndian.Uint16(head[2:4]))
+	body := make([]byte, 4*n)
+	if _, err := io.ReadFull(peer, body); err != nil {
+		t.Fatalf("short body: %v", err)
+	}
+	got := make(map[int32]bool, n)
+	for i := 0; i < n; i++ {
+		got[int32(binary.BigEndian.Uint32(body[i*4:i*4+4]))] = true
+	}
+	for _, want := range []int32{encRaw, encDesktopSize, encExtendedDesktopSize} {
+		if !got[want] {
+			t.Errorf("encoding %d (%#x) missing from SetEncodings; sent %v",
+				want, uint32(want), got)
+		}
+	}
+}

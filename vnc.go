@@ -257,15 +257,29 @@ func (r *rfbConn) handshake() error {
 	if _, err := r.c.Write(pf); err != nil {
 		return err
 	}
-	// SetEncodings: Raw + DesktopSize + ExtendedDesktopSize. No compressed
+	return r.setEncodings()
+}
+
+// setEncodings tells the server which encodings we understand. Split out
+// so a test can read the bytes back: see TestSetEncodingsCarriesTheRightNumbers.
+func (r *rfbConn) setEncodings() error {
+	// Raw + DesktopSize + ExtendedDesktopSize + ExtendedDesktopSize. No compressed
 	// encoding: the peer is local qemu (or an ssh tunnel to one), so Raw
 	// costs bandwidth we have and saves decode complexity and attack
 	// surface we would rather not carry. The two pseudo-encodings are
 	// notification and negotiation for guest resolution changes.
-	enc := []byte{2, 0, 0, 3,
-		0, 0, 0, 0, // Raw
-		0xff, 0xff, 0xff, 0x21, // -223 DesktopSize
-		0xff, 0xff, 0xfe, 0xd4} // -308 ExtendedDesktopSize
+	// Built from the constants, never hand-written. The first cut spelled
+	// -308 as 0xfffffed4, which is -300: qemu did not recognise it, never
+	// advertised ExtendedDesktopSize, and the resize feature was inert from
+	// the day it shipped — silently, because requestSize is a no-op until
+	// the server opts in. Two's complement is not a thing to do by hand.
+	want := []int32{encRaw, encDesktopSize, encExtendedDesktopSize}
+	enc := make([]byte, 4+4*len(want))
+	enc[0] = msgSetEncodings
+	binary.BigEndian.PutUint16(enc[2:4], uint16(len(want)))
+	for i, e := range want {
+		binary.BigEndian.PutUint32(enc[4+i*4:8+i*4], uint32(e))
+	}
 	_, err := r.c.Write(enc)
 	return err
 }
@@ -802,13 +816,15 @@ func (v *vncViewer) TypedShortcut(s fyne.Shortcut) {
 		v.tapKey('a')
 		return
 	}
-	// Shift+F12 must be caught HERE as well as on the canvas. A focused
-	// vncViewer is the one widget that swallows the keyboard wholesale —
-	// that is its job, it is forwarding to a guest — so a canvas-level
-	// shortcut never fires while the operator is actually using the
-	// console, which is precisely when they want to toggle fullscreen.
+	// The fullscreen chord must be caught HERE as well as on the canvas. A
+	// focused vncViewer is the one widget that swallows the keyboard
+	// wholesale — that is its job, it is forwarding to a guest — so a
+	// canvas-level shortcut never fires while the operator is actually using
+	// the console, which is precisely when they want to toggle fullscreen.
+	// Both sites compare against the same resolved chord (see gui_keys.go).
 	if c, ok := s.(*desktop.CustomShortcut); ok &&
-		c.KeyName == fyne.KeyF12 && c.Modifier == fyne.KeyModifierShift {
+		c.KeyName == fullScreenKey.KeyName &&
+		c.Modifier == fullScreenKey.Modifier {
 		if v.onFullScreen != nil {
 			v.onFullScreen()
 		}
