@@ -42,6 +42,12 @@ type recipe struct {
 	// Pkgs is the install command's arguments — a group, a pattern or a
 	// task package, whatever that distro actually uses.
 	Pkgs []string
+	// Extra is plain PACKAGES, never group ids. Split from Pkgs because
+	// Fedora installs groups with `dnf group install`, which rejects a
+	// package name outright — and rejects it by failing the whole
+	// transaction, so one stray package means nothing at all is installed.
+	// Distros whose install command takes both can have these appended.
+	Extra []string
 	// DM is the display-manager unit to enable. Named explicitly wherever
 	// it is known, because "the group pulls one" is an assumption that was
 	// FALSE for Fedora's kde-desktop — it pulls none at all.
@@ -68,8 +74,16 @@ var desktopRecipes = map[string]map[string]recipe{
 		// enabled explicitly: a no-op when the group already did it, and
 		// insurance against a future group change removing the login screen.
 		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
-		"kde":   {Pkgs: []string{"kde-desktop-environment", "sddm"}, DM: "sddm"},
-		"xfce":  {Pkgs: []string{"xfce-desktop-environment"}, DM: "lightdm"},
+		// sddm is in Extra, NOT Pkgs: `dnf group install kde-desktop-environment
+		// sddm` fails with "No match for argument: sddm" and installs NOTHING,
+		// leaving the guest with only the cloud image's base packages, no
+		// desktop and no login screen (2026-08-11).
+		"kde": {
+			Pkgs:  []string{"kde-desktop-environment"},
+			Extra: []string{"sddm"},
+			DM:    "sddm",
+		},
+		"xfce": {Pkgs: []string{"xfce-desktop-environment"}, DM: "lightdm"},
 	},
 	"debian": {
 		"gnome": {Pkgs: []string{"task-gnome-desktop"}},
@@ -147,15 +161,22 @@ func desktopPostInstall(distro, desktop string) string {
 		// negative is what sent this to the bare -product groups and shipped
 		// a desktop with no applications.
 		install = "dnf group install -y " + strings.Join(r.Pkgs, " ")
+		if len(r.Extra) > 0 {
+			// A second command, because the first will not take a package
+			// name. Chained so a failed group still fails the whole step.
+			install += " && dnf install -y " + strings.Join(r.Extra, " ")
+		}
 	case "debian", "ubuntu":
 		// noninteractive or tasksel stops to ask about keyboard layout and
 		// waits forever on a machine with nobody at the console.
 		install = "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
-			strings.Join(r.Pkgs, " ")
+			strings.Join(append(append([]string{}, r.Pkgs...), r.Extra...), " ")
 	case "opensuse":
-		install = "zypper --non-interactive install " + strings.Join(r.Pkgs, " ")
+		install = "zypper --non-interactive install " +
+			strings.Join(append(append([]string{}, r.Pkgs...), r.Extra...), " ")
 	case "arch":
-		install = "pacman -Sy --noconfirm " + strings.Join(r.Pkgs, " ")
+		install = "pacman -Sy --noconfirm " +
+			strings.Join(append(append([]string{}, r.Pkgs...), r.Extra...), " ")
 	default:
 		return ""
 	}

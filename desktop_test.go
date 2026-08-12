@@ -152,3 +152,49 @@ func TestFedoraUsesEnvironmentGroupsNotCores(t *testing.T) {
 		t.Error("fedora/gnome must not install the bare workstation-product core")
 	}
 }
+
+// Fedora installs desktops with `dnf group install`, which takes group and
+// environment ids ONLY. A package name in that argument list does not get
+// skipped — it fails the whole transaction, so the guest boots with the cloud
+// image's base packages, no desktop and no login screen, and the only clue is
+// one line on a console nobody watched.
+//
+// HISTORY: 2026-08-11 — fedora/kde shipped `dnf group install -y
+// kde-desktop-environment sddm`. "No match for argument: sddm" aborted the
+// transaction; a KDE guest came up with ~380 packages and no window manager.
+func TestFedoraGroupInstallGetsOnlyGroups(t *testing.T) {
+	for desktop, r := range desktopRecipes["fedora"] {
+		for _, p := range r.Pkgs {
+			// Every Fedora desktop is delivered by an id ending in
+			// -environment; a bare package name here is the bug.
+			if !strings.HasSuffix(p, "-environment") {
+				t.Errorf("fedora/%s: Pkgs contains %q, which is not a group "+
+					"id — dnf group install will fail the whole transaction "+
+					"and install nothing. Plain packages belong in Extra.",
+					desktop, p)
+			}
+		}
+	}
+}
+
+// The split has to survive into the generated script: groups to `dnf group
+// install`, packages to `dnf install`, and the two chained so a failed group
+// still fails the step.
+func TestFedoraKDEScriptSplitsGroupsFromPackages(t *testing.T) {
+	s := desktopPostInstall("fedora", "kde")
+	if s == "" {
+		t.Fatal("no script generated for fedora/kde")
+	}
+	if !strings.Contains(s, "dnf group install -y kde-desktop-environment") {
+		t.Errorf("script does not group-install the environment:\n%s", s)
+	}
+	if !strings.Contains(s, "dnf install -y sddm") {
+		t.Errorf("script does not plain-install sddm:\n%s", s)
+	}
+	if strings.Contains(s, "group install -y kde-desktop-environment sddm") {
+		t.Errorf("sddm is still being passed to group install:\n%s", s)
+	}
+	if !strings.Contains(s, "systemctl enable sddm") {
+		t.Errorf("script never enables the display manager:\n%s", s)
+	}
+}
