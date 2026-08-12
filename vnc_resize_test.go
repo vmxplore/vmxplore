@@ -16,7 +16,56 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"fyne.io/fyne/v2"
 )
+
+// Fyne swallows the standard editing chords before they reach TypedRune and
+// hands them to TypedShortcut instead. A handler that ignores one does not
+// pass it through — it eats it, silently. That is how Ctrl+C stopped being
+// able to interrupt a process in a guest terminal: no error, no log line, the
+// keystroke simply never arrived. These assert the bytes on the wire.
+func TestEditingShortcutsReachTheGuest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sc   fyne.Shortcut
+		sym  uint32
+	}{
+		{"copy/interrupt", &fyne.ShortcutCopy{}, 'c'},
+		{"cut", &fyne.ShortcutCut{}, 'x'},
+		{"select all", &fyne.ShortcutSelectAll{}, 'a'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, peer := pipeConn(t)
+			v := &vncViewer{conn: r}
+
+			go v.TypedShortcut(tc.sc)
+
+			if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			// Two KeyEvents, 8 bytes each: press then release.
+			buf := make([]byte, 16)
+			if _, err := io.ReadFull(peer, buf); err != nil {
+				t.Fatalf("nothing reached the guest: %v", err)
+			}
+			for i, want := range []byte{1, 0} { // down, then up
+				off := i * 8
+				if buf[off] != msgKeyEvent {
+					t.Errorf("event %d: type = %d, want KeyEvent", i, buf[off])
+				}
+				if buf[off+1] != want {
+					t.Errorf("event %d: down flag = %d, want %d", i, buf[off+1], want)
+				}
+				if got := binary.BigEndian.Uint32(buf[off+4 : off+8]); got != tc.sym {
+					t.Errorf("event %d: keysym = %#x, want %#x (the UNMODIFIED "+
+						"letter — the guest applies the Control it already holds)",
+						i, got, tc.sym)
+				}
+			}
+		})
+	}
+}
 
 // pipeConn wires an rfbConn to an in-memory peer so a write can be read back.
 func pipeConn(t *testing.T) (*rfbConn, net.Conn) {

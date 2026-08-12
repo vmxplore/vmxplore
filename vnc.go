@@ -759,12 +759,53 @@ func mouseBit(b desktop.MouseButton) uint8 {
 // TypedShortcut handles paste (Ctrl+V): the clipboard goes to the guest
 // twice over — as RFB cut text (guests with clipboard integration take
 // it) and typed as keystrokes (works everywhere, boot consoles included).
+// TypedShortcut is where Fyne delivers the standard editing chords, and it
+// has to hand almost all of them straight back to the guest.
+//
+// Fyne intercepts Ctrl+C/X/A before they reach TypedRune and routes them here
+// as ShortcutCopy/Cut/SelectAll. Ignoring one does not pass it through — it
+// EATS it. The modifier itself is tracked separately (KeyDown sends the
+// Control keysym, see modKeysyms), so the guest saw Control go down, then
+// nothing, then Control come up.
+//
+// The consequence was not "copy does not work": it was that **Ctrl+C could
+// not interrupt anything in a guest**. A runaway process in a guest terminal
+// was unkillable from the graphical console — you had to open Serial to send
+// a signal to a machine whose screen was right there. Ctrl+A likewise never
+// reached a shell or an editor.
+//
+// Forwarding also fixes copy in the direction people mean it: the guest runs
+// its own copy, its clipboard agent sends ServerCutText, and that lands on
+// the host clipboard through onCutText. Intercepting would have been the
+// wrong half of the round trip.
+//
+// Paste is the single deliberate exception — see pasteText for why the host
+// clipboard is typed in rather than handed over.
 func (v *vncViewer) TypedShortcut(s fyne.Shortcut) {
 	if p, ok := s.(*fyne.ShortcutPaste); ok {
 		v.pasteText(p.Clipboard.Content())
+		return
+	}
+	// The keysym is the UNMODIFIED letter: X11 expects 'c' with Control
+	// already held, not some pre-combined code.
+	switch s.(type) {
+	case *fyne.ShortcutCopy:
+		v.tapKey('c')
+		return
+	case *fyne.ShortcutCut:
+		v.tapKey('x')
+		return
+	case *fyne.ShortcutSelectAll:
+		v.tapKey('a')
+		return
 	}
 }
 
+// pasteText is the paste itself, split out so a button can reach it as
+// well as Ctrl+V. Both routes are always taken: cut text is instant and
+// exact for a guest running a clipboard agent, and the typed fallback
+// works on everything else — a boot console, a firmware menu, a fresh
+// cloud image with no agent installed at all.
 func (v *vncViewer) pasteText(text string) {
 	if text == "" {
 		return
@@ -860,6 +901,15 @@ func (v *vncViewer) FocusLost() {
 	for _, sym := range modSyms {
 		v.conn.key(sym, false)
 	}
+}
+
+// tapKey presses and releases one keysym. The modifiers around it are
+// whatever the operator is physically holding — KeyDown/KeyUp already told
+// the guest about those, so this must not touch them: synthesising a Control
+// press here would release it out from under a hand still holding it.
+func (v *vncViewer) tapKey(r rune) {
+	v.conn.key(uint32(r), true)
+	v.conn.key(uint32(r), false)
 }
 
 func (v *vncViewer) TypedRune(r rune) {
