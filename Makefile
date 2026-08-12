@@ -21,6 +21,14 @@
 # in --version and the GUI status bar. .DEFAULT_GOAL is set explicitly so
 # `bump` being written first can't become the default goal (the zxplore/
 # wgxplore Makefile bug, 2026-08-03).
+#
+# HISTORY: `install` used to depend on `build`, so the ordinary
+# `make build && sudo make install` ran bump TWICE and rebuilt the binaries
+# under sudo before installing them. Every build ever installed came out
+# even — b34, b36, ... b44, b46 — and the odd number in between existed for
+# about a second before being overwritten, which made the counter useless
+# for saying "the binary you are running is the code I just changed".
+# install now installs what is already in the tree; build it first.
 .DEFAULT_GOAL := build
 
 BIN_TUI := vmx
@@ -71,7 +79,9 @@ check: vet test build
 clean:
 	rm -f $(BIN_TUI) $(BIN_GUI)
 
-install: build
+install:
+	@test -x $(BIN_GUI) && test -x $(BIN_TUI) || \
+		{ echo "make install: build first — $(BIN_GUI)/$(BIN_TUI) not in the tree" >&2; exit 1; }
 	install -d $(BINDIR) $(MANDIR) $(APPDIR) $(ICONDIR) $(DOCDIR)
 	install -m 0755 $(BIN_GUI) $(BINDIR)/$(BIN_GUI)
 	install -m 0755 $(BIN_TUI) $(BINDIR)/$(BIN_TUI)
