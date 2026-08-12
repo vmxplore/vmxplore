@@ -80,6 +80,11 @@ gesture. None of them asks you to read a wiki first.
   one attached to the VMs). Find an NVIDIA card and New VM offers to install
   the drivers in the guest; find none and the option never appears.
 
+- **Sound, without breaking the build** — every machine gets an emulated
+  ich9 card. The host audio backend is wired only when qemu can actually open
+  your PipeWire session, because qemu treats an unreachable backend as fatal:
+  adding one on faith gives you a VM that won't start, not a quiet one.
+
 - **Batch operations** — check many VMs and Start / Stop / Reboot / Delete them
   all at once.
 

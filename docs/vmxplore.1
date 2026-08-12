@@ -487,6 +487,44 @@ One dialog for the whole pattern: build a machine, let it settle, seal it
 into a golden, then stamp out a chosen number of clones.
 Cloud mode only — a golden must be a finished system — and it needs a ZFS
 parent.
+.Ss Sound
+Every machine
+.Nm
+builds is given an emulated Intel HD Audio card
+.Pq Sy ich9 ,
+because a guest with no sound device cannot be given one later without
+editing its XML and rebooting it, and the card costs nothing.
+.Pp
+Whether that card reaches the host's speakers is a separate question, and
+.Nm
+answers it by asking qemu rather than guessing.
+A host audio backend is added only when qemu \[u2014] run as the account
+libvirt uses, which is
+.Sy qemu
+by default \[u2014] can actually open the session's PipeWire socket.
+qemu treats an unreachable audio backend as fatal rather than falling back to
+silence, so a backend added on faith does not produce a quiet guest: it
+produces a guest that will not start at all.
+.Pp
+On a stock system connection it cannot: /run/user/$UID is mode 0700 and
+libvirt's qemu is not the desktop user.
+An ACL on the socket is
+.Em not
+sufficient \[u2014] PipeWire still refuses the client.
+The route that works is setting
+.Va user
+in
+.Pa /etc/libvirt/qemu.conf
+to the account that owns the audio session, then restarting libvirtd; that
+also removes the isolation between guests and that user, which is why
+.Nm
+prints the suggestion instead of applying it.
+.Pp
+Remote targets never get a host backend.
+.Xr virt-install 1
+runs on this machine even when building a guest elsewhere, so this session's
+audio says nothing about the machine the guest will run on \[u2014] and its
+sound would come out of that machine's speakers regardless.
 .Ss GPUs
 The host's display controllers are probed from sysfs, and over the SSH
 transport when the target is remote: the card that matters is the one

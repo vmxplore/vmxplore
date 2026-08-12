@@ -574,8 +574,12 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--network", "network=default,model=virtio",
 			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
-			"--channel", vdagentArg,
-			"--noautoconsole")
+			"--channel", vdagentArg)
+		// Sound is appended rather than inlined because the backend half is
+		// conditional on the host — see audio.go, where an unreachable
+		// PipeWire is a qemu startup failure and not a silent guest.
+		argv = append(argv, audioArgs(target)...)
+		argv = append(argv, "--noautoconsole")
 		if err := run(false, argv...); err != nil {
 			return err
 		}
@@ -719,12 +723,13 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--disk", "path=" + seedISO + ",device=cdrom,bus=sata",
 			"--import"}
 		argv = append(argv, osinfo...)
-		return append(argv,
+		argv = append(argv,
 			"--network", "network=default,model=virtio",
 			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
-			"--channel", vdagentArg,
-			"--noautoconsole")
+			"--channel", vdagentArg)
+		argv = append(argv, audioArgs(target)...)
+		return append(argv, "--noautoconsole")
 	}
 	err = run(false, installArgs("--os-variant", variant)...)
 	if err != nil && strings.Contains(err.Error(), "Unknown OS name") {
