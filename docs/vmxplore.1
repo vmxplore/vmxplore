@@ -9,6 +9,8 @@
 .Nd KVM and libvirt console for Linux
 .Sh SYNOPSIS
 .Nm
+.Fl -setup
+.Nm
 .Op Fl -tui
 .Op Fl -once
 .Op Fl -connect Ar dest
@@ -56,6 +58,28 @@ host additionally exposes its own toolset.
 .Pp
 The options are as follows:
 .Bl -tag -width "--appliance-script name"
+.It Fl -setup
+Turn this machine into a hypervisor, then exit.
+.Pp
+Reads
+.Pa /etc/os-release ,
+picks the package manager for this distribution
+.Pq Debian/Ubuntu, Fedora/RHEL/Rocky, Arch or SUSE ,
+installs the KVM stack, enables
+.Xr libvirtd 8 ,
+starts and autostarts the default network, and adds the invoking user to the
+.Sy libvirt
+group.
+.Pp
+Every command is PRINTED, in order, before any of them runs \[u2014] so the
+list can be read, refused, or copied out and run by hand instead.
+Nothing installed is specific to
+.Nm :
+it is the stock KVM stack the distribution already ships.
+.Pp
+The group membership does not take effect until the next login, and
+.Nm
+says so rather than leaving a permission error to be diagnosed.
 .It Fl -tui
 Start the terminal UI.
 .It Fl -once
