@@ -2676,12 +2676,20 @@ func runGUI(rs *Ruleset) {
 	rightBottom := gap(card(container.NewBorder(
 		heading("DETAILS & ACTIONS", acBlue), buttons, nil, nil,
 		container.NewScroll(dossier))))
-	// console dominates by default (operator: the screen is the point);
-	// details keep a slim strip — the splitter drags when you want more
+	// Defaults measured from the operator's own layout (2026-08-13), not
+	// guessed: the estate tree needs about a fifth of the width to show a
+	// name, a state and a resource line without truncating, and everything
+	// past that is width the console could have used. 0.38 gave the tree
+	// nearly half again more than it uses, so every session began by
+	// dragging the same splitter to the same place.
+	//
+	// Both are starting positions, not constraints — Fyne remembers neither,
+	// so these are what every launch looks like until the operator drags.
+	// The console dominates because the screen is the point.
 	right := container.NewVSplit(consolePane, rightBottom)
-	right.SetOffset(0.78)
+	right.SetOffset(0.82)
 	body := container.NewHSplit(left, right)
-	body.SetOffset(0.38)
+	body.SetOffset(0.21)
 	mainContent = container.NewBorder(nil, status, nil, nil, gap(body))
 
 	// The manual page lives in manual_ui.go: ~100 lines that need a window
