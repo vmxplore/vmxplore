@@ -407,10 +407,25 @@ func wireHostAudio(name string) error {
 // logs in. A desktop guest gets it from its session anyway; this covers the
 // headless and minimal cases where nothing else would start it.
 func soundPostInstall(distro string) string {
+	// kernel-modules is NOT optional on the EL/Fedora side, and it is the
+	// piece that is easy to miss because everything else looks right.
+	//
+	// HISTORY: 2026-08-13, first end-to-end test. The domain had the card,
+	// qemu had ich9-intel-hda + hda-duplex, lspci in the guest showed
+	// "Intel ICH9 HD Audio Controller" — and GNOME offered only "Dummy
+	// Output". Cloud images install kernel-core, which deliberately excludes
+	// sound drivers to stay small, so snd-hda-intel.ko was not on the disk at
+	// all. Userspace was installed and had nothing to bind to:
+	//
+	//     lsmod | grep snd_hda_intel  -> 0
+	//     aplay -l                    -> no soundcards found
+	//
+	// Debian and Ubuntu ship sound modules in their linux-image packages, so
+	// only the RPM side needs the extra package.
 	var install string
 	switch distro {
 	case "fedora", "centos", "rocky", "rhel":
-		install = "dnf install -y pipewire pipewire-alsa pipewire-pulseaudio wireplumber alsa-utils"
+		install = "dnf install -y kernel-modules-$(uname -r) pipewire pipewire-alsa pipewire-pulseaudio wireplumber alsa-utils"
 	case "debian", "ubuntu":
 		install = "DEBIAN_FRONTEND=noninteractive apt-get install -y pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
 	case "arch":
@@ -424,6 +439,10 @@ func soundPostInstall(distro string) string {
 # host config.
 echo 'vmxplore: installing the guest audio stack'
 if ` + install + `; then
+  # The module is not loaded by the install; without this the card stays
+  # invisible until a reboot, and a desktop guest reboots into the desktop
+  # anyway — but a headless one would not.
+  modprobe snd-hda-intel 2>/dev/null || true
   systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true
   # swallow: --global enable is a no-op when the units are already enabled
   # by the distro's own presets, which is the common case on a desktop.
