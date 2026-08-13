@@ -1584,8 +1584,24 @@ func runGUI(rs *Ruleset) {
 		soundNote.Wrapping = fyne.TextWrapWord
 		soundNote.TextStyle = fyne.TextStyle{Italic: true}
 		if soundOK {
+			// ON by default, because the answer to "should this VM have
+			// sound" is yes whenever it CAN, and soundOK has already proved
+			// it can — qemu itself opened the backend, under libvirt's own
+			// empty environment.
+			//
+			// HISTORY: 2026-08-12. Shipped unchecked, and the first VM built
+			// after the feature landed had no sound. Nothing failed and
+			// nothing was logged: the box was simply never ticked, so the
+			// host backend stayed type='none' AND the guest never got its
+			// audio stack. That reads as "the sound feature is broken",
+			// which is worse than not having it — an unchecked box is
+			// indistinguishable from a bug at the only moment anyone looks.
+			// Opting OUT of sound is a preference; opting IN should not be a
+			// prerequisite for a desktop that makes noise.
+			sound.SetChecked(true)
 			soundNote.SetText("Adds an ich9 card wired to this session, and " +
-				"installs the guest's audio stack on first boot.")
+				"installs the guest's audio stack on first boot. Untick for " +
+				"a silent guest.")
 		} else {
 			sound.Disable()
 			soundNote.SetText(audioHostHint())

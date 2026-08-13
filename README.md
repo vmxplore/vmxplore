@@ -29,6 +29,33 @@ that window: a native GUI (and a static TUI for ssh) over the libvirt you
 already have. Nothing replaced, no appliance, no agent, no reinstall; `virsh`
 is never fought, only shown.
 
+## Install
+
+No KVM on the machine yet? That is the normal case, and it is handled:
+
+```bash
+curl -fsSLO https://github.com/vmxplore/vmxplore/releases/latest/download/vmx-linux-amd64
+sudo install -m0755 vmx-linux-amd64 /usr/local/bin/vmx
+
+vmx --setup      # installs the KVM stack — prints every command BEFORE running any
+vmx --tui        # you are in
+```
+
+`--setup` reads `/etc/os-release`, picks the package manager for
+Debian/Ubuntu, Fedora/RHEL/Rocky, Arch or SUSE, installs the stock KVM stack,
+enables `libvirtd`, starts the default network and adds you to the `libvirt`
+group. It shows the whole list first, so you can read it, refuse it, or copy
+the commands out and run them yourself. Group membership needs a re-login —
+it says so rather than leaving you with a permission error.
+
+For the desktop GUI, take `vmxplore-linux-amd64` from the same release and run
+`vmxplore`. Both binaries are static; `vmx` has zero runtime dependencies and
+there is an `arm64` build. Checksums are in `SHA256SUMS`.
+
+Already have KVM? Skip `--setup` — it will tell you there is nothing to do.
+[Building from source, adding OpenZFS, and the kldload substrate](#three-ways-in)
+are further down.
+
 ## Push-button machines
 
 Pick a distro. Select your desktop. Done.

@@ -164,6 +164,9 @@ type NewVMSpec struct {
 	PostInst  string // cloud mode only — bash run as root on first boot
 	Desktop   string // cloud mode only — "", "none", "gnome", "kde", "xfce"
 	Sound     bool   // wire the guest's card to the host's audio session
+	UEFI      bool   // boot via OVMF instead of SeaBIOS
+	TPM       bool   // emulated TPM 2.0 (swtpm) — Windows 11 requires one
+	DriverISO string // second CD-ROM, e.g. virtio-win for Windows installs
 
 	// RHEL entitlement. Red Hat's KVM guest images sit behind an
 	// authenticated CDN, so unlike every other preset the IMAGE cannot be
@@ -578,6 +581,15 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--vcpus", fmt.Sprint(s.VCPUs),
 			"--disk", diskArg,
 			"--cdrom", s.ISOPath}, osArg...)
+		argv = append(argv, firmwareArgs(s)...)
+		if s.DriverISO != "" {
+			// A SECOND cdrom, not a replacement: WinPE needs the virtio
+			// storage driver available while the installer media is still
+			// mounted, or Windows setup shows an empty disk list and the
+			// install dead-ends before it starts.
+			argv = append(argv, "--disk",
+				"path="+s.DriverISO+",device=cdrom")
+		}
 		argv = append(argv,
 			"--network", "network=default,model=virtio",
 			"--graphics", "vnc,listen=127.0.0.1",
