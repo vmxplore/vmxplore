@@ -163,6 +163,7 @@ type NewVMSpec struct {
 	SSHKey    string // cloud mode only — one authorized_keys line
 	PostInst  string // cloud mode only — bash run as root on first boot
 	Desktop   string // cloud mode only — "", "none", "gnome", "kde", "xfce"
+	Sound     bool   // wire the guest's card to the host's audio session
 
 	// RHEL entitlement. Red Hat's KVM guest images sit behind an
 	// authenticated CDN, so unlike every other preset the IMAGE cannot be
@@ -475,6 +476,13 @@ func userData(s NewVMSpec) string {
 	// Order matters: entitle first (nothing installs without repos), then
 	// the desktop, then the operator's own script — which may well want to
 	// configure the desktop the step above just installed.
+	// Before the desktop, so a desktop session finds the audio stack already
+	// present rather than starting without one and needing a re-login.
+	if s.Sound {
+		if snd := soundPostInstall(s.Distro); snd != "" {
+			post = snd + "\n" + post
+		}
+	}
 	if d := desktopPostInstall(s.Distro, s.Desktop); d != "" {
 		post = d + "\n" + post
 	}
@@ -759,6 +767,21 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	}
 	if err := run(false, append(virsh(), "define", xf)...); err != nil {
 		return err
+	}
+	// Host half of the audio wiring, after the domain is persistent and
+	// before anyone starts it.
+	//
+	// NEVER fatal. The VM exists and works at this point; failing the whole
+	// build because a sound backend could not be attached would trade a
+	// working machine for a missing speaker. The operator is told, and the
+	// domain keeps its card — pointed at nothing until this is retried.
+	if s.Sound {
+		if err := wireHostAudio(s.Name); err != nil {
+			progress("host audio not wired: " + err.Error() +
+				" — the guest has a card but no output")
+		} else {
+			progress("host audio wired — sound reaches this machine on next start")
+		}
 	}
 	// Committed only here: everything up to the persistent define is still
 	// this build's to unwind. A failure at dumpxml or define leaves a

@@ -10,6 +10,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -94,4 +95,35 @@ func TestProbeAgreesWithConfiguredUser(t *testing.T) {
 	}
 	t.Logf("guests run as %q; host audio reachable = %v",
 		who, hostAudioReachable())
+}
+
+// The guest half must exist for every distro the cloud path can build, or
+// "sound" silently means "a card the guest cannot use" on some of them.
+func TestSoundPostInstallCoversTheCloudDistros(t *testing.T) {
+	for _, d := range []string{"fedora", "centos", "rocky", "rhel", "debian", "ubuntu", "arch"} {
+		s := soundPostInstall(d)
+		if s == "" {
+			t.Errorf("soundPostInstall(%q) is empty — the guest would get a "+
+				"card with no stack to drive it", d)
+			continue
+		}
+		if !strings.Contains(s, "pipewire") {
+			t.Errorf("soundPostInstall(%q) installs no pipewire: %s", d, s)
+		}
+	}
+	if got := soundPostInstall("plan9"); got != "" {
+		t.Errorf("unknown distro should yield no snippet, got: %s", got)
+	}
+}
+
+// Sound is opt-in. An unchecked build must not carry the guest snippet.
+func TestSoundIsOptIn(t *testing.T) {
+	off := userData(NewVMSpec{Name: "x", User: "admin", Distro: "fedora"})
+	if strings.Contains(off, "guest audio stack") {
+		t.Error("sound setup present without Sound being set")
+	}
+	on := userData(NewVMSpec{Name: "x", User: "admin", Distro: "fedora", Sound: true})
+	if !strings.Contains(on, "guest audio stack") {
+		t.Error("Sound=true did not inject the guest audio setup")
+	}
 }

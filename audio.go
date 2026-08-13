@@ -35,9 +35,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -326,4 +328,108 @@ func audioHostHint() string {
 		" is not sufficient on PipeWire; set user=\"" +
 		os.Getenv("USER") + "\" in /etc/libvirt/qemu.conf and restart " +
 		"libvirtd so guests run as the owner of the audio session"
+}
+
+// wireHostAudio points a domain's audio backend at the host's PipeWire.
+//
+// Args:    name — the domain, which must be SHUT OFF (libvirt applies the
+//
+//	edit to the persistent config; a running guest keeps its old one
+//	until the next start).
+//
+// Returns: nil on success; an error naming what failed. Callers should treat
+//
+//	failure as "no sound", never as "no VM" — the domain is already
+//	built and working at this point.
+//
+// WHY an XML edit and not a virt-install flag: libvirt needs
+// <audio type='pipewire' runtimeDir='...'> because it starts qemu WITHOUT
+// XDG_RUNTIME_DIR, so qemu cannot find the session socket on its own.
+// virt-install's --audio parser rejects the attribute, and injecting it by
+// XPath appends a SECOND <audio> element, which libvirt refuses with
+// "Missing required attribute 'id' in element 'audio'". Editing the defined
+// XML is the only route that produces one correct element.
+//
+// WARN: getting this wrong does not produce a quiet guest. qemu treats an
+// unreachable audio backend as fatal, so a domain with a bad <audio> element
+// FAILS TO START. That is why this runs only when hostAudioReachable() has
+// already said yes, and why the caller must tolerate its failure.
+func wireHostAudio(name string) error {
+	if name == "" {
+		return fmt.Errorf("wireHostAudio: no domain name")
+	}
+	out, err := exec.Command(virsh("dumpxml", name)[0], virsh("dumpxml", name)[1:]...).Output()
+	if err != nil {
+		return fmt.Errorf("dumpxml %s: %w", name, err)
+	}
+	xml := string(out)
+
+	// libvirt always writes exactly one <audio> element (type='none' when no
+	// backend was requested), so this is a replace, not an insert.
+	re := regexp.MustCompile(`<audio id='([0-9]+)' type='[a-z]+'\s*/>`)
+	m := re.FindStringSubmatch(xml)
+	if m == nil {
+		return fmt.Errorf("%s has no <audio> element to rewrite", name)
+	}
+	xml = re.ReplaceAllString(xml,
+		fmt.Sprintf(`<audio id='$1' type='pipewire' runtimeDir='%s'/>`,
+			pipewireRuntimeDir()))
+
+	f, err := os.CreateTemp("", "vmx-audio-*.xml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(xml); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	if out, err := exec.Command(virsh("define", f.Name())[0], virsh("define", f.Name())[1:]...).CombinedOutput(); err != nil {
+		return fmt.Errorf("define %s: %s", name, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// soundPostInstall returns the guest-side setup for host audio, or "".
+//
+// Args:    distro — the cloud preset key.
+// Returns: bash for the guest's first boot.
+//
+// WHY the guest needs anything at all: the host half only gives the card
+// somewhere to send audio. A cloud image has no sound stack — no PipeWire, no
+// ALSA userspace — so the guest sees an ich9 device it cannot use, and the
+// result looks identical to a broken host config. Both halves or neither.
+//
+// The service is enabled per-user rather than system-wide because that is how
+// PipeWire is meant to run: one instance per session, started when someone
+// logs in. A desktop guest gets it from its session anyway; this covers the
+// headless and minimal cases where nothing else would start it.
+func soundPostInstall(distro string) string {
+	var install string
+	switch distro {
+	case "fedora", "centos", "rocky", "rhel":
+		install = "dnf install -y pipewire pipewire-alsa pipewire-pulseaudio wireplumber alsa-utils"
+	case "debian", "ubuntu":
+		install = "DEBIAN_FRONTEND=noninteractive apt-get install -y pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
+	case "arch":
+		install = "pacman -Sy --noconfirm pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
+	default:
+		return ""
+	}
+	return `# Host audio: the domain has an ich9 card wired to the host's
+# PipeWire. This gives the guest a stack to drive it with — without this
+# the card is present and unusable, which looks exactly like a broken
+# host config.
+echo 'vmxplore: installing the guest audio stack'
+if ` + install + `; then
+  systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service 2>/dev/null || true
+  # swallow: --global enable is a no-op when the units are already enabled
+  # by the distro's own presets, which is the common case on a desktop.
+  echo 'vmxplore: guest audio ready — sound reaches the host on next login'
+else
+  echo 'vmxplore: guest audio stack FAILED to install — the card is present but unusable' >&2
+fi
+`
 }
