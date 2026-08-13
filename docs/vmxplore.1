@@ -495,16 +495,35 @@ builds is given an emulated Intel HD Audio card
 because a guest with no sound device cannot be given one later without
 editing its XML and rebooting it, and the card costs nothing.
 .Pp
-Whether that card reaches the host's speakers is a separate question, and
-.Nm
-answers it by asking qemu rather than guessing.
-A host audio backend is added only when qemu \[u2014] run as the account
-libvirt uses, which is
-.Sy qemu
-by default \[u2014] can actually open the session's PipeWire socket.
-qemu treats an unreachable audio backend as fatal rather than falling back to
-silence, so a backend added on faith does not produce a quiet guest: it
-produces a guest that will not start at all.
+Whether that card reaches the host's speakers is a separate question, answered
+by the
+.Sy host audio
+checkbox when the machine is built.
+Ticking it does two things, and neither is any use alone: the domain's
+.Sy <audio>
+element is rewritten to
+.Sy type='pipewire'
+with a
+.Sy runtimeDir ,
+and the guest gets PipeWire, WirePlumber and alsa-utils installed on its first
+boot \[u2014] a cloud image ships no sound stack, so the card alone is a device
+nothing can drive.
+.Pp
+The attribute is why this is an XML edit rather than a
+.Xr virt-install 1
+flag: libvirt starts qemu WITHOUT XDG_RUNTIME_DIR, so qemu cannot find the
+session socket on its own;
+.Sy --audio
+rejects the attribute, and injecting it by XPath appends a second
+.Sy <audio>
+element that libvirt refuses.
+.Pp
+The checkbox is offered only when it can succeed, because qemu treats an
+unreachable audio backend as fatal rather than falling back to silence: a
+domain wired to one that is not there does not start at all.
+The probe runs qemu itself, under the same empty environment libvirt uses
+\[u2014] checking file permissions instead reported success on a host where
+every domain failed.
 .Pp
 On a stock system connection it cannot: /run/user/$UID is mode 0700 and
 libvirt's qemu is not the desktop user.

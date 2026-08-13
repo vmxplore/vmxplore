@@ -80,10 +80,22 @@ gesture. None of them asks you to read a wiki first.
   one attached to the VMs). Find an NVIDIA card and New VM offers to install
   the drivers in the guest; find none and the option never appears.
 
-- **Sound, without breaking the build** — every machine gets an emulated
-  ich9 card. The host audio backend is wired only when qemu can actually open
-  your PipeWire session, because qemu treats an unreachable backend as fatal:
-  adding one on faith gives you a VM that won't start, not a quiet one.
+- **Sound, plumbed when the machine is built** — every guest gets an emulated
+  ich9 card, and a **host audio** checkbox wires it to your PipeWire session:
+  the domain gets `<audio type='pipewire'>` and the guest gets an audio stack
+  installed on first boot. Both halves or neither — the card alone is a device
+  a cloud image has nothing to drive.
+
+  The checkbox is offered only when it can succeed, because qemu treats an
+  unreachable audio backend as **fatal**: a domain wired to one that isn't
+  there does not start. The probe asks qemu itself, under the same empty
+  environment libvirt uses. Remote targets never get it — `virt-install` runs
+  on your machine while the guest runs on theirs.
+
+- **It notices when libvirt goes away** — the estate connection redials once on
+  a dead socket and retries. Restarting libvirtd used to freeze the tree at its
+  last good snapshot while the verbs kept working, so the display could show
+  state it could no longer confirm while force-off and delete still landed.
 
 - **Batch operations** — check many VMs and Start / Stop / Reboot / Delete them
   all at once.
@@ -104,10 +116,18 @@ order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
 machine you have, then make one, with the substrate's own toolset last.
 
 There is no button bar. **Alt+Insert** collapses the three-pane layout to the
-console alone and puts the window fullscreen on the host in one move — estate,
-details, tabs and border gone, screen filled — and asks the guest to change
-resolution to match, so the picture fills it instead of sitting letterboxed
-inside it. The same chord comes back out. **Ctrl+V**
+console alone — estate, details, tabs and border gone — and asks the guest to
+change resolution to match, so the picture fills the pane instead of sitting
+letterboxed inside it. The same chord comes back out.
+
+Under X11 it fullscreens the window too. Under **Wayland it deliberately does
+not**: the protocol never tells a client where its own window is, so the
+toolkit picks the primary monitor and a multi-head desktop watches its console
+jump to another screen. Use the compositor's own fullscreen key for the frame —
+the two compose, and a compositor never picks the wrong head.
+`VMX_FULLSCREEN_WINDOW=always|never` overrides either way, and the chord itself
+is `VMX_FULLSCREEN_KEY` (Shift-only chords are rejected at startup — the
+toolkit never delivers them). **Ctrl+V**
 pastes the host clipboard into the guest (as RFB cut text *and* as
 keystrokes, so it lands whether or not the guest runs a clipboard agent).
 The chord is set with `VMX_FULLSCREEN_KEY` (`alt+delete`, `ctrl+alt+f`,
