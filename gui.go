@@ -1568,6 +1568,28 @@ func runGUI(rs *Ruleset) {
 		// alone rather than a promise nothing can keep.
 		desktop := widget.NewSelect(DesktopsFor("fedora"), nil)
 		desktop.SetSelected("none")
+
+		// Host audio. Offered only when it can actually work, because the
+		// failure mode is not "no sound" — qemu treats an unreachable audio
+		// backend as fatal, so a domain wired to one that is not there does
+		// not start. hostAudioReachable() asks qemu itself, under the same
+		// empty environment libvirt uses.
+		//
+		// Remote targets never get it: virt-install runs here while the guest
+		// runs there, so this session's audio says nothing about that machine
+		// — and its sound would come out of that machine's speakers anyway.
+		soundOK := target.SSHHost == "" && hostAudioReachable()
+		sound := widget.NewCheck("host audio (guest sound plays on this machine)", nil)
+		soundNote := widget.NewLabel("")
+		soundNote.Wrapping = fyne.TextWrapWord
+		soundNote.TextStyle = fyne.TextStyle{Italic: true}
+		if soundOK {
+			soundNote.SetText("Adds an ich9 card wired to this session, and " +
+				"installs the guest's audio stack on first boot.")
+		} else {
+			sound.Disable()
+			soundNote.SetText(audioHostHint())
+		}
 		desktopNote := widget.NewLabel("")
 		desktopNote.Wrapping = fyne.TextWrapWord
 		desktopNote.TextStyle = fyne.TextStyle{Italic: true}
@@ -1666,6 +1688,7 @@ func runGUI(rs *Ruleset) {
 		cloudOnly := container.NewVBox(
 			widget.NewLabel("distro"), distro, imgPath,
 			widget.NewLabel("desktop"), desktop, desktopNote,
+			widget.NewLabel("sound"), sound, soundNote,
 			widget.NewLabel("user"), user,
 			widget.NewLabel("password"), pass,
 			widget.NewLabel("ssh key"), key,
@@ -1748,6 +1771,11 @@ func runGUI(rs *Ruleset) {
 						if DesktopSupported(spec.Distro, desktop.Selected) {
 							spec.Desktop = desktop.Selected
 						}
+						// Guarded by soundOK as well as the tick: a disabled
+						// check cannot be set by a click, but it can be set by
+						// a future code path, and wiring a backend that is not
+						// reachable produces a VM that will not start.
+						spec.Sound = soundOK && sound.Checked
 					}
 				}
 				// The spec knows the rules; ask it before doing anything
