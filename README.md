@@ -5,9 +5,9 @@
   &nbsp;vmxplore
 </h1>
 
-**Turn any Linux distro into a powerful hypervisor — GUI *and* TUI, one binary.**
+**A GUI and TUI for KVM/libvirt. One static binary, no agent, no daemon.**
 
-*The KVM console your distro never shipped: the whole estate, one window.*
+*Every VM on the host in one window: state, consoles, lifecycle verbs, storage.*
 
 [![License: BSD-3](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-brightgreen.svg)
@@ -23,27 +23,24 @@
 
 </div>
 
-KVM is already in your kernel. libvirt already manages it. What stock Linux
-never shipped is the *console* — one window where the estate lives. vmxplore is
-that window: a native GUI (and a static TUI for ssh) over the libvirt you
-already have. Nothing replaced, no appliance, no agent, no reinstall; `virsh`
-is never fought, only shown.
+vmxplore is a native GUI and a static TUI over an existing libvirt install.
+It does not replace libvirt, install an agent, or run a daemon — it reads and
+drives the same `qemu:///system` connection `virsh` uses, and shows the
+commands it runs.
 
 ## Three ways to run it
 
-vmxplore is tiered by what the host *can do* — **probed, never licence-checked.**
-Start at the first row; each one below adds capability, and the last you don't
-build at all. Nothing is held back — the tiers are simply what your machine can
-already do.
+Features appear based on what the host can do, detected at runtime. Each row
+below adds capability to the one above it.
 
-| You have… | You get… | What it takes |
+| Host has | Available in vmxplore | Setup |
 |---|---|---|
-| **stock Linux + KVM** | the full console — estate, serial + VNC consoles, lifecycle verbs, New VM | [a few packages →](#1--stock-linux--kvm) |
-| **+ OpenZFS** | the storage join — instant clones, lineage, snapshot classes, golden → fleet | [one repo + a pool →](#2--add-openzfs) |
-| **[kldload](https://kldload.com)** | *all of it, pre-wired* — clusters, Windows goldens, air-gap, mesh, eBPF | [nothing — it's already done →](#enhanced-on-kldload) |
+| KVM + libvirt | estate tree, serial and VNC consoles, lifecycle verbs, New VM | [a few packages →](#1--stock-linux--kvm) |
+| + OpenZFS | clone lineage, snapshot classes, rollback, zero-copy clones | [one repo + a pool →](#2--add-openzfs) |
+| [kldload](https://kldload.com) | the above, plus Kubernetes, Windows goldens, offline install, WireGuard mesh, eBPF | [already configured →](#3--on-kldload) |
 
-The first two are step-by-step guides. The third is a tour of what the
-substrate already assembled for you.
+Sections 1 and 2 below are setup guides. Section 3 lists what kldload
+configures by default.
 
 ## Install
 
@@ -72,23 +69,23 @@ Already have KVM? Skip `--setup` — it will tell you there is nothing to do.
 [Building from source, adding OpenZFS, and the kldload substrate](#the-three-ways-in-full)
 are further down.
 
-## Push-button machines
+## Creating VMs
 
-Pick a distro. Select your desktop. Done.
+New VM builds from a vendor cloud image and cloud-init. What it can do:
 
 | | |
 |---|---|
-| **Nine cloud images, on tap** | Fedora · Debian · Ubuntu · CentOS Stream · Rocky · AlmaLinux · Amazon Linux · openSUSE Leap · Arch. Each verified against its vendor's own checksum manifest before it touches a disk. Plus RHEL, entitled with your portal login or activation key. |
-| **A desktop, if you want one** | GNOME, KDE or XFCE — installed on first boot and rebooted into. Fifteen verified combinations, every package group read off the distribution's own repository rather than guessed. |
-| **Applications, configured** | Pick an app, fill in two or three fields, get a VM already running it. The catalogue encodes the four moves every "how to self-host X" post makes — pinned artifact, config, database, unit file — so a weekend becomes a click. |
-| **Your own appliances** | Paste a first-boot script and it runs as root. Build the machine you actually want, then seal it into a golden. |
-| **Fleets, near-free** | One golden, N zero-copy ZFS clones. Blocks are shared until a clone diverges, so the tenth machine costs almost nothing — and a desktop is installed once on the golden, not once per clone. |
-| **27 substrate tools** | On a kldload host the estate grows a tile launcher: cluster builds, golden images, ZFS labs, exports, recovery, demos — grouped in six sections, colour-coded by what they do. |
+| **Nine cloud images** | Fedora · Debian · Ubuntu · CentOS Stream · Rocky · AlmaLinux · Amazon Linux · openSUSE Leap · Arch. Each verified against its vendor's own checksum manifest before it touches a disk. Plus RHEL, entitled with your portal login or activation key. |
+| **Optional desktop** | GNOME, KDE or XFCE — installed on first boot and rebooted into. Fifteen verified combinations, every package group read off the distribution's own repository rather than guessed. |
+| **Application presets** | Pick an app, fill in two or three fields, get a VM already running it. The catalogue encodes the four moves every "how to self-host X" post makes — pinned artifact, config, database, unit file — so a weekend becomes a click. |
+| **Custom first-boot script** | Paste a first-boot script and it runs as root. Build the machine you actually want, then seal it into a golden. |
+| **ZFS clones** | One golden, N zero-copy ZFS clones. Blocks are shared until a clone diverges, so the tenth machine costs almost nothing — and a desktop is installed once on the golden, not once per clone. |
+| **kldload tools** | On a kldload host the estate grows a tile launcher: cluster builds, golden images, ZFS labs, exports, recovery, demos — grouped in six sections, colour-coded by what they do. |
 
-Every one of those is a template that turns into a running machine in a
-gesture. None of them asks you to read a wiki first.
+Each is a form that produces a running VM. The generated cloud-init is
+shown before it runs.
 
-## Highlights
+## What it does
 
 - **A modern VNC client, built from scratch** — the graphics console is a
   hand-rolled RFB (**Remote Frame Buffer**) implementation rendering the guest's
@@ -107,7 +104,7 @@ gesture. None of them asks you to read a wiki first.
   agent on the far side.
 
 - **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
-  zero-copy clones in one gesture; blocks are shared until a clone diverges.
+  zero-copy clones; blocks are shared until a clone diverges.
 
 - **Apps — a self-hosted application as one button** — pick an app, fill in its
   two or three fields, and get a configured VM running it. Every "how to
@@ -149,7 +146,7 @@ gesture. None of them asks you to read a wiki first.
   and lands in an audit log with who ran it and its exit code.
 
 - **One static binary, capability-tiered** — copy `vmx` to any libvirt box; the
-  extra powers light up by probe (ZFS, then kldload), never a licence check.
+  ZFS and kldload features appear when those are present.
 
 ## The Screen tab
 
@@ -221,7 +218,7 @@ remote hypervisor's console is reached through an `ssh -L` forward over the
 same authenticated channel libvirt is already using. No second credential, no
 extra open port, and nothing on the wire that a passer-by can type into.
 
-### kldload — the substrate's toolset, one click
+### kldload — tool launcher
 
 <img src="assets/screenshots/kldload-tools.png" width="900" alt="the kldload tab: a tile launcher for cluster builds, golden images, exports, and demos"/>
 
@@ -229,10 +226,10 @@ extra open port, and nothing on the wire that a passer-by can type into.
 
 On a plain libvirt host this tab pitches the OS. On a **kldload** host it
 becomes a command center — a tile launcher for the whole kernel-loaded
-substrate (see [Enhanced on kldload](#enhanced-on-kldload)). Same one binary —
-the abilities light up by capability probe, never a licence check.
+substrate (see [Enhanced on kldload](#3--on-kldload)). Same one binary —
+features appear when the host supports them.
 
-## Build a VM the way you want
+## New VM options
 
 <table>
 <tr>
@@ -282,7 +279,7 @@ in a window costs a fraction of a full redraw.</em></sub>
 
 **EZ Fleet** — pick a distro and a number: it builds one golden, seals it, and
 stamps out N zero-copy ZFS clones in a single gesture. "Give me five Fedora
-boxes," done. On a ZFS host cloning is instant and near-free — blocks are
+boxes," done. On a ZFS host a clone is a metadata operation — blocks are
 shared until a clone diverges.
 
 A desktop costs the same here as one machine: the golden installs it once and
@@ -292,7 +289,7 @@ every clone inherits it.
 </tr>
 </table>
 
-## GPUs — offered only where they could work
+## GPU passthrough
 
 > **For info see:** [NVIDIA on kldload](https://kldload.com/tutorials/nvidia) —
 > drivers, CUDA, container sharing and AI inference on the host side.
@@ -327,7 +324,7 @@ guest until it is on.
 > (compressed encodings), not a graphics-card question. Drivers in the guest
 > are for workloads *inside* it — transcoding, streaming, local AI.
 
-## Apps — an application, running, in one gesture
+## Apps — preconfigured application VMs
 
 <img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely Desktop appliance — the VM boots straight into the editor, signed in" width="100%"/>
 <sub><em>WriteFreely Desktop: power on, write. No login prompt, no desktop to
@@ -378,7 +375,7 @@ stdout. `WF_ADMIN_PASS` is left out above on purpose: password fields left blank
 are generated from `crypto/rand` and written to `/root/` inside the guest, so
 the happy path needs no typing and no reused password.
 
-## What it refuses to do
+## Limitations
 
 A tool that builds machines has to be careful about what it leaves behind.
 
@@ -600,7 +597,7 @@ that finish in seconds. Doing this *properly* across a fleet — ZFS on root,
 reproducible, air-gapped, snapshot-everything — is exactly what kldload
 automates for you (next).
 
-### Enhanced on kldload
+### 3 — on kldload
 
 [**kldload**](https://kldload.com) is the reproducible, multi-distro substrate:
 ZFS on root, an in-kernel WireGuard mesh, eBPF observability, and KVM — assembled
@@ -631,8 +628,8 @@ center where the hard things are already done. Point vmxplore at a kldload box
   default.
 
 None of that is a vmxplore feature — it's what a **kernel-loaded substrate** can
-do, and vmxplore is simply the window that makes it one click. The generic tool
-recruits the user; kldload is what the console makes effortless.
+do, and vmxplore is the window onto it. The generic tool
+recruits the user; kldload is what the console drives.
 
 ## Remote
 
