@@ -171,25 +171,41 @@ var vmKToolGroups = []toolGroup{
 	{"Virtual machines", []string{
 		"kvm-create", "kvm-clone", "kspawn", "kvm-win", "kvm-list", "kvm-delete",
 	}},
-	{"Images & snapshots", []string{
-		"kimage", "kvm-snap", "ksnap", "kexport", "kbe", "kldload-snapshot",
+	// VM-level artifacts: what you make FROM a machine and ship elsewhere.
+	// The host-level snapshot tools moved to Storage & network, because
+	// "snapshot" meant two different scopes in one section — kvm-snap takes a
+	// VM's zvol, ksnap and kldload-snapshot take the host's datasets.
+	{"Images & export", []string{
+		"kimage", "kvm-snap", "kexport",
 	}},
-	// The storage and network consoles. All three ZFS surfaces were once
-	// missing from this tab entirely, so a kldload host showed every way to
-	// make a VM and no way to reach its storage. wgx joins them because a
-	// kldload host runs the WireGuard estate too and the operator should not
+	// The storage and network consoles. Both ZFS and WireGuard surfaces were
+	// once missing from this tab entirely, so a kldload host showed every way
+	// to make a VM and no way to reach its storage. wgx joins zxplore because
+	// a kldload host runs the WireGuard estate too and the operator should not
 	// have to remember a second launcher for it.
+	//
+	// This group used to also carry kzfs-lab and kst, and both were misfiled:
+	// kzfs-lab is "ZFS Development Lab on KVM" — a lab, like klab — and kst is
+	// "system health at a glance", which left it in a different section from
+	// its own kst-dashboard. Two of the four tiles here were in the wrong
+	// place, which is what made the tab hard to scan.
 	{"Storage & network", []string{
-		"zxplore", "kzfs-lab", "kst", "wgx",
+		"zxplore", "wgx", "ksnap", "kldload-snapshot", "kbe",
 	}},
-	{"Cluster", []string{
-		"klab", "kube-cluster", "kube-init",
+	// Labs and clusters together: every one of these builds a fleet of VMs
+	// from goldens and then does something to them. kzfs-test was in NO group
+	// at all — kzfs-lab built the OpenZFS lab and the tool that actually runs
+	// zfs-tests.sh across the distros had no tile, so the headline use case
+	// ended at a shell prompt.
+	{"Labs & clusters", []string{
+		"klab", "kzfs-lab", "kzfs-test", "kube-cluster", "kube-init",
 	}},
 	// Reachable FROM the estate is the point — you want these at the moment
 	// a machine looks wrong, not in another window (2026-08-09 operator
 	// call). Recovery sits with them: it is the same moment, later.
+	// kst joins its own dashboard here rather than sitting under storage.
 	{"Health & recovery", []string{
-		"kst-dashboard", "kldload-sysdiag", "kldload-doctor",
+		"kst", "kst-dashboard", "kldload-sysdiag", "kldload-doctor",
 		"kldload-console", "krecovery",
 	}},
 	{"Demos & assistant", []string{

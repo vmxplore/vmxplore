@@ -150,10 +150,11 @@ var toolActions = map[string][]toolAction{
 // toolDesc is the one-liner on each top-level tile — a screenshot of
 // this grid should explain the product on its own.
 var toolDesc = map[string]string{
-	"klab":             "multi-distro lab VMs from goldens — interactive",
+	// The three "lab" tools are easy to confuse, so each says what it BUILDS.
+	"klab":             "test bay: 7 distros from cloud images, blue/green clones",
 	"kube-cluster":     "Kubernetes on ZFS: bootstrap, scale, status",
 	"kspawn":           "instant multi-node clusters from ZFS clones",
-	"kvm-create":       "new VM on a fresh zvol",
+	"kvm-create":       "new VM on a fresh zvol — cloud image or your own ISO",
 	"kvm-clone":        "instant copy-on-write clone of a VM",
 	"kvm-delete":       "remove a VM and its storage",
 	"kvm-snap":         "snapshot a VM's zvol",
@@ -164,7 +165,8 @@ var toolDesc = map[string]string{
 	"ksnap":            "host-level ZFS snapshots and rollback",
 	"kvm-demo":         "guided KVM / ZFS / GPU showcase",
 	"kube-demo":        "guided Kubernetes-on-ZFS showcase",
-	"kzfs-lab":         "OpenZFS Lab: goldens, blue/green sites, ZFS tests, eBPF",
+	"kzfs-lab":         "ZFS dev lab: 6 distros with the OpenZFS source + toolchain",
+	"kzfs-test":        "runs zfs-tests.sh across distros on throwaway clones",
 	"zxplore":          "the ZFS console: pools, datasets, snapshots, clones",
 	"wgx":              "the WireGuard console: hosts, interfaces, peers",
 	"kst-dashboard":    "live host dashboard — pools, capacity, services",
