@@ -354,13 +354,14 @@ consequences worth knowing:
   bash reading named variables; only shell-quoted assignments are prepended. A
   site name containing a quote, a `$(…)` or a backtick is inert data.
 
-Two entries ship today, both WriteFreely — the same blog, headless or as a
-writing machine:
+Two entries ship today, both [WriteFreely](https://writefreely.org/) — the
+same blog, headless or as a writing machine. It is a real upstream project
+with its own docs and community; vmxplore just packages it:
 
 | | |
 |---|---|
-| **WriteFreely** | 1 vCPU / 1 GB. Minimalist federated blogging behind Caddy with automatic HTTPS. Reach it from your own browser. |
-| **WriteFreely Desktop** | 2 vCPU / 3 GB. The same blog *plus a machine to write on*: X, a kiosk window manager and a browser, booting straight into the editor already signed in as the admin you set up. Deliberately not GNOME — measured, `gnome-core` costs 802 additional packages to put one window on screen. |
+| **[WriteFreely](https://writefreely.org/)** | 1 vCPU / 1 GB. Minimalist federated blogging behind Caddy with automatic HTTPS. Reach it from your own browser. |
+| **[WriteFreely Desktop](https://writefreely.org/)** | 2 vCPU / 3 GB. The same blog *plus a machine to write on*: X, a kiosk window manager and a browser, booting straight into the editor already signed in as the admin you set up. Deliberately not GNOME — measured, `gnome-core` costs 802 additional packages to put one window on screen. |
 
 From the terminal, no GUI needed:
 
