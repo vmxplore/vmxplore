@@ -29,6 +29,22 @@ that window: a native GUI (and a static TUI for ssh) over the libvirt you
 already have. Nothing replaced, no appliance, no agent, no reinstall; `virsh`
 is never fought, only shown.
 
+## Three ways to run it
+
+vmxplore is tiered by what the host *can do* — **probed, never licence-checked.**
+Start at the first row; each one below adds capability, and the last you don't
+build at all. Nothing is held back — the tiers are simply what your machine can
+already do.
+
+| You have… | You get… | What it takes |
+|---|---|---|
+| **stock Linux + KVM** | the full console — estate, serial + VNC consoles, lifecycle verbs, New VM | [a few packages →](#1--stock-linux--kvm) |
+| **+ OpenZFS** | the storage join — instant clones, lineage, snapshot classes, golden → fleet | [one repo + a pool →](#2--add-openzfs) |
+| **[kldload](https://kldload.com)** | *all of it, pre-wired* — clusters, Windows goldens, air-gap, mesh, eBPF | [nothing — it's already done →](#enhanced-on-kldload) |
+
+The first two are step-by-step guides. The third is a tour of what the
+substrate already assembled for you.
+
 ## Install
 
 No KVM on the machine yet? That is the normal case, and it is handled:
@@ -53,7 +69,7 @@ For the desktop GUI, take `vmxplore-linux-amd64` from the same release and run
 there is an `arm64` build. Checksums are in `SHA256SUMS`.
 
 Already have KVM? Skip `--setup` — it will tell you there is nothing to do.
-[Building from source, adding OpenZFS, and the kldload substrate](#three-ways-in)
+[Building from source, adding OpenZFS, and the kldload substrate](#the-three-ways-in-full)
 are further down.
 
 ## Push-button machines
@@ -278,6 +294,9 @@ every clone inherits it.
 
 ## GPUs — offered only where they could work
 
+> **For info see:** [NVIDIA on kldload](https://kldload.com/tutorials/nvidia) —
+> drivers, CUDA, container sharing and AI inference on the host side.
+
 vmxplore probes the machine that runs the VMs for display controllers, the
 driver bound to each, and whether the IOMMU is on. It reads sysfs rather than
 shelling out to `lspci`, because sysfs is always there and `lspci` is a
@@ -389,23 +408,17 @@ off the distribution's own repository. Pairs that have not been checked are
 not offered — the menu is generated from the same table that installs them,
 so it cannot promise something a repo will not satisfy.
 
-## Three ways in
+## The three ways, in full
 
-vmxplore is tiered by what the host *can do* — probes, never licence checks.
-Start anywhere; each layer unlocks more, and the top one you don't build at all.
-Hardware is probed the same way: [an NVIDIA card](#gpus--offered-only-where-they-could-work)
-on the hypervisor adds a driver option to New VM, and its absence removes it.
+The ladder [from the top of this page](#three-ways-to-run-it), each rung with
+the actual commands. Hardware is probed the same way software is: [an NVIDIA
+card](#gpus--offered-only-where-they-could-work) on the hypervisor adds a driver
+option to New VM, and its absence removes it.
 
 **Linux on amd64 or arm64.** The GUI toolkit is cross-platform but the premise
 is not: KVM, libvirt and ZFS-on-root are what this drives, so there is no
 Windows or macOS build and no plan for one. A remote hypervisor is reached from
 a Linux client the same way.
-
-| You have… | You get… | Effort |
-|---|---|---|
-| **stock Linux + KVM** | the full console: estate, serial + VNC consoles, lifecycle verbs, New VM | a few packages ([below](#1--stock-linux--kvm)) |
-| **+ OpenZFS** | the storage join: clone lineage, snapshot classes, rollback, instant clones, golden → fleet | one repo + a pool ([below](#2--add-openzfs)) |
-| **[kldload](https://kldload.com)** | *all of it, pre-wired* — plus clusters, Windows goldens, air-gap, mesh, eBPF | **zero — it's already done** ([below](#enhanced-on-kldload)) |
 
 ### 1 — stock Linux + KVM
 
@@ -424,6 +437,10 @@ vmx --tui        # or add the GUI binary below and run `vmxplore`
 `vmx` is fully static with zero runtime dependencies, and there is an
 `arm64` build too. For the desktop GUI, grab `vmxplore-linux-amd64` from the
 same release. Checksums are in `SHA256SUMS`.
+
+> **Going deeper:** [KVM Virtual Machines on ZFS](https://kldload.com/tutorials/kvm)
+> is the full treatment — storage layout, golden images, snapshots, replication
+> and live migration. This section gets you running; that page is the masterclass.
 
 `--setup` reads `/etc/os-release`, picks the right package manager for
 Debian/Ubuntu, Fedora/RHEL/Rocky, Arch or SUSE, installs the KVM stack,
@@ -551,16 +568,19 @@ zvols. **You don't need ZFS on root** — just a pool with a dataset for VM
 volumes. Then clones are instant, lineage shows up, and golden → fleet works.
 
 ```bash
-# Ubuntu — OpenZFS ships in the archive
-sudo apt install -y zfsutils-linux
-
-# Debian — enable contrib, then:
+# Debian / Ubuntu — in the archive (Debian needs contrib enabled)
 sudo apt install -y zfs-dkms zfsutils-linux
-
-# Fedora / RHEL / Rocky / Arch — add the OpenZFS (or archzfs) repo first;
-# it's a kernel module, so follow the current per-distro instructions:
-#   https://openzfs.github.io/openzfs-docs/Getting%20Started/
 ```
+
+ZFS is a kernel module, so Fedora, RHEL, Rocky and Arch each need their repo
+added first. Rather than restate instructions that go stale, follow the
+walkthrough that covers all three package managers end to end:
+
+**[Build ZFS on Root from Scratch →](https://kldload.com/learn/build-zfs-from-scratch)**
+
+You do not need the *on root* part for vmxplore — stop once `zpool status`
+works. The page is also the honest version of what kldload automates, if you
+ever want to know what the substrate is doing on your behalf.
 
 Make a pool and a home for VM volumes (a spare disk — or a file, just to try it):
 
