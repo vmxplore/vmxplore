@@ -182,8 +182,34 @@ func desktopPostInstall(distro, desktop string) string {
 		//
 		// noninteractive or tasksel stops to ask about keyboard layout and
 		// waits forever on a machine with nobody at the console.
+		// A DESKTOP KERNEL, not the cloud one.
+		//
+		// Debian's genericcloud image (and Ubuntu's kvm flavour) run a kernel
+		// built for headless virtual machines: it ships NO GPU drivers at all.
+		// There is no drivers/gpu directory in it and no virtio_gpu module, so
+		// /dev/dri never appears, Xorg has no device, and gdm gives up with
+		// "maximum number of X display failures reached" -- a fully installed
+		// GNOME behind a permanently black screen.
+		//
+		// Measured on VM 1111 (Debian 13 trixie), 2026-08-15: running
+		// 6.12.101+deb13-cloud-amd64, /dev/dri empty, no drm modules loaded,
+		// 1598 packages of GNOME present and unusable. The generic kernel of
+		// the SAME version ships drivers/gpu/drm/virtio.
+		//
+		// This is exactly why the dnf guests worked: Fedora's cloud image uses
+		// its standard kernel, which has DRM.
+		//
+		// Installed in the same transaction as the desktop, so the reboot
+		// cloud-init performs afterwards lands on it (grub takes the newest).
+		// The alternative is to fetch the `generic` image instead of
+		// `genericcloud` for desktop builds; this way works whatever image the
+		// operator points at, including their own.
+		kern := "linux-image-amd64"
+		if distro == "ubuntu" {
+			kern = "linux-image-generic"
+		}
 		install = "DEBIAN_FRONTEND=noninteractive apt-get update && " +
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y " +
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y " + kern + " " +
 			strings.Join(append(append([]string{}, r.Pkgs...), r.Extra...), " ")
 	case "opensuse":
 		install = "zypper --non-interactive install " +
