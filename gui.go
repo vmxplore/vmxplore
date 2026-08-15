@@ -1187,7 +1187,7 @@ func runGUI(rs *Ruleset) {
 			return acGold
 		case name == "klab" || name == "kube-cluster" || name == "kspawn" ||
 			name == "kvm-create" || name == "kvm-clone" || name == "kvm-win" ||
-			name == "kzfs-lab" || name == "kube-init":
+			name == "kube-init":
 			return acGreen
 		case name == "shell":
 			return acOff // a plain prompt: no verb, no colour to earn

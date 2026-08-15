@@ -193,12 +193,18 @@ var vmKToolGroups = []toolGroup{
 		"zxplore", "wgx", "ksnap", "kldload-snapshot", "kbe",
 	}},
 	// Labs and clusters together: every one of these builds a fleet of VMs
-	// from goldens and then does something to them. kzfs-test was in NO group
-	// at all — kzfs-lab built the OpenZFS lab and the tool that actually runs
-	// zfs-tests.sh across the distros had no tile, so the headline use case
-	// ended at a shell prompt.
+	// from goldens and then does something to them.
+	//
+	// kzfs-lab and kzfs-test were dropped. They looked like the OpenZFS lab —
+	// full CLIs with build, deploy, test and report verbs — but they address
+	// VMs by prefixes (zfslab-golden-*, kzfstest-golden-*) that nothing in
+	// kldload ever creates. The lineage that exists is klab's: klab-golden-*
+	// for blue/green and klab-ztest-* for the OpenZFS test suite, built by
+	// kldload-autodeploy and reported by the web console. Offering all three
+	// meant two of the three lab tiles could only ever report "not built"
+	// (.131, 2026-08-15). One tile, pointed at the tool that runs.
 	{"Labs & clusters", []string{
-		"klab", "kzfs-lab", "kzfs-test", "kube-cluster", "kube-init",
+		"klab", "kube-cluster", "kube-init",
 	}},
 	// Reachable FROM the estate is the point — you want these at the moment
 	// a machine looks wrong, not in another window (2026-08-09 operator

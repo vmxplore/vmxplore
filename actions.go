@@ -49,33 +49,43 @@ var toolActions = map[string][]toolAction{
 		{label: "destroy", desc: "tear down the cluster — VMs and zvols", argv: []string{"kube-cluster", "destroy"},
 			confirm: true},
 	},
-	// The OpenZFS Lab is a whole workflow, not one command: build
-	// goldens once, clone them into a blue site, run the suite, stage
-	// changes in green and promote when they pass. The verbs are
-	// grouped in that order so the tile grid reads as the process.
-	"kzfs-lab": {
-		{label: "status", desc: "every VM, site and snapshot in the lab", argv: []string{"kzfs-lab", "status"}},
-		{label: "health…", desc: "system health dashboard for a site", argv: []string{"kzfs-lab", "health"},
-			prompt: "site (blue/green, empty = blue)"},
-		{label: "build…", desc: "golden images with the ZFS dev tools baked in", builds: true, argv: []string{"kzfs-lab", "build"},
-			prompt: "distro or all (centos rocky fedora debian ubuntu arch)"},
-		{label: "deploy blue", desc: "clone the goldens into the blue site", builds: true, argv: []string{"kzfs-lab", "deploy", "blue"}},
-		{label: "deploy green", desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"kzfs-lab", "deploy", "green"}},
-		{label: "test…", desc: "quick ZFS tests across the site's VMs", argv: []string{"kzfs-lab", "test"},
-			prompt: "distro or all"},
-		{label: "test-full…", desc: "the complete zfs-tests.sh suite — slow", argv: []string{"kzfs-lab", "test-full"},
-			prompt: "distro (empty = all)"},
-		{label: "ebpf-latency…", desc: "I/O latency across the site, measured with eBPF", argv: []string{"kzfs-lab", "ebpf-latency"},
-			prompt: "site (empty = blue)"},
-		{label: "ebpf-arc…", desc: "ARC hit/miss ratios across the site", argv: []string{"kzfs-lab", "ebpf-arc"},
-			prompt: "site (empty = blue)"},
-		{label: "snapshot…", desc: "tag every lab VM at once", argv: []string{"kzfs-lab", "snapshot"},
-			prompt: "tag (empty = timestamp)"},
-		{label: "promote green", desc: "green becomes blue — blue is snapshotted first", argv: []string{"kzfs-lab", "promote", "green"},
+	// The lab is a whole workflow, not one command: build goldens once, clone
+	// them into a blue site, run the suite, stage changes in green and promote
+	// when they pass. The verbs are ordered so the tile grid reads as that
+	// process — build, deploy, test, report, promote.
+	//
+	// WHY THESE HANG OFF klab AND NOT kzfs-lab/kzfs-test:
+	// There were three ZFS lab tools and only one of them is real. klab builds
+	// klab-golden-<distro> (blue/green) and klab-ztest-<distro> (the OpenZFS
+	// test lineage); kldload-autodeploy runs it, and the web console reports on
+	// it. kzfs-lab looks for zfslab-golden-* and kzfs-test for
+	// kzfstest-golden-* — VM names nothing has ever created.
+	//
+	// This tile used to drive kzfs-lab, so an operator who built the ZFS test
+	// goldens watched them appear in the estate panel while the tool beside it
+	// reported "Not built: 6" forever (.131, 2026-08-15). Same screen, two
+	// different lineages. Pointing the workflow at klab makes the tile describe
+	// the machine it is running on.
+	"klab": {
+		{label: "status", desc: "every golden, site and clone in the lab", argv: []string{"klab", "status"}},
+		{label: "results", desc: "what the last test run found", argv: []string{"klab", "results"}},
+		{label: "goldens", desc: "the blue/green base images, one per distro", builds: true, argv: []string{"klab", "goldens"}},
+		// The ZFS test lineage is separate from the blue/green goldens on
+		// purpose: it carries every zfs-tests.sh prerequisite and pre-created
+		// loopback vdevs, which the lean images deliberately do not.
+		{label: "ztest goldens…", desc: "OpenZFS test images — zfs-tests.sh prerequisites baked in", builds: true,
+			argv: []string{"klab", "golden-ztest"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
+		{label: "deploy blue", desc: "clone the goldens into the blue site", builds: true, argv: []string{"klab", "deploy", "blue"}},
+		{label: "deploy green", desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"klab", "deploy", "green"}},
+		{label: "test (quick)", desc: "the fast pass — about 5 minutes per distro", argv: []string{"klab", "test", "--quick"}},
+		{label: "test…", desc: "the complete zfs-tests.sh suite — hours per distro", argv: []string{"klab", "test"},
+			prompt: "flags (e.g. --distro centos, empty = all, full run)"},
+		{label: "verify", desc: "check the lab is sane before trusting a run", argv: []string{"klab", "verify"}},
+		{label: "promote green", desc: "green becomes blue — blue is snapshotted first", argv: []string{"klab", "promote", "green"},
 			confirm: true},
-		{label: "rollback", desc: "revert blue to its previous snapshot", argv: []string{"kzfs-lab", "rollback"},
+		{label: "rollback", desc: "revert blue to its previous snapshot", argv: []string{"klab", "rollback"},
 			confirm: true},
-		{label: "destroy…", desc: "tear down a site; goldens are preserved", argv: []string{"kzfs-lab", "destroy"},
+		{label: "destroy…", desc: "tear down a site; goldens are preserved unless you say goldens", argv: []string{"klab", "destroy"},
 			prompt: "blue, green, all or goldens", confirm: true},
 	},
 	"kspawn": {
@@ -165,8 +175,6 @@ var toolDesc = map[string]string{
 	"ksnap":            "host-level ZFS snapshots and rollback",
 	"kvm-demo":         "guided KVM / ZFS / GPU showcase",
 	"kube-demo":        "guided Kubernetes-on-ZFS showcase",
-	"kzfs-lab":         "ZFS dev lab: 6 distros with the OpenZFS source + test suite",
-	"kzfs-test":        "runs zfs-tests.sh across distros on throwaway clones",
 	"zxplore":          "the ZFS console: pools, datasets, snapshots, clones",
 	"wgx":              "the WireGuard console: hosts, interfaces, peers",
 	"kst-dashboard":    "live host dashboard — pools, capacity, services",
