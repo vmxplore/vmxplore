@@ -167,9 +167,23 @@ func desktopPostInstall(distro, desktop string) string {
 			install += " && dnf install -y " + strings.Join(r.Extra, " ")
 		}
 	case "debian", "ubuntu":
+		// apt-get update FIRST. A cloud image ships with NO package lists at
+		// all -- /var/lib/apt/lists is empty on first boot -- so apt cannot
+		// resolve anything and the install dies on "E: Unable to locate
+		// package task-gnome-desktop" for a package that plainly exists.
+		//
+		// This is why the dnf distros worked and the apt ones did not:
+		// `dnf group install` fetches its own metadata, apt does not. Verified
+		// on VM 66 (Debian 13 trixie), 2026-08-15 -- zero Packages files
+		// before, task-gnome-desktop resolving at 3.81 immediately after.
+		//
+		// Chained with && so a failed update fails the step rather than
+		// running an install that cannot possibly succeed.
+		//
 		// noninteractive or tasksel stops to ask about keyboard layout and
 		// waits forever on a machine with nobody at the console.
-		install = "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
+		install = "DEBIAN_FRONTEND=noninteractive apt-get update && " +
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y " +
 			strings.Join(append(append([]string{}, r.Pkgs...), r.Extra...), " ")
 	case "opensuse":
 		install = "zypper --non-interactive install " +
