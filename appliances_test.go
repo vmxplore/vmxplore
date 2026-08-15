@@ -314,3 +314,45 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 		t.Error("ApplianceNames and Appliances disagree")
 	}
 }
+
+// TestEveryApplianceRendersFromItsOwnDefaults is the cheap gate that catches
+// a catalog entry whose defaults its own Validate rejects — the form would
+// open pre-filled with a value that refuses to build, and the operator would
+// have to guess which field the tool disliked. Caught exactly that on the
+// Gitea entry (admin email defaulted to gitadmin@localhost, which the address
+// check rejects) before it ever reached a build.
+func TestEveryApplianceRendersFromItsOwnDefaults(t *testing.T) {
+	for _, a := range Appliances() {
+		script, err := a.Render(a.Defaults())
+		if err != nil {
+			t.Errorf("%s: defaults do not render: %v", a.Name, err)
+			continue
+		}
+		if script == "" {
+			t.Errorf("%s: rendered an empty script", a.Name)
+		}
+		// The wrapper (newvm.go) supplies the shebang and `set -Eeuo
+		// pipefail`; a script opening with its own would reset the shell
+		// options the wrapper relies on to fail loudly. Only the FIRST line
+		// is the wrapper's business — a shebang deeper in is a heredoc
+		// writing a script into the guest, which several entries legitimately
+		// do (WriteFreely Desktop writes an .xinitrc).
+		if first, _, _ := strings.Cut(strings.TrimLeft(a.Script, "\n"), "\n"); strings.HasPrefix(first, "#!") {
+			t.Errorf("%s: script opens with a shebang — the runcmd wrapper owns that", a.Name)
+		}
+	}
+}
+
+// TestApplianceSpecsAreBuildable checks each entry produces a NewVMSpec the
+// pipeline accepts, so a bad sizing or an unknown distro key fails here and
+// not twenty minutes into a build.
+func TestApplianceSpecsAreBuildable(t *testing.T) {
+	for _, a := range Appliances() {
+		if _, ok := cloudImages[a.Distro]; !ok {
+			t.Errorf("%s: distro %q is not in cloudImages", a.Name, a.Distro)
+		}
+		if _, err := a.Spec("probe-vm", "admin", "Passw0rd", "", a.Defaults()); err != nil {
+			t.Errorf("%s: spec from defaults is invalid: %v", a.Name, err)
+		}
+	}
+}

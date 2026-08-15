@@ -507,7 +507,13 @@ func ApplianceNames() []string {
 	return out
 }
 
-var applianceCatalog = []Appliance{writeFreely, writeFreelyDesktop}
+// The home-lab presets (homelab.go) come after the blogging pair so the
+// picker opens on what the catalog started as; order here IS the order in
+// the GUI list and in `vmx appliances`.
+var applianceCatalog = []Appliance{
+	writeFreely, writeFreelyDesktop,
+	jellyfin, plex, gitea, adguardHome, syncthing,
+}
 
 // ─── WriteFreely ─────────────────────────────────────────────────────
 //
