@@ -30,10 +30,25 @@ snap repl       repl-
 # Goldens first so `-golden` names never fall through to a cluster rule.
 group ^k8s-golden$              goldens
 group ^klab-golden-[a-z]+$      goldens
+# klab's desktop lineage (klab-desktop-<distro>) is a golden set too, but its
+# name carries the KIND rather than the word "golden", so none of the rules
+# above see it and the images landed ungrouped in the estate -- built, usable,
+# and invisible under Goldens (operator, 2026-08-15). Matched before the klab
+# blue/green rule below, per the ordering this section exists to guarantee.
+group ^klab-desktop-[a-z0-9]+$  goldens
+# Same story for the OpenZFS test lineage: klab-ztest-<distro> IS a golden
+# (klab's golden_name() mints all three kinds), and the klab rule below was
+# claiming it first, so the one image the ZFS lab is built from sat under
+# "klab" next to the throwaways cloned off it. Deployed ztest VMs carry a
+# trailing -<n> and still land in klab, which is where they belong.
+group ^klab-ztest-[a-z0-9]+$    goldens
 group ^.+-golden$               goldens
 
-# klab blue/green lab pairs: klab-{blue,green,ztest,test}-<distro>.
-group ^klab-(blue|green|ztest|test)-[a-z]+$   klab
+# klab blue/green lab pairs: klab-{blue,green,test}-<distro>. A numbered
+# ztest clone (klab-ztest-<distro>-<n>) is a lab machine, not the golden
+# it came from, so it is matched here and not by the goldens rule above.
+group ^klab-(blue|green|test)-[a-z]+$   klab
+group ^klab-ztest-[a-z0-9]+-[0-9]+$     klab
 
 # kspawn throwaway clusters: kspawn-<cluster>-<NN>.
 group ^kspawn-(.+)-[0-9]+$      kspawn: $1

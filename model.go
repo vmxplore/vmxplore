@@ -75,6 +75,20 @@ func BuildEstate(doms []Dom, dss map[string]*Dataset,
 				r.Backing = disk.File
 			}
 		}
+		// A machine no rule claimed, but which demonstrably came off a
+		// golden, is a clone — say so instead of dropping it in the
+		// ungrouped pile (operator, 2026-08-15: "maybe we also need an
+		// estate section for clones?").
+		//
+		// Grouping on ORIGIN and not on the name is what makes this honest:
+		// it catches a clone whatever it was called, including the ones an
+		// operator named by hand, and it cannot mislabel a machine that
+		// merely happens to be called clone-something. A rule that already
+		// claimed the row always wins, so the k8s nodes stamped off
+		// k8s-golden stay under their cluster where they belong.
+		if r.Group == "" && r.Origin != "" {
+			r.Group = "clones"
+		}
 		if r.DS != nil {
 			sum := rs.SnapSummary(snaps[r.DS.Name])
 			for _, n := range sum {
