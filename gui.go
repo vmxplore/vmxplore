@@ -2294,22 +2294,35 @@ func runGUI(rs *Ruleset) {
 			}
 		}
 		all := append(goldens, others...)
-		if len(all) == 0 {
-			dialog.ShowInformation("Nothing to clone",
-				"No VMs found on this host yet. Build one first (Build → New VM…).", w)
-			return
-		}
 
 		byLabel := make(map[string]Row, len(all))
-		labels := make([]string, 0, len(all))
+		labels := make([]string, 0, len(all)+len(CloudDistros()))
 		for _, e := range all {
 			byLabel[e.label] = e.row
 			labels = append(labels, e.label)
+		}
+		// ...and the option to make a golden that does not exist yet.
+		//
+		// Clone and "EZ Fleet" were two menu entries asking the same question --
+		// what do I stamp from, and how many -- and differing only in whether
+		// the source already existed. That split made the tool feel disjointed
+		// and left the honest answer ("you have no goldens yet") hidden behind
+		// the wrong menu (operator, 2026-08-15: "we only need 1 menu").
+		//
+		// One list, two sections: every golden and VM on the box first, because
+		// cloning an existing golden is the fast path and the point of the
+		// feature; then "new golden from <distro>", which builds one first and
+		// costs minutes rather than 0.2s.
+		newPrefix := "new golden from "
+		for _, d := range CloudDistros() {
+			labels = append(labels, newPrefix+d)
 		}
 
 		source := widget.NewSelect(labels, nil)
 		// Default to whatever is selected in the estate, so the menu keeps
 		// working the way it always did for anyone who selected a row first.
+		// With no VMs at all the first entry is "new golden from …", which is
+		// exactly the right default on a fresh host.
 		source.SetSelected(labels[0])
 		if r, ok := st.selected(); ok {
 			for _, e := range all {
@@ -2321,21 +2334,129 @@ func runGUI(rs *Ruleset) {
 		}
 
 		name := widget.NewEntry()
-		name.SetPlaceHolder("base name — one clone gets this, N get name-1…name-N")
+		name.SetPlaceHolder("base name — one gets this, N get name-1…name-N")
 		count := widget.NewEntry()
 		count.SetText("1")
 		count.Validator = numValidator(1, "clone")
 
+		// Fields that only make sense when building a NEW golden. Hidden for a
+		// plain clone, because a clone inherits all of this from its source and
+		// showing it would imply otherwise.
+		newDesktop := widget.NewSelect(DesktopsFor("fedora"), nil)
+		newDesktop.SetSelected("none")
+		newRAM := widget.NewEntry()
+		newRAM.SetText("2048")
+		newRAM.Validator = numValidator(256, "MB of RAM")
+		newDisk := widget.NewEntry()
+		newDisk.SetText("20")
+		newDisk.Validator = numValidator(2, "GB of disk")
+		newNote := widget.NewLabel("")
+		newNote.Wrapping = fyne.TextWrapWord
+		newNote.TextStyle = fyne.TextStyle{Italic: true}
+		newBox := container.NewVBox(
+			widget.NewLabel("desktop (installed once on the golden, inherited by every clone)"),
+			newDesktop, newNote,
+			container.NewGridWithColumns(2,
+				container.NewVBox(widget.NewLabel("RAM (MB)"), newRAM),
+				container.NewVBox(widget.NewLabel("disk (GB)"), newDisk)),
+		)
+		newBox.Hide()
+
+		isNew := func(sel string) (string, bool) {
+			if strings.HasPrefix(sel, newPrefix) {
+				return strings.TrimPrefix(sel, newPrefix), true
+			}
+			return "", false
+		}
+		source.OnChanged = func(sel string) {
+			d, building := isNew(sel)
+			if !building {
+				newBox.Hide()
+				return
+			}
+			// Offer only the desktops that distro actually has a verified
+			// recipe for, so the dropdown cannot promise what the repo will
+			// refuse ten minutes into a build.
+			newDesktop.Options = DesktopsFor(d)
+			newDesktop.SetSelected("none")
+			newNote.SetText("builds a golden first (~5-10 min, plus 1.5-3GB if a desktop is " +
+				"chosen), then stamps the clones from it")
+			newBox.Show()
+		}
+		source.OnChanged(source.Selected)
+
 		form := container.NewVBox(
-			widget.NewLabel("clone from"), source,
+			widget.NewLabel("stamp from"), source,
 			widget.NewLabel("new name"), name,
 			container.NewGridWithColumns(2,
 				container.NewVBox(widget.NewLabel("how many"), count),
 				widget.NewLabel("")),
+			newBox,
 		)
-		dialog.ShowCustomConfirm("Clone — stamp out copies of a VM", "Clone", "Cancel",
-			form, func(ok bool) {
+		dialog.ShowCustomConfirm("Stamp out machines — clone a golden, or build one",
+			"Go", "Cancel",
+			container.NewVScroll(form), func(ok bool) {
 				if !ok {
+					return
+				}
+				// Building a new golden is the fleet path: one golden plus N
+				// clones, all from a cloud image.
+				if d, building := isNew(source.Selected); building {
+					base := strings.TrimSpace(name.Text)
+					if base == "" {
+						dialog.ShowError(errors.New("give it a name — the golden takes it "+
+							"and the clones become name-1 … name-N"), w)
+						return
+					}
+					var n, m, g int
+					fmt.Sscanf(strings.TrimSpace(count.Text), "%d", &n)
+					fmt.Sscanf(strings.TrimSpace(newRAM.Text), "%d", &m)
+					fmt.Sscanf(strings.TrimSpace(newDisk.Text), "%d", &g)
+					if n < 1 {
+						n = 1
+					}
+					var taken []string
+					if vmNameTaken(base) {
+						taken = append(taken, base)
+					}
+					for i := 1; i <= n; i++ {
+						if cn := fmt.Sprintf("%s-%d", base, i); vmNameTaken(cn) {
+							taken = append(taken, cn)
+						}
+					}
+					if len(taken) > 0 {
+						dialog.ShowError(fmt.Errorf("these names already exist: %s\n\n"+
+							"Pick a different base name, or remove them first.",
+							strings.Join(taken, ", ")), w)
+						return
+					}
+					spec := NewVMSpec{
+						Name: base, Distro: d, VCPUs: 2, RAMMB: m, DiskGB: g,
+						User: "admin", Password: "kldload",
+					}
+					if DesktopSupported(d, newDesktop.Selected) {
+						spec.Desktop = newDesktop.Selected
+					}
+					if err := spec.validate(); err != nil {
+						dialog.ShowError(err, w)
+						return
+					}
+					parent := ZFSVMParent(st.visibleRows())
+					st.selName = spec.Name
+					if selectScreenTab != nil {
+						selectScreenTab()
+					}
+					go func() {
+						err := BuildFleet(spec, n, parent, func(line string) {
+							fyne.Do(func() { status.SetText(line) })
+						})
+						fyne.Do(func() {
+							if err != nil {
+								dialog.ShowError(err, w)
+							}
+							refreshNow()
+						})
+					}()
 					return
 				}
 				base := strings.TrimSpace(name.Text)
@@ -2415,8 +2536,10 @@ func runGUI(rs *Ruleset) {
 		fyne.NewMenuItem("New VM…", newVMDialog),
 		fyne.NewMenuItem("Application — a configured app…",
 			func() { applianceDialog("") }),
-		fyne.NewMenuItem("EZ Fleet — golden + N clones…", fleetDialog),
-		fyne.NewMenuItem("Clone…", cloneAny),
+		// ONE entry. Clone and EZ Fleet asked the same question and differed
+		// only in whether the source already existed, which read as two tools
+		// for one job. The source dropdown now covers both.
+		fyne.NewMenuItem("Clone / Fleet — stamp out machines…", cloneAny),
 		fyne.NewMenuItem("Make Golden…", goldenAct))
 	mEstate := menuButton("Estate", theme.ComputerIcon(),
 		fyne.NewMenuItem("Migrate to host…", soon("Migrate (teleport)", "0.3")))
@@ -2758,11 +2881,13 @@ func runGUI(rs *Ruleset) {
 			newTile(theme.ContentAddIcon(), "New VM",
 				"cloud image, or boot an installer ISO",
 				acGreen.at(), newVMDialog),
-			newTile(theme.ViewRefreshIcon(), "EZ Fleet",
-				"a golden plus N clones, one shot",
-				acGreen.at(), fleetDialog),
-			newTile(theme.ContentCopyIcon(), "Clone",
-				"instant zero-copy ZFS clone of the selected VM",
+			// ONE tile, not two. "EZ Fleet" and "Clone" were the same job --
+			// stamp out machines -- split by whether the golden existed yet,
+			// which is a detail of the source, not a different action. The
+			// dialog's source list now covers both (operator, 2026-08-15:
+			// "I guess that's 2 tiles for the same job?").
+			newTile(theme.ContentCopyIcon(), "Clone / Fleet",
+				"stamp N machines from a golden — or build the golden first",
 				acGreen.at(), cloneAny),
 			newTile(theme.ConfirmIcon(), "Make Golden",
 				"seal the selected VM into a clone template",
