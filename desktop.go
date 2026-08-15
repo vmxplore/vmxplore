@@ -85,6 +85,41 @@ var desktopRecipes = map[string]map[string]recipe{
 		},
 		"xfce": {Pkgs: []string{"xfce-desktop-environment"}, DM: "lightdm"},
 	},
+	// EL 10 (CentOS Stream, Rocky, AlmaLinux) — GNOME ONLY, and that is not
+	// an oversight. Verified in quay.io/centos/centos:stream10, 2026-08-15:
+	//
+	//   workstation-product-environment  1109 pkgs, 1.3 GB, INCLUDES gdm
+	//   kde-desktop-environment          "Error: Nothing to do"
+	//   xfce-desktop-environment         "Error: Nothing to do"
+	//
+	// The KDE and XFCE group IDS EXIST -- `dnf group info` succeeds for both,
+	// which is exactly the false positive this file's banner warns about. They
+	// resolve to nothing installable without EPEL, so offering them would put
+	// two entries in the dropdown that fail ten minutes into a build with the
+	// operator watching. If EPEL is ever enabled by default on these guests,
+	// re-verify and add them then.
+	//
+	// The environment install also logs "No match for group package
+	// redhat-release" on CentOS Stream. That is harmless -- those are RHEL-only
+	// packages named by the shared group definition -- and the transaction
+	// resolves regardless.
+	//
+	// No cloud-kernel problem here, unlike Debian: EL cloud images run the
+	// standard kernel, so DRM is present and the desktop actually draws.
+	"centos": {
+		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
+	},
+	"rocky": {
+		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
+	},
+	"alma": {
+		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
+	},
+	// NOT amazon: Amazon Linux 2023 publishes no desktop group of any kind --
+	// its groups are Container / Base / AMI / OnPrem variants only. gnome-shell
+	// 47.3 exists as a package, so a desktop could be assembled by naming
+	// individual packages, but that would be a recipe invented here rather than
+	// one read off the vendor, which is the thing this file exists to avoid.
 	"debian": {
 		"gnome": {Pkgs: []string{"task-gnome-desktop"}},
 		"kde":   {Pkgs: []string{"task-kde-desktop"}},

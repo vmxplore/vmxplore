@@ -48,10 +48,17 @@ func TestHeadlessIsTheDefault(t *testing.T) {
 // combination the repo cannot satisfy fails ten minutes into a build.
 func TestUnknownPairsAreRefused(t *testing.T) {
 	for _, c := range [][2]string{
-		{"rocky", "kde"},    // EL desktops not verified yet
-		{"alma", "gnome"},   // ditto
-		{"amazon", "gnome"}, // cloud-only image, no desktop story
-		{"fedora", "mate"},  // desktop we never taught
+		// EL ships GNOME and only GNOME. kde-desktop-environment and
+		// xfce-desktop-environment EXIST as group ids on EL10 -- `dnf group
+		// info` succeeds for both -- but resolve to "Error: Nothing to do"
+		// without EPEL, so they must stay unsupported until that changes.
+		// Verified in quay.io/centos/centos:stream10, 2026-08-15.
+		{"rocky", "kde"},
+		{"centos", "xfce"},
+		{"alma", "kde"},
+		// Amazon Linux 2023 publishes no desktop group of any kind.
+		{"amazon", "gnome"},
+		{"fedora", "mate"}, // desktop we never taught
 	} {
 		if got := desktopPostInstall(c[0], c[1]); got != "" {
 			t.Errorf("%s/%s is unverified and must produce nothing:\n%s", c[0], c[1], got)
