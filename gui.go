@@ -35,7 +35,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +74,17 @@ func (t compactTheme) Size(name fyne.ThemeSizeName) float32 {
 	}
 	return t.Theme.Size(name)
 }
+
+// tabLabel pads a tab caption so the tab bar reads as separate destinations
+// rather than one run-on word.
+//
+// WHY IT IS SPACES AND NOT A THEME SIZE: Fyne sizes tab buttons from the
+// global SizeNamePadding, which compactTheme deliberately holds at 3px — this
+// window is mostly other machines' screens and every margin is drawn at the
+// expense of one. Raising it to space out five tabs would loosen every list
+// row, card and pane in the app to fix one strip. Padding the captions buys
+// the separation exactly where it was asked for and nowhere else.
+func tabLabel(s string) string { return "   " + s + "   " }
 
 func (t compactTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
 	dark := v == theme.VariantDark
@@ -2056,7 +2066,12 @@ func runGUI(rs *Ruleset) {
 		if n == "" {
 			return false
 		}
-		if exec.Command("virsh", "dominfo", n).Run() == nil {
+		// virsh() and not bare "virsh": the latter defaults to
+		// qemu:///session locally and, when driving a remote hypervisor,
+		// asks THIS box whether a name on the OTHER one is free — which it
+		// always is, so the check passed and the create collided.
+		di := virsh("dominfo", n)
+		if exec.Command(di[0], di[1:]...).Run() == nil {
 			return true
 		}
 		if parent := ZFSVMParent(st.visibleRows()); parent != "" {
@@ -2278,63 +2293,68 @@ func runGUI(rs *Ruleset) {
 	// Goldens are listed first and marked, because they are what anyone
 	// opening this dialog is looking for.
 	cloneAny := func() {
+		// ── What you can stamp from ──────────────────────────────────
+		// One entry per candidate, carrying its own right-hand detail so
+		// the list renderer stays a dumb painter.
 		type src struct {
-			label string
-			row   Row
+			label  string // canonical key: the VM name, or "new golden from <distro>"
+			detail string // what it is, what state, how big
+			row    Row
+			gold   bool
 		}
 		var goldens, others []src
 		for _, r := range st.rows {
 			if r.Synthetic {
 				continue
 			}
-			if hasGolden(r) {
-				goldens = append(goldens, src{r.D.Name + "   (golden)", r})
-			} else {
-				others = append(others, src{r.D.Name, r})
+			e := src{label: r.D.Name, row: r, gold: hasGolden(r)}
+			bits := make([]string, 0, 3)
+			if e.gold {
+				bits = append(bits, "golden")
 			}
-		}
-		all := append(goldens, others...)
-
-		byLabel := make(map[string]Row, len(all))
-		labels := make([]string, 0, len(all)+len(CloudDistros()))
-		for _, e := range all {
-			byLabel[e.label] = e.row
-			labels = append(labels, e.label)
+			bits = append(bits, r.D.State)
+			if r.DS != nil {
+				bits = append(bits, humanBytes(r.DS.Used))
+			}
+			e.detail = strings.Join(bits, " · ")
+			if e.gold {
+				goldens = append(goldens, e)
+			} else {
+				others = append(others, e)
+			}
 		}
 		// ...and the option to make a golden that does not exist yet.
 		//
-		// Clone and "EZ Fleet" were two menu entries asking the same question --
-		// what do I stamp from, and how many -- and differing only in whether
+		// Clone and "EZ Fleet" were two menu entries asking the same question —
+		// what do I stamp from, and how many — and differing only in whether
 		// the source already existed. That split made the tool feel disjointed
 		// and left the honest answer ("you have no goldens yet") hidden behind
 		// the wrong menu (operator, 2026-08-15: "we only need 1 menu").
-		//
-		// One list, two sections: every golden and VM on the box first, because
-		// cloning an existing golden is the fast path and the point of the
-		// feature; then "new golden from <distro>", which builds one first and
-		// costs minutes rather than 0.2s.
 		newPrefix := "new golden from "
+		builds := make([]src, 0, len(CloudDistros()))
 		for _, d := range CloudDistros() {
-			labels = append(labels, newPrefix+d)
+			builds = append(builds, src{
+				label:  newPrefix + d,
+				detail: "builds one first · ~5-10 min",
+			})
 		}
 
-		source := widget.NewSelect(labels, nil)
-		// Default to whatever is selected in the estate, so the menu keeps
-		// working the way it always did for anyone who selected a row first.
-		// With no VMs at all the first entry is "new golden from …", which is
-		// exactly the right default on a fresh host.
-		source.SetSelected(labels[0])
-		if r, ok := st.selected(); ok {
-			for _, e := range all {
-				if e.row.D.Name == r.D.Name {
-					source.SetSelected(e.label)
-					break
-				}
+		byLabel := make(map[string]Row, len(goldens)+len(others))
+		for _, e := range goldens {
+			byLabel[e.label] = e.row
+		}
+		for _, e := range others {
+			byLabel[e.label] = e.row
+		}
+		isNew := func(sel string) (string, bool) {
+			if strings.HasPrefix(sel, newPrefix) {
+				return strings.TrimPrefix(sel, newPrefix), true
 			}
+			return "", false
 		}
 
 		name := widget.NewEntry()
-		name.SetPlaceHolder("base name — one gets this, N get name-1…name-N")
+		name.SetPlaceHolder("blank = generate a name for each machine")
 		count := widget.NewEntry()
 		count.SetText("1")
 		count.Validator = numValidator(1, "clone")
@@ -2362,20 +2382,66 @@ func runGUI(rs *Ruleset) {
 		)
 		newBox.Hide()
 
-		isNew := func(sel string) (string, bool) {
-			if strings.HasPrefix(sel, newPrefix) {
-				return strings.TrimPrefix(sel, newPrefix), true
-			}
-			return "", false
-		}
-		source.OnChanged = func(sel string) {
+		// ── The picker is a LIST, not a dropdown ─────────────────────
+		//
+		// It was a widget.Select inside a VBox inside a VScroll, which shows
+		// the estate one closed line at a time and gives the dialog no reason
+		// to be any bigger than that line: "an undersized box with no real
+		// list", "showing like 1 line at a time you can't see anything"
+		// (operator, 2026-08-15). The question here is "which image", and
+		// nobody can answer it without seeing what they have.
+		//
+		// Goldens only, by default. Every other VM is one checkbox away rather
+		// than gone, because this dialog is the only clone path in the GUI and
+		// silently dropping ordinary VMs would remove the ability, not just
+		// tidy the list.
+		showAll := widget.NewCheck("also list ordinary VMs (full copy, not an instant clone)", nil)
+		// A golden is shut off, so its clones arrive shut off, and four
+		// powered-off definitions are indistinguishable from the button having
+		// done nothing at all ("I said I want 4 debian desktops and I get
+		// nothing", operator 2026-08-15). Stamping a machine and leaving it
+		// dark is not the feature; the default is to bring them up.
+		//
+		// It stays a choice because booting a large batch at once is a real
+		// load — twenty desktops racing for the same disk is a host nobody can
+		// use — and someone stamping a shelf of images for later wants them
+		// cold.
+		startAfter := widget.NewCheck("power them on once stamped", nil)
+		startAfter.SetChecked(true)
+		var view []src
+		selectedLabel := ""
+
+		list := widget.NewList(
+			func() int { return len(view) },
+			func() fyne.CanvasObject {
+				n := widget.NewLabel("")
+				d := widget.NewLabel("")
+				d.TextStyle = fyne.TextStyle{Italic: true}
+				return container.NewBorder(nil, nil, nil, d, n)
+			},
+			func(id widget.ListItemID, o fyne.CanvasObject) {
+				if id < 0 || id >= len(view) {
+					return
+				}
+				box := o.(*fyne.Container)
+				// Border puts the center object first, then the edges in the
+				// order they were passed — center, then right.
+				box.Objects[0].(*widget.Label).SetText(view[id].label)
+				box.Objects[1].(*widget.Label).SetText(view[id].detail)
+			},
+		)
+
+		// onPicked keeps every reference below working on a label, exactly as
+		// the Select did — the list only changes how one gets chosen.
+		onPicked := func(sel string) {
+			selectedLabel = sel
 			d, building := isNew(sel)
 			if !building {
 				newBox.Hide()
 				return
 			}
 			// Offer only the desktops that distro actually has a verified
-			// recipe for, so the dropdown cannot promise what the repo will
+			// recipe for, so the list cannot promise what the repo will
 			// refuse ten minutes into a build.
 			newDesktop.Options = DesktopsFor(d)
 			newDesktop.SetSelected("none")
@@ -2383,44 +2449,106 @@ func runGUI(rs *Ruleset) {
 				"chosen), then stamps the clones from it")
 			newBox.Show()
 		}
-		source.OnChanged(source.Selected)
+		list.OnSelected = func(id widget.ListItemID) {
+			if id >= 0 && id < len(view) {
+				onPicked(view[id].label)
+			}
+		}
 
-		form := container.NewVBox(
-			widget.NewLabel("stamp from"), source,
-			widget.NewLabel("new name"), name,
+		// rebuild recomputes the visible rows and keeps the current pick
+		// selected when it survives the toggle.
+		rebuild := func() {
+			view = view[:0]
+			view = append(view, goldens...)
+			if showAll.Checked {
+				view = append(view, others...)
+			}
+			view = append(view, builds...)
+			list.Refresh()
+			at := -1
+			for i, e := range view {
+				if e.label == selectedLabel {
+					at = i
+					break
+				}
+			}
+			if at < 0 && len(view) > 0 {
+				at = 0
+			}
+			if at >= 0 {
+				list.Select(at)
+				onPicked(view[at].label)
+			}
+		}
+		showAll.OnChanged = func(bool) { rebuild() }
+
+		// Default to whatever is selected in the estate, so the dialog keeps
+		// working the way it always did for anyone who selected a row first.
+		// With no goldens at all the first entry is "new golden from …", which
+		// is exactly the right default on a fresh host.
+		if r, ok := st.selected(); ok {
+			selectedLabel = r.D.Name
+			// Selecting a plain VM in the estate is a deliberate ask for it,
+			// so reveal the section that contains it rather than silently
+			// landing on something else.
+			for _, e := range others {
+				if e.label == selectedLabel {
+					showAll.Checked = true
+					break
+				}
+			}
+		}
+		rebuild()
+
+		heading := widget.NewLabel("Stamp from")
+		heading.TextStyle = fyne.TextStyle{Bold: true}
+		bottom := container.NewVBox(
+			showAll, startAfter,
+			widget.NewSeparator(),
 			container.NewGridWithColumns(2,
-				container.NewVBox(widget.NewLabel("how many"), count),
-				widget.NewLabel("")),
+				container.NewVBox(widget.NewLabel("name"), name),
+				container.NewVBox(widget.NewLabel("how many"), count)),
 			newBox,
 		)
-		dialog.ShowCustomConfirm("Stamp out machines — clone a golden, or build one",
-			"Go", "Cancel",
-			container.NewVScroll(form), func(ok bool) {
+		// Border, not VBox-in-a-VScroll: the list takes every pixel the fixed
+		// size leaves over, which is the whole point of giving it one.
+		content := container.NewBorder(heading, bottom, nil, nil, list)
+
+		d := dialog.NewCustomConfirm("Stamp out machines — clone a golden, or build one",
+			"Go", "Cancel", content, func(ok bool) {
 				if !ok {
 					return
 				}
+				var n int
+				fmt.Sscanf(strings.TrimSpace(count.Text), "%d", &n)
+				if n < 1 {
+					n = 1
+				}
+				base := strings.TrimSpace(name.Text)
+
 				// Building a new golden is the fleet path: one golden plus N
 				// clones, all from a cloud image.
-				if d, building := isNew(source.Selected); building {
-					base := strings.TrimSpace(name.Text)
-					if base == "" {
-						dialog.ShowError(errors.New("give it a name — the golden takes it "+
-							"and the clones become name-1 … name-N"), w)
-						return
-					}
-					var n, m, g int
-					fmt.Sscanf(strings.TrimSpace(count.Text), "%d", &n)
+				if distro, building := isNew(selectedLabel); building {
+					parent := ZFSVMParent(st.visibleRows())
+					var m, g int
 					fmt.Sscanf(strings.TrimSpace(newRAM.Text), "%d", &m)
 					fmt.Sscanf(strings.TrimSpace(newDisk.Text), "%d", &g)
-					if n < 1 {
-						n = 1
+					if base == "" {
+						// A golden outlives the clones taken off it, so it is
+						// named for what it is rather than "clone-…".
+						gen, err := freshName("golden-", map[string]bool{}, parent)
+						if err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						base = gen
 					}
 					var taken []string
-					if vmNameTaken(base) {
+					if nameInUse(base, parent) {
 						taken = append(taken, base)
 					}
 					for i := 1; i <= n; i++ {
-						if cn := fmt.Sprintf("%s-%d", base, i); vmNameTaken(cn) {
+						if cn := fmt.Sprintf("%s-%d", base, i); nameInUse(cn, parent) {
 							taken = append(taken, cn)
 						}
 					}
@@ -2431,17 +2559,16 @@ func runGUI(rs *Ruleset) {
 						return
 					}
 					spec := NewVMSpec{
-						Name: base, Distro: d, VCPUs: 2, RAMMB: m, DiskGB: g,
+						Name: base, Distro: distro, VCPUs: 2, RAMMB: m, DiskGB: g,
 						User: "admin", Password: "kldload",
 					}
-					if DesktopSupported(d, newDesktop.Selected) {
+					if DesktopSupported(distro, newDesktop.Selected) {
 						spec.Desktop = newDesktop.Selected
 					}
 					if err := spec.validate(); err != nil {
 						dialog.ShowError(err, w)
 						return
 					}
-					parent := ZFSVMParent(st.visibleRows())
 					st.selName = spec.Name
 					if selectScreenTab != nil {
 						selectScreenTab()
@@ -2459,36 +2586,84 @@ func runGUI(rs *Ruleset) {
 					}()
 					return
 				}
-				base := strings.TrimSpace(name.Text)
-				if base == "" {
-					dialog.ShowError(errors.New("give the clone a name"), w)
-					return
-				}
-				n, err := strconv.Atoi(strings.TrimSpace(count.Text))
-				if err != nil || n < 1 {
-					dialog.ShowError(errors.New("how many must be a number, 1 or more"), w)
-					return
-				}
-				row, okRow := byLabel[source.Selected]
+
+				row, okRow := byLabel[selectedLabel]
 				if !okRow {
-					dialog.ShowError(errors.New("pick something to clone from"), w)
+					dialog.ShowError(errors.New("pick something to stamp from"), w)
 					return
 				}
-				plan := planClone
-				if hasGolden(row) {
-					plan = planCloneGolden
+				// The pool the clones land in — the source's parent, which is
+				// also where a generated name has to be unique.
+				parent := ""
+				if row.DS != nil {
+					parent = row.DS.Name
+					if i := strings.LastIndexByte(parent, '/'); i >= 0 {
+						parent = parent[:i]
+					}
 				}
 
-				// Sequential on purpose. Each clone is a ZFS clone plus a
-				// domain define; running N at once fights libvirt for the
-				// same locks and turns a fast, boring operation into a race.
-				go func() {
-					made, failed := 0, 0
+				// resolveNames decides and checks EVERY name before the first
+				// machine is made. Discovering the collision on clone 7 of 10
+				// leaves six machines behind and a half-built batch to clean
+				// up by hand.
+				//
+				// It runs off the UI thread: each check is a virsh and a zfs
+				// process (~15ms), so a 64-clone batch is a second of dead
+				// window if it happens in the click handler.
+				resolveNames := func() ([]string, error) {
+					names := make([]string, 0, n)
+					if base == "" {
+						reserved := make(map[string]bool, n)
+						for i := 0; i < n; i++ {
+							nm, err := freshName("clone-", reserved, parent)
+							if err != nil {
+								return nil, err
+							}
+							names = append(names, nm)
+						}
+						return names, nil
+					}
 					for i := 1; i <= n; i++ {
 						nm := base
 						if n > 1 {
 							nm = fmt.Sprintf("%s-%d", base, i)
 						}
+						names = append(names, nm)
+					}
+					var clash []string
+					for _, nm := range names {
+						if nameInUse(nm, parent) {
+							clash = append(clash, nm)
+						}
+					}
+					if len(clash) > 0 {
+						return nil, fmt.Errorf("these names already exist: %s\n\n"+
+							"Pick a different name, or leave it blank to generate one.",
+							strings.Join(clash, ", "))
+					}
+					return names, nil
+				}
+
+				plan := planClone
+				if hasGolden(row) {
+					plan = planCloneGolden
+				}
+				// Read on the UI thread and passed in: touching a widget from
+				// the worker below is a data race, not a shortcut.
+				powerOn := startAfter.Checked
+
+				// Sequential on purpose. Each clone is a ZFS clone plus a
+				// domain define; running N at once fights libvirt for the
+				// same locks and turns a fast, boring operation into a race.
+				go func() {
+					names, err := resolveNames()
+					if err != nil {
+						e := err
+						fyne.Do(func() { dialog.ShowError(e, w) })
+						return
+					}
+					made, failed, started := 0, 0, 0
+					for _, nm := range names {
 						p, err := plan(row, nm)
 						if err == nil {
 							err = runPlan(p)
@@ -2503,20 +2678,50 @@ func runGUI(rs *Ruleset) {
 							continue
 						}
 						made++
+						if powerOn {
+							// A fresh clone is defined and shut off; planStart
+							// needs only the name and state. A failure to boot
+							// is reported but does not abort the batch — the
+							// machine exists and can be started by hand, and
+							// stopping here would leave the rest unstamped.
+							sp, serr := planStart(Row{D: Dom{Name: nm, State: "shut off"}})
+							if serr == nil {
+								serr = runPlan(sp)
+							}
+							if serr != nil {
+								e, bad := serr, nm
+								fyne.Do(func() {
+									dialog.ShowError(fmt.Errorf("%s was created but would not start: %w",
+										bad, e), w)
+								})
+							} else {
+								started++
+							}
+						}
 						done := made
+						up := started
 						fyne.Do(func() {
 							if guiStatus != nil {
-								guiStatus(fmt.Sprintf("· cloned %d of %d from %s",
-									done, n, row.D.Name))
+								if powerOn {
+									guiStatus(fmt.Sprintf("· stamped %d of %d from %s, %d running",
+										done, len(names), row.D.Name, up))
+								} else {
+									guiStatus(fmt.Sprintf("· cloned %d of %d from %s",
+										done, len(names), row.D.Name))
+								}
 							}
 							refreshNow()
 						})
 					}
-					okCount, badCount := made, failed
+					okCount, badCount, upCount := made, failed, started
 					fyne.Do(func() {
 						refreshNow()
 						if guiStatus != nil {
 							msg := fmt.Sprintf("· %d clone(s) of %s ready", okCount, row.D.Name)
+							if powerOn {
+								msg = fmt.Sprintf("· %d clone(s) of %s, %d running",
+									okCount, row.D.Name, upCount)
+							}
 							if badCount > 0 {
 								msg += fmt.Sprintf(", %d failed", badCount)
 							}
@@ -2525,6 +2730,11 @@ func runGUI(rs *Ruleset) {
 					})
 				}()
 			}, w)
+		// Fyne sizes a dialog to its content's minimum, and a list's minimum
+		// is one row — which is exactly how this ended up as a rectangle you
+		// could not read. The size is set explicitly for that reason.
+		d.Resize(fyne.NewSize(820, 640))
+		d.Show()
 	}
 	mStorage := menuButton("Storage", theme.StorageIcon(),
 		fyne.NewMenuItem("Snapshot…", snapAct),
@@ -2908,21 +3118,25 @@ func runGUI(rs *Ruleset) {
 		tileGrid(appTiles...))
 
 	// The tab order is the order of the work: look at the machine you have
-	// (Serial, Screen), then make one — an Applications entry if somebody
-	// already solved it, a bare VM if not — and the kldload toolset last,
+	// (Serial, Screen), then make one — a bare VM, or an Apps entry if
+	// somebody already solved that problem — and the kldload toolset last,
 	// since it is the only tab that isn't there on every host.
+	//
+	// VM sits before Apps because it is the broader door: every Apps entry
+	// is a VM with the form pre-filled, so the general case should not be
+	// reached past the special one (operator, 2026-08-15).
 	//
 	// The tabs share the console card; ⛶ toggles the card full-window (and
 	// back) for real console work.
-	screenTab := container.NewTabItem("Screen", vncHost)
+	screenTab := container.NewTabItem(tabLabel("Screen"), vncHost)
 	tabs := container.NewAppTabs(
-		container.NewTabItem("Serial", consoleHost),
+		container.NewTabItem(tabLabel("Serial"), consoleHost),
 		screenTab,
-		container.NewTabItem("Apps", appliancesHost),
-		container.NewTabItem("VM", vmsHost))
+		container.NewTabItem(tabLabel("VM"), vmsHost),
+		container.NewTabItem(tabLabel("Apps"), appliancesHost))
 	// this one exists on every host too, but says different things: the
 	// tools launcher on kldload, the get-kldload pitch elsewhere
-	toolsTab := container.NewTabItem("kldload", toolsHost)
+	toolsTab := container.NewTabItem(tabLabel("kldload"), toolsHost)
 	tabs.Append(toolsTab)
 	// Select by tab, never by index: the index form silently pointed at
 	// whatever had moved into slot 2 the first time these were reordered.
