@@ -47,6 +47,18 @@ func renderManual() string {
 		for _, c := range []string{
 			"mandoc -Tutf8 -O width=100 " + tmp.Name() + " 2>/dev/null",
 			"MANWIDTH=100 man -l " + tmp.Name() + " 2>/dev/null",
+			// groff and nroff, because a kldload install has neither of the
+			// two above and the pane filled with raw ".Sh NAME / .Nm / .Xr"
+			// source instead of a manual (fiend, 2026-08-15). groff renders
+			// mdoc natively via the -mandoc macro set, and it is already on
+			// every one of these boxes.
+			//
+			// -P -c makes grotty emit classic overstrike pairs rather than
+			// ANSI SGR, which is what stripOverstrike below already knows how
+			// to remove; without it the pane trades roff source for escape
+			// soup.
+			"groff -mandoc -Tutf8 -rLL=100n -P -c " + tmp.Name() + " 2>/dev/null",
+			"nroff -mandoc " + tmp.Name() + " 2>/dev/null",
 		} {
 			// the length guard rejects a renderer that "succeeded" with a
 			// usage message or an empty buffer
