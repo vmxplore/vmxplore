@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1406,11 +1407,24 @@ func runGUI(rs *Ruleset) {
 	// stays organized as verbs accumulate. Every path funnels through the
 	// same plan builders as the TUI, fired the same way.
 	var refreshNow func()
+	// withSel runs a verb against the selected row.
+	//
+	// It used to `return` silently when nothing was selected, which made EVERY
+	// menu verb -- Snapshot, Rollback, vCPU/memory, Make Golden, Clone -- a
+	// dead button that gave no feedback at all. From the operator's seat the
+	// tool was simply broken (reported 2026-08-15: "there's no way to select
+	// what you want to clone ... it's broken"). Saying so costs one dialog and
+	// removes an entire class of "nothing happens".
 	withSel := func(f func(Row)) func() {
 		return func() {
-			if r, ok := st.selected(); ok {
-				f(r)
+			r, ok := st.selected()
+			if !ok {
+				dialog.ShowInformation("Nothing selected",
+					"Pick a VM in the estate list first, then choose this action again.\n\n"+
+						"(Right-clicking a row selects it and opens the same menu.)", w)
+				return
 			}
+			f(r)
 		}
 	}
 	verb := func(build func(Row) (verbPlan, error)) func() {
@@ -2035,9 +2049,43 @@ func runGUI(rs *Ruleset) {
 	// invalid input — a closure cannot reference a variable that :=
 	// has not finished binding.
 	var fleetDialog func()
+	// vmNameTaken reports whether a domain OR its zvol already exists. Both
+	// matter: virsh undefine leaves the dataset behind, so a name can be free
+	// to libvirt and still collide in ZFS.
+	vmNameTaken := func(n string) bool {
+		if n == "" {
+			return false
+		}
+		if exec.Command("virsh", "dominfo", n).Run() == nil {
+			return true
+		}
+		if parent := ZFSVMParent(st.visibleRows()); parent != "" {
+			chk := zfsArgv("list", parent+"/"+n)
+			if exec.Command(chk[0], chk[1:]...).Run() == nil {
+				return true
+			}
+		}
+		return false
+	}
+
 	fleetDialog = func() {
 		name := widget.NewEntry()
-		name.SetText("fleet")
+		// A FREE default, not the literal string "fleet".
+		//
+		// It used to be hardcoded to "fleet", so the first fleet you ever
+		// built took that name and every attempt afterwards opened a dialog
+		// pre-filled with a name that could not work: click Build, get
+		// "dataset fleet exists", with no hint that the fix was to type a
+		// different name in a field that the dialog's scroll had often pushed
+		// out of sight. Reported 2026-08-15 as "the fleet doesn't work".
+		// REQUIRED, and deliberately empty. It used to arrive pre-filled with
+		// the literal "fleet", so the first fleet took that name and every
+		// attempt afterwards opened a dialog whose default could not work:
+		// click Build, get "dataset fleet exists", with no hint that the fix
+		// was to type over a field the dialog's scroll had pushed out of
+		// sight. An empty required field asks the question instead of
+		// answering it wrongly (operator, 2026-08-15).
+		name.SetPlaceHolder("required — the golden takes this name, clones become name-1 … name-N")
 		name.Validator = nameValidator()
 		distro := widget.NewSelect(CloudDistros(), nil)
 		distro.SetSelected("fedora")
@@ -2120,6 +2168,34 @@ func runGUI(rs *Ruleset) {
 						return
 					}
 				}
+				if spec.Name == "" {
+					dialog.ShowError(errors.New("give the fleet a name — "+
+						"the golden takes it and the clones become name-1 … name-N"), w)
+					return
+				}
+				// Check EVERY name this run will create, before creating any of
+				// them. A fleet is a golden plus n clones and takes minutes;
+				// discovering the collision on clone 4 of 5 wastes all of it and
+				// leaves a half-built fleet behind. Names are checked against
+				// both libvirt and ZFS because `virsh undefine` leaves the zvol,
+				// so a name can be free to one and taken by the other.
+				var taken []string
+				if vmNameTaken(spec.Name) {
+					taken = append(taken, spec.Name)
+				}
+				for i := 1; i <= n; i++ {
+					cn := fmt.Sprintf("%s-%d", spec.Name, i)
+					if vmNameTaken(cn) {
+						taken = append(taken, cn)
+					}
+				}
+				if len(taken) > 0 {
+					dialog.ShowError(fmt.Errorf(
+						"these names already exist: %s\n\nPick a different base name, "+
+							"or remove them first (Storage → destroy, or `virsh undefine` "+
+							"plus `zfs destroy`).", strings.Join(taken, ", ")), w)
+					return
+				}
 				parent := ZFSVMParent(st.visibleRows())
 				// the golden appears first; the clones land under it
 				st.selName = spec.Name
@@ -2175,23 +2251,159 @@ func runGUI(rs *Ruleset) {
 	}
 	// cloneAny picks the golden clone when a @golden anchor exists, else a
 	// fresh-snapshot clone — one menu entry, right behaviour each time.
-	cloneAny := func() {
-		r, ok := st.selected()
-		if !ok {
-			return
+	// hasGolden reports whether a row's dataset carries a @golden anchor.
+	//
+	// zfsArgv, not a bare zfs: this decides WHICH clone plan runs, and asking
+	// the LOCAL box whether a REMOTE dataset has a @golden snapshot answers
+	// about the wrong machine — it would silently pick the full-copy plan for
+	// a golden that exists.
+	hasGolden := func(r Row) bool {
+		if r.DS == nil {
+			return false
 		}
-		plan := planClone
-		// zfsArgv, not a bare zfs: this decides WHICH clone plan runs, and
-		// asking the local box whether a REMOTE dataset has a @golden
-		// snapshot answers about the wrong machine — it would silently pick
-		// the full-copy plan for a golden that exists.
-		if r.DS != nil {
-			chk := zfsArgv("list", r.DS.Name+"@golden")
-			if exec.Command(chk[0], chk[1:]...).Run() == nil {
-				plan = planCloneGolden
+		chk := zfsArgv("list", r.DS.Name+"@golden")
+		return exec.Command(chk[0], chk[1:]...).Run() == nil
+	}
+
+	// cloneAny — pick a source, say how many, get that many machines.
+	//
+	// It used to require a row to already be selected and then silently do
+	// NOTHING when one was not, and even when it worked it made exactly one
+	// clone with no way to ask for more. The whole point of a golden is
+	// stamping out copies (a clone here is a ZFS clone: 17-460 MB and about
+	// 0.2s), so "which golden, and how many" is the entire question and
+	// neither half could be answered. Reported 2026-08-15: "you should be
+	// able to select the golden images and spit out as many as you like".
+	//
+	// Goldens are listed first and marked, because they are what anyone
+	// opening this dialog is looking for.
+	cloneAny := func() {
+		type src struct {
+			label string
+			row   Row
+		}
+		var goldens, others []src
+		for _, r := range st.rows {
+			if r.Synthetic {
+				continue
+			}
+			if hasGolden(r) {
+				goldens = append(goldens, src{r.D.Name + "   (golden)", r})
+			} else {
+				others = append(others, src{r.D.Name, r})
 			}
 		}
-		nameDialog("clone — name for the new VM", "new VM name", plan)()
+		all := append(goldens, others...)
+		if len(all) == 0 {
+			dialog.ShowInformation("Nothing to clone",
+				"No VMs found on this host yet. Build one first (Build → New VM…).", w)
+			return
+		}
+
+		byLabel := make(map[string]Row, len(all))
+		labels := make([]string, 0, len(all))
+		for _, e := range all {
+			byLabel[e.label] = e.row
+			labels = append(labels, e.label)
+		}
+
+		source := widget.NewSelect(labels, nil)
+		// Default to whatever is selected in the estate, so the menu keeps
+		// working the way it always did for anyone who selected a row first.
+		source.SetSelected(labels[0])
+		if r, ok := st.selected(); ok {
+			for _, e := range all {
+				if e.row.D.Name == r.D.Name {
+					source.SetSelected(e.label)
+					break
+				}
+			}
+		}
+
+		name := widget.NewEntry()
+		name.SetPlaceHolder("base name — one clone gets this, N get name-1…name-N")
+		count := widget.NewEntry()
+		count.SetText("1")
+		count.Validator = numValidator(1, "clone")
+
+		form := container.NewVBox(
+			widget.NewLabel("clone from"), source,
+			widget.NewLabel("new name"), name,
+			container.NewGridWithColumns(2,
+				container.NewVBox(widget.NewLabel("how many"), count),
+				widget.NewLabel("")),
+		)
+		dialog.ShowCustomConfirm("Clone — stamp out copies of a VM", "Clone", "Cancel",
+			form, func(ok bool) {
+				if !ok {
+					return
+				}
+				base := strings.TrimSpace(name.Text)
+				if base == "" {
+					dialog.ShowError(errors.New("give the clone a name"), w)
+					return
+				}
+				n, err := strconv.Atoi(strings.TrimSpace(count.Text))
+				if err != nil || n < 1 {
+					dialog.ShowError(errors.New("how many must be a number, 1 or more"), w)
+					return
+				}
+				row, okRow := byLabel[source.Selected]
+				if !okRow {
+					dialog.ShowError(errors.New("pick something to clone from"), w)
+					return
+				}
+				plan := planClone
+				if hasGolden(row) {
+					plan = planCloneGolden
+				}
+
+				// Sequential on purpose. Each clone is a ZFS clone plus a
+				// domain define; running N at once fights libvirt for the
+				// same locks and turns a fast, boring operation into a race.
+				go func() {
+					made, failed := 0, 0
+					for i := 1; i <= n; i++ {
+						nm := base
+						if n > 1 {
+							nm = fmt.Sprintf("%s-%d", base, i)
+						}
+						p, err := plan(row, nm)
+						if err == nil {
+							err = runPlan(p)
+						}
+						if err != nil {
+							failed++
+							e := err
+							bad := nm
+							fyne.Do(func() {
+								dialog.ShowError(fmt.Errorf("%s: %w", bad, e), w)
+							})
+							continue
+						}
+						made++
+						done := made
+						fyne.Do(func() {
+							if guiStatus != nil {
+								guiStatus(fmt.Sprintf("· cloned %d of %d from %s",
+									done, n, row.D.Name))
+							}
+							refreshNow()
+						})
+					}
+					okCount, badCount := made, failed
+					fyne.Do(func() {
+						refreshNow()
+						if guiStatus != nil {
+							msg := fmt.Sprintf("· %d clone(s) of %s ready", okCount, row.D.Name)
+							if badCount > 0 {
+								msg += fmt.Sprintf(", %d failed", badCount)
+							}
+							guiStatus(msg)
+						}
+					})
+				}()
+			}, w)
 	}
 	mStorage := menuButton("Storage", theme.StorageIcon(),
 		fyne.NewMenuItem("Snapshot…", snapAct),
