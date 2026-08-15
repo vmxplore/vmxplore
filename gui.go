@@ -1060,6 +1060,15 @@ func runGUI(rs *Ruleset) {
 	var selectToolsTab func()  // set once the tab bar exists below
 	var selectScreenTab func() // ditto — where a new VM's first boot shows
 	var showToolTiles func()
+	// Where "← back" goes from a running tool. A tool is almost always reached
+	// THROUGH its verb page (klab → ztest goldens), so returning to the top
+	// grid throws away the level the operator was working in: they came from
+	// the ZFS sub-menu, watched a golden build, pressed back and landed on the
+	// main kldload menu with no way back to the build they had been running
+	// (.131, 2026-08-15). showToolActions points this at itself; the grid
+	// resets it. Declared here because showToolActions is defined further down
+	// and would not be in scope for runArgv otherwise.
+	backFromTool := func() { showToolTiles() }
 	stopTool := func() {
 		if toolCmd != nil && toolCmd.Process != nil {
 			_ = toolCmd.Process.Kill()
@@ -1118,11 +1127,11 @@ func runGUI(rs *Ruleset) {
 					return
 				}
 				stopTool()
-				showToolTiles()
+				backFromTool()
 			})
 		}()
-		back := widget.NewButtonWithIcon("tools", theme.NavigateBackIcon(),
-			func() { stopTool(); showToolTiles() })
+		back := widget.NewButtonWithIcon("back", theme.NavigateBackIcon(),
+			func() { stopTool(); backFromTool() })
 		bar := container.NewBorder(nil, nil,
 			back, nil, barLabel)
 		toolsHost.Objects = []fyne.CanvasObject{
@@ -1235,6 +1244,8 @@ func runGUI(rs *Ruleset) {
 		runArgv(argv)
 	}
 	showToolActions = func(tool string) {
+		// A tool launched from here returns HERE, not to the top grid.
+		backFromTool = func() { showToolActions(tool) }
 		acts := toolActions[tool]
 		tiles := make([]fyne.CanvasObject, 0, len(acts))
 		for _, act := range acts {
@@ -1285,6 +1296,8 @@ func runGUI(rs *Ruleset) {
 	}
 
 	showToolTiles = func() {
+		// Top level — anything launched straight from the grid comes back here.
+		backFromTool = func() { showToolTiles() }
 		if len(ktools) == 0 {
 			// the promotion surface on generic hosts — tier 3, sold not faked
 			get := widget.NewButtonWithIcon(
