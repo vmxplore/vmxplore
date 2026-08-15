@@ -184,19 +184,97 @@ func desktopPostInstall(distro, desktop string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Desktop: %s on %s (vmxplore). This is 1.5-3GB — first\n", desktop, distro)
 	b.WriteString("# boot takes minutes, not seconds. Progress is on the console.\n")
+
+	// ── The finisher unit, written BEFORE the long install ──────────────────
+	//
+	// HISTORY: 2026-08-15, VM "fed" (Fedora 44 KDE) on fiend. The desktop
+	// installed completely and the guest still booted to a text login. The
+	// cause was one line:
+	//
+	//     systemctl enable sddm
+	//     → Failed to enable unit: File '/etc/systemd/system/display-manager.service'
+	//       already exists and is a symlink to /usr/lib/systemd/system/plasmalogin.service
+	//
+	// Fedora 44's kde-desktop-environment ships PLASMALOGIN, not sddm, and
+	// enables it itself. Enabling a second display manager is an error, and the
+	// script ran under `set -Eeuo pipefail`, so it died on that line — before
+	// `set-default graphical.target` and before its own success echo. Evidence
+	// matched exactly: 1878 packages installed, no "installed" echo, no
+	// "FAILED" echo either (it was inside the then-branch), default target
+	// still multi-user.
+	//
+	// TWO lessons, both encoded below:
+	//
+	//  1. DO NOT NAME THE DISPLAY MANAGER when the distro already chose one.
+	//     r.DM is a FALLBACK for distros whose desktop group enables nothing
+	//     (Arch, and Fedora KDE as we believed until today). If
+	//     display-manager.service already exists, that decision has been made
+	//     by the packages and is more current than this table.
+	//
+	//  2. NOTHING HERE MAY ABORT THE SCRIPT. Every step is independently
+	//     tolerant, because the steps after it are the ones that matter: a
+	//     failed `enable` must never cost the `set-default` that follows.
+	//
+	// Written and enabled BEFORE the slow install so a reboot at any point —
+	// including cloud-init's own power_state — costs a reboot, not a desktop.
+	b.WriteString("cat >/var/lib/vmxplore-desktop-finish.sh <<'VMXFIN'\n")
+	b.WriteString("#!/usr/bin/env bash\n")
+	// NOT set -e. See lesson 2 above: this script exists precisely because a
+	// set -e abort on an idempotent no-op cost a desktop.
+	b.WriteString("set -uo pipefail\n")
+	b.WriteString("# Whatever the desktop packages already enabled wins. Only pick a\n")
+	b.WriteString("# display manager when the distro left that decision to us.\n")
+	b.WriteString("if [ -e /etc/systemd/system/display-manager.service ]; then\n")
+	b.WriteString("  dm=$(basename \"$(readlink -f /etc/systemd/system/display-manager.service)\")\n")
+	b.WriteString("  echo \"vmxplore: display manager already enabled: ${dm}\"\n")
+	b.WriteString("else\n")
+	if r.DM != "" {
+		fmt.Fprintf(&b, "  dm=%s.service\n", r.DM)
+		fmt.Fprintf(&b, "  systemctl enable %s || echo 'vmxplore: could not enable %s' >&2\n", r.DM, r.DM)
+	} else {
+		// No group-provided DM and no fallback in the table: say so loudly
+		// rather than leaving a silent text console to be discovered later.
+		b.WriteString("  dm=\"\"\n")
+		b.WriteString("  echo 'vmxplore: no display manager was enabled by the desktop packages " +
+			"and none is configured — the desktop will not start' >&2\n")
+	}
+	b.WriteString("fi\n")
+	b.WriteString("systemctl set-default graphical.target || " +
+		"echo 'vmxplore: could not set graphical.target' >&2\n")
+	// Bring the login screen up now too, so a guest that is ALREADY running
+	// does not need a second reboot. `start`, not `isolate`: isolating would
+	// tear down the transaction this unit is running inside.
+	b.WriteString("[ -n \"$dm\" ] && systemctl start \"$dm\" || true\n")
+	b.WriteString("systemctl disable vmxplore-desktop-finish.service || true\n")
+	b.WriteString("VMXFIN\n")
+	b.WriteString("chmod 0755 /var/lib/vmxplore-desktop-finish.sh\n")
+	b.WriteString("cat >/etc/systemd/system/vmxplore-desktop-finish.service <<'VMXUNIT'\n")
+	b.WriteString("[Unit]\n")
+	b.WriteString("Description=vmxplore: finish desktop setup (enable the display manager)\n")
+	b.WriteString("# The install may still have been running when this was enabled, so wait\n")
+	b.WriteString("# for a fully booted system rather than racing it a second time.\n")
+	b.WriteString("After=multi-user.target\n")
+	b.WriteString("\n[Service]\n")
+	b.WriteString("Type=oneshot\n")
+	b.WriteString("RemainAfterExit=yes\n")
+	b.WriteString("ExecStart=/var/lib/vmxplore-desktop-finish.sh\n")
+	b.WriteString("\n[Install]\n")
+	b.WriteString("WantedBy=multi-user.target\n")
+	b.WriteString("VMXUNIT\n")
+	b.WriteString("systemctl daemon-reload\n")
+	b.WriteString("systemctl enable vmxplore-desktop-finish.service\n")
+
 	fmt.Fprintf(&b, "echo 'vmxplore: installing %s — this takes several minutes'\n", desktop)
 	fmt.Fprintf(&b, "if %s; then\n", install)
-	if r.DM != "" {
-		// Idempotent, and it is the difference between a desktop and a
-		// desktop you cannot log into.
-		fmt.Fprintf(&b, "  systemctl enable %s\n", r.DM)
-	}
-	// Without this the packages are installed and the machine still boots to
-	// a text console, which reads as "the desktop did not install".
-	b.WriteString("  systemctl set-default graphical.target\n")
+	// The finisher will do this on the next boot regardless; running it here
+	// too means a guest that is NOT rebooted still reaches a desktop.
+	b.WriteString("  /var/lib/vmxplore-desktop-finish.sh || true\n")
 	fmt.Fprintf(&b, "  echo 'vmxplore: %s installed — rebooting into the login screen'\n", desktop)
 	b.WriteString("else\n")
 	fmt.Fprintf(&b, "  echo 'vmxplore: %s install FAILED — the VM is still a working server' >&2\n", desktop)
+	// Leave nothing armed that would flip a server to graphical.target after a
+	// failed desktop install.
+	b.WriteString("  systemctl disable vmxplore-desktop-finish.service || true\n")
 	b.WriteString("fi\n")
 	return b.String()
 }

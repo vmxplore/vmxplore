@@ -382,6 +382,21 @@ func yamlQuote(s string) string {
 const vdagentArg = "qemu-vdagent,source.clipboard.copypaste=on," +
 	"source.mouse.mode=client,target.type=virtio,target.name=com.redhat.spice.0"
 
+// gaChannelArg is the TRANSPORT for qemu-guest-agent. Without it the agent
+// daemon runs happily inside the guest and can talk to nobody: the host has no
+// virtio path to reach it, so `virsh domifaddr --source agent`, guest-initiated
+// graceful shutdown and fs-freeze all fail as though the agent were absent.
+//
+// HISTORY: 2026-08-15, VM "fed". It had the vdagent channel above (clipboard
+// worked) and no guest-agent channel, so `--source agent` returned empty and
+// the VM's IP could only be found via the DHCP lease table. Installing the
+// guest package is only half the job; this is the other half, and the half
+// that is easy to forget because the guest side looks correct.
+//
+// fs-freeze is the one that matters most here: it is what makes a snapshot of
+// a RUNNING guest filesystem-consistent instead of crash-consistent.
+const gaChannelArg = "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"
+
 // videoArg is the virtio-gpu device every VM gets.
 //
 // vram is in KiB. Measured, not assumed: a guest reached 2560x1440 on
@@ -594,7 +609,8 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--network", "network=default,model=virtio",
 			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
-			"--channel", vdagentArg)
+			"--channel", vdagentArg,
+			"--channel", gaChannelArg)
 		// Sound is appended rather than inlined because the backend half is
 		// conditional on the host — see audio.go, where an unreachable
 		// PipeWire is a qemu startup failure and not a silent guest.
@@ -747,7 +763,8 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--network", "network=default,model=virtio",
 			"--graphics", "vnc,listen=127.0.0.1",
 			"--video", videoArg,
-			"--channel", vdagentArg)
+			"--channel", vdagentArg,
+			"--channel", gaChannelArg)
 		argv = append(argv, audioArgs(target)...)
 		return append(argv, "--noautoconsole")
 	}

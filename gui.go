@@ -1628,11 +1628,33 @@ func runGUI(rs *Ruleset) {
 			// slow build and one the operator believes has hung.
 			if d == "" || d == "none" {
 				desktopNote.Hide()
+				// Headless again: sound goes back to being a choice.
+				if soundOK {
+					sound.Enable()
+					soundNote.SetText("Adds an ich9 card wired to this session, and " +
+						"installs the guest's audio stack on first boot. Untick for " +
+						"a silent guest.")
+				}
 				return
 			}
 			desktopNote.SetText("adds 1.5–3GB on first boot — this VM will take " +
 				"5–10 minutes instead of about a minute, and the console narrates it")
 			desktopNote.Show()
+
+			// A desktop with no sound is not a desktop anyone wants, so this
+			// stops being a question the moment one is selected: ticked, and
+			// locked. Operator, 2026-08-15 — "no need for a sound check box,
+			// just enable it for window manager installs."
+			//
+			// Still gated on soundOK. qemu treats an unreachable audio backend
+			// as FATAL — the domain does not start — so forcing sound on a host
+			// that cannot provide it would trade "a desktop with no sound" for
+			// "a VM that will not boot", which is a much worse trade.
+			if soundOK {
+				sound.SetChecked(true)
+				sound.Disable()
+				soundNote.SetText("Sound is enabled automatically for desktop VMs.")
+			}
 		}
 		imgPath := widget.NewEntry()
 		imgPath.SetPlaceHolder("/path/to/image.qcow2 (custom only)")
