@@ -65,6 +65,7 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 	}
 
 	progress(fmt.Sprintf("[3/3] stamping %d clones off the golden…", count))
+	started := 0
 	for i := 1; i <= count; i++ {
 		cn := fmt.Sprintf("%s-%d", spec.Name, i)
 		plan, err := planCloneGolden(src, cn)
@@ -75,8 +76,26 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 		if err := runPlan(plan); err != nil {
 			return fmt.Errorf("clone %s: %w", cn, err)
 		}
+		// The golden is shut off, so every clone off it is defined and dark.
+		// A "fleet ready" line over N machines that are all powered down is
+		// the same report a total failure would produce, and it read as one
+		// (operator, 2026-08-15). Booting is part of delivering the fleet.
+		//
+		// A clone that will not start is reported and the run continues: the
+		// machine exists and can be started by hand, and aborting here would
+		// leave the remaining clones unstamped over one bad boot.
+		sp, serr := planStart(Row{D: Dom{Name: cn, State: "shut off"}})
+		if serr == nil {
+			serr = runPlan(sp)
+		}
+		if serr != nil {
+			progress(fmt.Sprintf("  WARNING: %s was created but would not start: %v", cn, serr))
+		} else {
+			started++
+		}
 	}
-	progress(fmt.Sprintf("fleet ready: %s (golden) + %d clones", spec.Name, count))
+	progress(fmt.Sprintf("fleet ready: %s (golden) + %d clones, %d running",
+		spec.Name, count, started))
 	return nil
 }
 
