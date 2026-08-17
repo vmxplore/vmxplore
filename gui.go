@@ -2700,6 +2700,26 @@ func runGUI(rs *Ruleset) {
 							})
 							continue
 						}
+						// Its own cloud-init identity, before it ever boots.
+						// virt-clone carries the SOURCE's seed cdrom across by
+						// reference, so without this every clone comes up
+						// answering to the name of the machine it came off.
+						//
+						// Reported and skipped rather than fatal here: this
+						// dialog stamps from an arbitrary source, which may
+						// never have been cloud-init seeded at all, and the
+						// batch is the operator's to finish. ReseedClone is a
+						// no-op when there is no seed cdrom to replace.
+						if rerr := ReseedClone(nm, NewVMSpec{
+							User: "admin", Password: "kldload",
+						}); rerr != nil {
+							e, bad := rerr, nm
+							fyne.Do(func() {
+								dialog.ShowError(fmt.Errorf(
+									"%s was cloned but kept the source's identity: %w",
+									bad, e), w)
+							})
+						}
 						made++
 						if powerOn {
 							// A fresh clone is defined and shut off; planStart

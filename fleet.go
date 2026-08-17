@@ -76,6 +76,19 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 		if err := runPlan(plan); err != nil {
 			return fmt.Errorf("clone %s: %w", cn, err)
 		}
+		// Give the clone its own cloud-init identity BEFORE it is started.
+		// virt-clone carried the golden's seed cdrom over by reference, so
+		// without this every machine in the fleet boots claiming the golden's
+		// hostname and instance-id — which is exactly what five "new" VMs
+		// that the estate cannot tell apart looks like.
+		//
+		// Fatal on failure, deliberately: a clone with the wrong identity
+		// looks healthy right up until two of them are on the network
+		// together, and that is a worse outcome than a fleet that stops.
+		if err := ReseedClone(cn, spec); err != nil {
+			return fmt.Errorf("reseed %s: %w", cn, err)
+		}
+
 		// The golden is shut off, so every clone off it is defined and dark.
 		// A "fleet ready" line over N machines that are all powered down is
 		// the same report a total failure would produce, and it read as one
