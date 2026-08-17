@@ -2443,8 +2443,20 @@ func runGUI(rs *Ruleset) {
 			// Offer only the desktops that distro actually has a verified
 			// recipe for, so the list cannot promise what the repo will
 			// refuse ten minutes into a build.
+			//
+			// WARN: keep the operator's choice when the new distro also has a
+			// recipe for it. This used to reset to "none" on EVERY list
+			// selection, so picking GNOME and then touching the list again
+			// silently put it back — and because "none" is a valid answer, the
+			// build went ahead and produced headless servers with nothing
+			// anywhere saying why. Three Fedora "GNOME desktops" came up as
+			// three Fedora servers that way (fiend, 2026-08-17).
+			want := newDesktop.Selected
 			newDesktop.Options = DesktopsFor(d)
-			newDesktop.SetSelected("none")
+			if !DesktopSupported(d, want) {
+				want = "none"
+			}
+			newDesktop.SetSelected(want)
 			newNote.SetText("builds a golden first (~5-10 min, plus 1.5-3GB if a desktop is " +
 				"chosen), then stamps the clones from it")
 			newBox.Show()
@@ -2562,9 +2574,20 @@ func runGUI(rs *Ruleset) {
 						Name: base, Distro: distro, VCPUs: 2, RAMMB: m, DiskGB: g,
 						User: "admin", Password: "kldload",
 					}
-					if DesktopSupported(distro, newDesktop.Selected) {
-						spec.Desktop = newDesktop.Selected
+					// Refuse rather than silently downgrade. Skipping the
+					// assignment leaves Desktop empty, which builds a server
+					// — the operator asked for a desktop and would not find
+					// out until they looked at a blank screen.
+					if !DesktopSupported(distro, newDesktop.Selected) {
+						dialog.ShowError(fmt.Errorf(
+							"no verified %s recipe for %s.\n\n"+
+								"Pick another desktop, or install it yourself: put the "+
+								"dnf/apt commands in the post-install field. That runs on "+
+								"the golden and every clone inherits it.",
+							newDesktop.Selected, distro), w)
+						return
 					}
+					spec.Desktop = newDesktop.Selected
 					if err := spec.validate(); err != nil {
 						dialog.ShowError(err, w)
 						return

@@ -106,6 +106,22 @@ var desktopRecipes = map[string]map[string]recipe{
 	//
 	// No cloud-kernel problem here, unlike Debian: EL cloud images run the
 	// standard kernel, so DRM is present and the desktop actually draws.
+	// EL 9/10 (CentOS Stream, Rocky, Alma) — GNOME and only GNOME.
+	//
+	// Re-verified 2026-08-17 on a live Rocky 9.8 guest, resolving each group
+	// rather than merely asking whether the id exists:
+	//
+	//   workstation-product-environment  801 packages, 1.7G, base repos only
+	//   kde-desktop-environment          needs EPEL, and WITH EPEL fails to
+	//                                    resolve: nothing provides
+	//                                    libaspell.so.15, libKF5SonnetCore.so.5
+	//                                    unsatisfiable
+	//   xfce-desktop-environment         "not available" with OR without EPEL
+	//
+	// WARN: `dnf group info <id>` SUCCEEDS for all three. It reports that the
+	// id is known to the metadata, not that the group can be installed, and
+	// trusting it is how kde/xfce nearly got added here twice. The only probe
+	// that decides this is a resolve — `group install --assumeno`.
 	"centos": {
 		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
 	},
@@ -120,6 +136,21 @@ var desktopRecipes = map[string]map[string]recipe{
 	// 47.3 exists as a package, so a desktop could be assembled by naming
 	// individual packages, but that would be a recipe invented here rather than
 	// one read off the vendor, which is the thing this file exists to avoid.
+	// RHEL — Workstation only, deliberately.
+	//
+	// INFERRED, not directly verified: there is no RHEL guest to test against
+	// here (it needs a subscription). workstation-product-environment is the
+	// same base-repo environment that resolves on Rocky and CentOS Stream,
+	// which are bug-for-bug RHEL rebuilds, and it needs no EPEL. kde and xfce
+	// are omitted for the reason measured on the rebuilds above: one is
+	// unsatisfiable and the other is not installable at all.
+	//
+	// An operator who wants either can still have it — put the dnf commands
+	// in the post-install field, which is baked into the golden and inherited
+	// by every clone taken off it.
+	"rhel": {
+		"gnome": {Pkgs: []string{"workstation-product-environment"}, DM: "gdm"},
+	},
 	"debian": {
 		"gnome": {Pkgs: []string{"task-gnome-desktop"}},
 		"kde":   {Pkgs: []string{"task-kde-desktop"}},
