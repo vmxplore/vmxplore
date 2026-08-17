@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -140,6 +141,78 @@ func ReseedClone(dom string, spec NewVMSpec) error {
 	if out, err := exec.Command(upd[0], upd[1:]...).CombinedOutput(); err != nil {
 		return fmt.Errorf("attach seed to %s: %v: %s", dom, err,
 			strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// logPathRe matches the per-VM console log in a domain's XML — the sink
+// libvirt opens exclusively for as long as the guest runs.
+//
+// The element is <log file='…'/> inside <serial>/<console>, NOT
+// <source path='…'/>. Checked against real dumpxml output on 2026-08-17
+// after the first version of this matched nothing and silently retargeted
+// nothing, which looks identical to working.
+var logPathRe = regexp.MustCompile(`(<log file=')([^']*/)[^'/]+(-console\.log')`)
+
+// RetargetCloneLogs points a clone's console log at its own file.
+//
+// WHY: virt-clone carries by-reference paths from the source, and the seed
+// cdrom was not the only one. A clone of klab-desktop-fedora inherits
+// /var/log/klab/klab-desktop-fedora-console.log verbatim, so the source and
+// every clone of it share a single file. libvirt opens that log EXCLUSIVELY,
+// so the first domain to start wins and the rest fail with
+//
+//	Cannot open log file: '…-console.log': Device or resource busy
+//
+// Observed 2026-08-17: two clones stamped off klab-desktop-fedora, both
+// pointing at the source's log, and the operator got "failed to start".
+//
+// Args:    dom — the clone's domain name.
+// Returns: nil when the clone has its own log path, or when it has no
+//
+//	file-backed console log at all (nothing to retarget).
+//
+// Failure modes callers must handle: dumpxml or define being rejected.
+func RetargetCloneLogs(dom string) error {
+	out, err := virshOut("dumpxml", dom)
+	if err != nil {
+		return fmt.Errorf("dumpxml %s: %w", dom, err)
+	}
+	x := string(out)
+
+	fixed := logPathRe.ReplaceAllString(x, "${1}${2}"+dom+"${3}")
+	if fixed == x {
+		return nil // no file-backed console log, or it is already ours
+	}
+
+	// Redefine from a temp file rather than stdin: virsh define takes a path,
+	// and a domain XML is comfortably past what is safe to pass as an argument.
+	tmp, err := os.CreateTemp("", "vmx-relog-*.xml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(fixed); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+
+	// The directory has to exist and be writable by libvirt before the guest
+	// starts, or the retarget just moves the failure rather than fixing it.
+	for _, m := range logPathRe.FindAllStringSubmatch(fixed, -1) {
+		if d := strings.TrimSuffix(m[2], "/"); d != "" {
+			// Best effort: the directory usually already exists, having been
+			// made for the source. A failure here surfaces as a start error
+			// naming the path, which is clearer than anything raised now.
+			_ = exec.Command("sudo", "-n", "install", "-d", "-m0755", d).Run()
+		}
+	}
+
+	def := append(virsh(), "define", tmp.Name())
+	if out, err := exec.Command(def[0], def[1:]...).CombinedOutput(); err != nil {
+		return fmt.Errorf("redefine %s with its own console log: %v: %s",
+			dom, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -2720,6 +2720,16 @@ func runGUI(rs *Ruleset) {
 									bad, e), w)
 							})
 						}
+						// Its own console log, for the same reason: libvirt
+						// opens it exclusively, so clones sharing the source's
+						// path start one at a time and the rest fail.
+						if lerr := RetargetCloneLogs(nm); lerr != nil {
+							e, bad := lerr, nm
+							fyne.Do(func() {
+								dialog.ShowError(fmt.Errorf(
+									"%s kept the source's console log: %w", bad, e), w)
+							})
+						}
 						made++
 						if powerOn {
 							// A fresh clone is defined and shut off; planStart

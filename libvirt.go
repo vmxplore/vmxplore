@@ -417,6 +417,7 @@ type domInfo struct {
 	disks  []Disk
 	memKiB uint64
 	vcpus  uint64
+	macs   []string
 }
 
 type xmlDomain struct {
@@ -438,6 +439,13 @@ type xmlDomain struct {
 				Dev string `xml:"dev,attr"`
 			} `xml:"target"`
 		} `xml:"disk"`
+		// Interface MACs, for the lease fallback below: a lease table is
+		// keyed by MAC, and this is the only place to get a domain's.
+		Interfaces []struct {
+			MAC struct {
+				Address string `xml:"address,attr"`
+			} `xml:"mac"`
+		} `xml:"interface"`
 	} `xml:"devices"`
 }
 
@@ -467,6 +475,11 @@ func parseDomainXML(x string) (domInfo, error) {
 	info := domInfo{
 		memKiB: memUnitKiB(d.Memory.Unit, d.Memory.Value),
 		vcpus:  d.VCPU.Value,
+	}
+	for _, i := range d.Devices.Interfaces {
+		if i.MAC.Address != "" {
+			info.macs = append(info.macs, strings.ToLower(i.MAC.Address))
+		}
 	}
 	for _, disk := range d.Devices.Disks {
 		if disk.Device != "" && disk.Device != "disk" {

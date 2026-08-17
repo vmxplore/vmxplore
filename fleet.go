@@ -88,6 +88,11 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 		if err := ReseedClone(cn, spec); err != nil {
 			return fmt.Errorf("reseed %s: %w", cn, err)
 		}
+		// And its own console log. Sharing the source's makes every clone
+		// after the first fail to start with "Device or resource busy".
+		if err := RetargetCloneLogs(cn); err != nil {
+			return fmt.Errorf("retarget console log for %s: %w", cn, err)
+		}
 
 		// The golden is shut off, so every clone off it is defined and dark.
 		// A "fleet ready" line over N machines that are all powered down is
