@@ -31,9 +31,21 @@ func TestUserDataPostInstall(t *testing.T) {
 			t.Errorf("post-install cloud-config missing %q in:\n%s", want, ud)
 		}
 	}
-	// no post-install → no runcmd/write_files at all
-	if strings.Contains(userData(NewVMSpec{Name: "n", User: "a"}), "runcmd") {
-		t.Error("empty post-install must not emit runcmd")
+	// No operator post-install still emits a runcmd, because the guest agent
+	// is enabled there on every build. What must NOT appear is the operator's
+	// own script — the point of the original assertion was that an empty
+	// post-install produces no user payload, and that still holds.
+	bare := userData(NewVMSpec{Name: "n", User: "a"})
+	if !strings.Contains(bare, "packages:") ||
+		!strings.Contains(bare, "qemu-guest-agent") {
+		t.Error("every build must install the guest agent")
+	}
+	if !strings.Contains(bare, "systemctl enable --now qemu-guest-agent") {
+		t.Error("the guest agent must be enabled, not merely installed")
+	}
+	if strings.Contains(bare, "dnf install") ||
+		strings.Contains(bare, "apt-get install") {
+		t.Errorf("empty post-install must emit no operator payload:\n%s", bare)
 	}
 }
 

@@ -443,6 +443,24 @@ func userData(s NewVMSpec) string {
 		b.WriteString("power_state:\n  mode: reboot\n  condition: true\n" +
 			"  message: 'vmxplore: desktop installed — rebooting into it'\n")
 	}
+	// The guest agent, on every machine this builds.
+	//
+	// WHY UNCONDITIONAL: gaChannelArg already gives every domain the virtio
+	// transport, but nothing was ever installing the guest half, so all of
+	// them carried a channel with nothing on the other end. libvirt then logs
+	// "Guest agent is not responding" on every probe — 1,863 of them in ten
+	// minutes on a host with eleven guests — and the estate falls back to DHCP
+	// leases for addresses it should be able to ask the guest for directly.
+	//
+	// The package name is the same on dnf, apt and pacman, so this needs no
+	// per-distro branch. cloud-init installs it before runcmd, which means a
+	// post-install script can rely on it being there.
+	//
+	// It carries no identity of its own — machine-id and the ssh host keys are
+	// what must not be cloned, and kldload-seal/virt-sysprep clear those when
+	// a golden is sealed. So installing it on the golden is safe: every clone
+	// inherits the package and mints its own identity on first boot.
+	b.WriteString("packages:\n  - qemu-guest-agent\n")
 	b.WriteString("growpart:\n  mode: auto\n  devices: ['/']\n")
 	fmt.Fprintf(&b, "users:\n  - name: %s\n", yamlQuote(s.User))
 	b.WriteString("    sudo: ALL=(ALL) NOPASSWD:ALL\n")
@@ -507,6 +525,17 @@ func userData(s NewVMSpec) string {
 	if reg := rhelPostInstall(s); reg != "" {
 		post = reg + "\n" + post
 	}
+	// Enable the agent explicitly rather than trusting the distro preset.
+	// Fedora and EL enable it on install; Debian's package does not start it
+	// until the next boot, and a golden that is sealed before then produces
+	// clones whose agent has never run.
+	agent := "# The agent may already be running, and on some images the unit is\n" +
+		"# socket-activated rather than enableable. Neither is a failure, and\n" +
+		"# this script runs under `set -e` ahead of the operator's own\n" +
+		"# post-install — so an unswallowed error here would abort THAT.\n" +
+		"systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true\n"
+	post = agent + post
+
 	if strings.TrimSpace(post) != "" {
 		b.WriteString("write_files:\n")
 		b.WriteString("  - path: /var/lib/vmxplore-postinstall.sh\n")
