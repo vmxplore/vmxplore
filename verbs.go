@@ -52,6 +52,13 @@ type verbPlan struct {
 	cmds      [][]string // executed in order, stop on first failure
 	warn      string     // the consequence, surfaced in the status line / TUI
 	needsRoot bool       // true for zfs mutations (virsh works via group)
+
+	// post runs only after every cmd succeeded, and CANNOT fail the plan.
+	// It is for bookkeeping — registering the result in the inventory — which
+	// must never be able to break the operation it is recording. A host with
+	// no kldload-db, or a database that will not open, still gets its clone.
+	// Failures are written to the audit log and otherwise ignored.
+	post [][]string
 }
 
 // virsh() and zfsArgv() live in remote.go — they route to the connection
@@ -221,6 +228,10 @@ func planDelete(r Row) (verbPlan, error) {
 		cmds:      cmds,
 		warn:      warn,
 		needsRoot: needsRoot,
+		// Drop it from the inventory too. Without this the estate view keeps
+		// showing VMs that no longer exist, which is the failure mode that
+		// makes people stop trusting an inventory at all.
+		post: dbUnregisterVM(r.D.Name),
 	}, nil
 }
 
@@ -270,7 +281,51 @@ func planClone(r Row, newName string) (verbPlan, error) {
 		},
 		warn:      warn,
 		needsRoot: true, // zfs snapshot/clone; virt-clone rides along as root
+		// Register the clone in the shared inventory the rest of kldload
+		// already writes to — kvm-clone, kvm-create, kube-cluster and klab all
+		// do this, and vmxplore was the one path that created VMs without
+		// telling anybody. The consequence was visible: three clones running
+		// on 2026-08-18 appeared in neither the estate view nor the WireGuard
+		// GUI, because both derive membership from that inventory and the
+		// DHCP leases, and the clones were in neither.
+		//
+		// Same argv shape as kvm-clone, so the two paths produce identical
+		// rows rather than two dialects of the same fact.
+		post: dbRegisterClone(newName, r.D.Name),
 	}, nil
+}
+
+// dbRegisterClone returns the inventory calls for a freshly cloned domain, or
+// nil when kldload-db is not installed.
+//
+// Returns nil rather than commands-that-will-fail so the audit log records
+// what actually ran. A host without the database is a legitimate
+// configuration — vmxplore talks to remote libvirt targets that may not be
+// kldload machines at all.
+func dbRegisterClone(name, src string) [][]string {
+	if _, err := exec.LookPath("kldload-db"); err != nil {
+		return nil
+	}
+	return [][]string{
+		{"kldload-db", "vm-register", "--name", name, "--role", "clone",
+			"--golden-src", src, "--status", "cloned"},
+		{"kldload-db", "event", "--type", "vm", "--subject", name,
+			"--message", "cloned from " + src},
+	}
+}
+
+// dbUnregisterVM returns the inventory calls for a domain being destroyed, or
+// nil when kldload-db is not installed. Without this the inventory grows
+// monotonically and every deleted VM stays in the estate view forever.
+func dbUnregisterVM(name string) [][]string {
+	if _, err := exec.LookPath("kldload-db"); err != nil {
+		return nil
+	}
+	return [][]string{
+		{"kldload-db", "vm-delete", "--name", name},
+		{"kldload-db", "event", "--type", "vm", "--subject", name,
+			"--message", "destroyed from vmxplore"},
+	}
 }
 
 // planRollback rewinds the zvol to a snapshot. -r destroys every snapshot
@@ -412,6 +467,19 @@ func runPlan(p verbPlan) error {
 			}
 			return fmt.Errorf("%s: %s", argv[0], msg)
 		}
+	}
+	// Bookkeeping, best effort. Deliberately after the success return path of
+	// every cmd, and deliberately incapable of returning an error: an estate
+	// that refuses to clone because it could not write an inventory row is
+	// worse than one whose inventory is briefly behind.
+	for _, argv := range p.post {
+		out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+		rc := 0
+		if err != nil {
+			rc = 1
+		}
+		auditLog(strings.Join(argv, " "), rc)
+		_ = out
 	}
 	return nil
 }

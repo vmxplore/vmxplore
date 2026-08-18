@@ -88,8 +88,23 @@ func ReseedClone(dom string, spec NewVMSpec) error {
 	if err != nil {
 		return err
 	}
-	if target == "" {
-		return nil // nothing seeded this VM; nothing to re-seed
+	// No cdrom on the source means there is nothing to RE-seed — but it also
+	// means the clone has no way to learn who it is. Attach a fresh one
+	// instead of giving up.
+	//
+	// WHY: klab's desktop goldens carry no seed (klab-desktop-centos has zero
+	// cdrom devices), so every clone booted with the image's built-in
+	// identity. Measured 2026-08-18: three clones of that golden all reported
+	// host=localhost.localdomain, took DHCP leases that registered NO
+	// hostname, and were therefore invisible to the estate view — which
+	// derives membership from those leases. They were running and
+	// indistinguishable, which is worse than failing.
+	//
+	// A target of "" tells the attach path below to add a device rather than
+	// swap the media in an existing one.
+	attachNew := target == ""
+	if attachNew {
+		target = "sdb" // first free slot on the SCSI/SATA bus for a cdrom
 	}
 
 	// The clone's own identity. Desktop is deliberately cleared — the recipe
@@ -137,7 +152,21 @@ func ReseedClone(dom string, spec NewVMSpec) error {
 	// --config, not --live: the clone is defined and shut off at this point,
 	// and the change has to be in the persistent XML that its first boot
 	// reads. A --live update against a stopped domain is an error.
-	upd := append(virsh(), "change-media", dom, target, seed, "--config", "--update")
+	//
+	// change-media swaps the disc in a drive that already exists; attach-disk
+	// adds the drive itself. A source with no cdrom needs the latter, or
+	// change-media fails with "no such device".
+	var upd []string
+	if attachNew {
+		// --type cdrom is read-only in libvirt by construction, so no --mode
+		// flag: its accepted values are not documented in `virsh help` and an
+		// unverified flag value is not worth the risk in a path that decides
+		// whether a clone gets an identity.
+		upd = append(virsh(), "attach-disk", dom, seed, target,
+			"--type", "cdrom", "--config")
+	} else {
+		upd = append(virsh(), "change-media", dom, target, seed, "--config", "--update")
+	}
 	if out, err := exec.Command(upd[0], upd[1:]...).CombinedOutput(); err != nil {
 		return fmt.Errorf("attach seed to %s: %v: %s", dom, err,
 			strings.TrimSpace(string(out)))
