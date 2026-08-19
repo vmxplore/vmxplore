@@ -266,6 +266,34 @@ func tileColor() color.Color {
 	return color.NRGBA{R: 0xee, G: 0xe9, B: 0xe7, A: 0xff}
 }
 
+// tileSubColor is the tile's secondary text, picked by the SAME variantDark()
+// call as tileColor().
+//
+// WHY IT IS NOT A THEME LABEL: the description used to be a widget.Label,
+// which takes its colour from Fyne's theme with the LIVE variant, while the
+// rectangle behind it took tileColor() from Settings().ThemeVariant(). When
+// those two disagreed the tile drew dark text on a dark card and the
+// description became invisible in light mode (operator screenshot,
+// 2026-08-18). Deriving both from one call makes disagreement impossible
+// rather than unlikely.
+func tileSubColor() color.Color {
+	if variantDark() {
+		return color.NRGBA{R: 0x9a, G: 0xa4, B: 0xb2, A: 0xff}
+	}
+	return color.NRGBA{R: 0x5a, G: 0x62, B: 0x6f, A: 0xff}
+}
+
+// ellipsise trims to n runes and adds an ellipsis, so a tile stays one line
+// without needing widget.Label's truncation — see tileSubColor for why the
+// widget went away. Rune-safe: cutting bytes would split a multi-byte glyph.
+func ellipsise(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimRight(string(r[:n]), " ") + "…"
+}
+
 // tapArea makes any canvas object tappable with a pointer cursor — the
 // chassis under the launcher tiles (buttons can't hold two-line content).
 type tapArea struct {
@@ -439,9 +467,9 @@ func newTile(icon fyne.Resource, title, desc string, col color.Color, onTap func
 	// them looked ragged however carefully the cell was sized. One line,
 	// ellipsised, means every tile is the same object — which is the whole
 	// point of a tile. The full text still arrives on hover.
-	d := widget.NewLabel(desc)
-	d.Wrapping = fyne.TextWrapOff
-	d.Truncation = fyne.TextTruncateEllipsis
+	// Same one-line-per-tile rule as before; see ellipsise/tileSubColor.
+	d := canvas.NewText(ellipsise(desc, 34), tileSubColor())
+	d.TextSize = 12
 	content := container.NewVBox(
 		container.NewHBox(widget.NewIcon(icon), tt), d)
 	return newTapArea(container.NewStack(bg, container.NewPadded(content)), onTap)
