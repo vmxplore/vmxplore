@@ -69,12 +69,29 @@ var toolActions = map[string][]toolAction{
 	"klab": {
 		{label: "status", desc: "every golden, site and clone in the lab", argv: []string{"klab", "status"}},
 		{label: "results", desc: "what the last test run found", argv: []string{"klab", "results"}},
-		{label: "goldens", desc: "the blue/green base images, one per distro", builds: true, argv: []string{"klab", "goldens"}},
-		// The ZFS test lineage is separate from the blue/green goldens on
-		// purpose: it carries every zfs-tests.sh prerequisite and pre-created
-		// loopback vdevs, which the lean images deliberately do not.
-		{label: "ztest goldens…", desc: "OpenZFS test images — zfs-tests.sh prerequisites baked in", builds: true,
+
+		// ── Images ──────────────────────────────────────────────────────
+		// One entry per image SET, then one that builds every set. These are
+		// the same images the installer's "Build all images" tile produces;
+		// skipping it at install left no way to build them afterwards except
+		// knowing the klab verbs by heart (operator, 2026-08-19).
+		//
+		// Each set is a distinct lineage, not a variation:
+		//   base     — lean blue/green images, what clones and kspawn stamp from
+		//   desktop  — the same distros carrying GNOME, for workstation clones
+		//   ztest    — every zfs-tests.sh prerequisite and pre-created loopback
+		//              vdevs baked in, which the lean images deliberately omit
+		{label: "images: base…", desc: "the lean blue/green base images, one per distro", builds: true,
+			argv: []string{"klab", "golden"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
+		{label: "images: desktop…", desc: "GNOME desktop images — for workstation clones", builds: true,
+			argv: []string{"klab", "golden-desktop"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
+		{label: "images: ztest…", desc: "OpenZFS test images — zfs-tests.sh prerequisites baked in", builds: true,
 			argv: []string{"klab", "golden-ztest"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
+		// build-all is sequential and single-flight by design: it builds every
+		// golden, then deploys blue, then green. Idempotent — a re-run after a
+		// partial failure picks up where the last one stopped.
+		{label: "images: BUILD ALL", desc: "every image set, then the blue and green sites — hours", builds: true,
+			argv: []string{"klab", "build-all"}, confirm: true},
 		{label: "deploy blue", desc: "clone the goldens into the blue site", builds: true, argv: []string{"klab", "deploy", "blue"}},
 		{label: "deploy green", desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"klab", "deploy", "green"}},
 		{label: "test (quick)", desc: "the fast pass — about 5 minutes per distro", argv: []string{"klab", "test", "--quick"}},
