@@ -36,6 +36,15 @@ type toolAction struct {
 	prompt  string   // non-empty: ask, append the fields to argv
 	confirm bool     // destructive: show the exact argv first
 	builds  bool     // creates something — tile renders green
+	// needs is what the HOST must provide for this verb to work at all.
+	// Zero value CapNone = always available, so every existing entry keeps
+	// its behaviour and only the ones annotated below are gated.
+	//
+	// WHY: vmx ships standalone onto plain libvirt hosts. Without this, a
+	// KVM-only user could press "images: base…" and watch klab fail on a
+	// zvol path that was never going to exist on their machine. See
+	// capabilities.go — the gate is a probe, never a "is this kldload" flag.
+	needs Capability
 }
 
 var toolActions = map[string][]toolAction{
@@ -43,7 +52,7 @@ var toolActions = map[string][]toolAction{
 		{label: "status", desc: "nodes, versions, IPs — the cluster right now", argv: []string{"kube-cluster", "status"}},
 		{label: "bootstrap…", desc: "golden image + full cluster, one shot", builds: true, argv: []string{"kube-cluster", "bootstrap"},
 			prompt: "options (e.g. --workers 3, empty = defaults)"},
-		{label: "golden", desc: "build the golden image only", builds: true, argv: []string{"kube-cluster", "golden"}},
+		{label: "golden", needs: CapKlab, desc: "build the golden image only", builds: true, argv: []string{"kube-cluster", "golden"}},
 		{label: "scale…", desc: "add worker nodes to the running cluster", builds: true, argv: []string{"kube-cluster", "scale"},
 			prompt: "how many workers to add"},
 		{label: "destroy", desc: "tear down the cluster — VMs and zvols", argv: []string{"kube-cluster", "destroy"},
@@ -81,19 +90,19 @@ var toolActions = map[string][]toolAction{
 		//   desktop  — the same distros carrying GNOME, for workstation clones
 		//   ztest    — every zfs-tests.sh prerequisite and pre-created loopback
 		//              vdevs baked in, which the lean images deliberately omit
-		{label: "images: base…", desc: "the lean blue/green base images, one per distro", builds: true,
+		{label: "images: base…", needs: CapKlab, desc: "the lean blue/green base images, one per distro", builds: true,
 			argv: []string{"klab", "golden"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
-		{label: "images: desktop…", desc: "GNOME desktop images — for workstation clones", builds: true,
+		{label: "images: desktop…", needs: CapKlab, desc: "GNOME desktop images — for workstation clones", builds: true,
 			argv: []string{"klab", "golden-desktop"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
-		{label: "images: ztest…", desc: "OpenZFS test images — zfs-tests.sh prerequisites baked in", builds: true,
+		{label: "images: ztest…", needs: CapKlab, desc: "OpenZFS test images — zfs-tests.sh prerequisites baked in", builds: true,
 			argv: []string{"klab", "golden-ztest"}, prompt: "distro or all (centos rocky fedora debian ubuntu)"},
 		// build-all is sequential and single-flight by design: it builds every
 		// golden, then deploys blue, then green. Idempotent — a re-run after a
 		// partial failure picks up where the last one stopped.
-		{label: "images: BUILD ALL", desc: "every image set, then the blue and green sites — hours", builds: true,
+		{label: "images: BUILD ALL", needs: CapKlab, desc: "every image set, then the blue and green sites — hours", builds: true,
 			argv: []string{"klab", "build-all"}, confirm: true},
-		{label: "deploy blue", desc: "clone the goldens into the blue site", builds: true, argv: []string{"klab", "deploy", "blue"}},
-		{label: "deploy green", desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"klab", "deploy", "green"}},
+		{label: "deploy blue", needs: CapKlab, desc: "clone the goldens into the blue site", builds: true, argv: []string{"klab", "deploy", "blue"}},
+		{label: "deploy green", needs: CapKlab, desc: "clone the goldens into green — the staging site", builds: true, argv: []string{"klab", "deploy", "green"}},
 		{label: "test (quick)", desc: "the fast pass — about 5 minutes per distro", argv: []string{"klab", "test", "--quick"}},
 		{label: "test…", desc: "the complete zfs-tests.sh suite — hours per distro", argv: []string{"klab", "test"},
 			prompt: "flags (e.g. --distro centos, empty = all, full run)"},
@@ -107,7 +116,7 @@ var toolActions = map[string][]toolAction{
 	},
 	"kspawn": {
 		{label: "list", desc: "every spawned cluster", argv: []string{"kspawn", "list"}},
-		{label: "spawn…", desc: "instant multi-node cluster from klab goldens", builds: true, argv: []string{"kspawn", "spawn"},
+		{label: "spawn…", needs: CapKlab, desc: "instant multi-node cluster from klab goldens", builds: true, argv: []string{"kspawn", "spawn"},
 			prompt: "flags (see kspawn spawn -h; empty = defaults)"},
 		{label: "status…", desc: "one cluster's live state", argv: []string{"kspawn", "status"},
 			prompt: "cluster name"},

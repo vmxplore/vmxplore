@@ -1300,6 +1300,26 @@ func runGUI(rs *Ruleset) {
 			case act.builds:
 				col = acGreen.at()
 			}
+			// A verb this host cannot perform goes grey and says why.
+			//
+			// Grey is already the disabled colour in this UI by the rule
+			// above — nothing else is left neutral — so an unavailable tile
+			// reads as unavailable without inventing a new visual language.
+			// The DESCRIPTION is replaced with the reason rather than
+			// appended to: on a plain-KVM host "the lean blue/green base
+			// images, one per distro" is not the useful sentence, "needs
+			// klab (kldload)" is. Full text still arrives on hover.
+			//
+			// WHY GATE AT ALL: vmx ships standalone. Offering klab verbs on
+			// a host with no klab meant pressing a green BUILD tile and
+			// watching it fail on a zvol path that never existed there.
+			if ok, why := Available(act.needs); !ok {
+				tiles = append(tiles, newTile(toolIcon(tool), act.label,
+					why, tileSubColor(), func() {
+						dialog.ShowInformation(act.label+" unavailable", why, w)
+					}))
+				continue
+			}
 			tiles = append(tiles, newTile(toolIcon(tool), act.label,
 				act.desc, col, func() {
 					if act.prompt == "" {
