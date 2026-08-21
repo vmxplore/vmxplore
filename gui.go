@@ -986,7 +986,40 @@ func runGUI(rs *Ruleset) {
 				toggleFullScreen()
 			}
 		})
+		// RECOVER, because this goroutine runs third-party code over a pty we
+		// do not control the contents of.
+		//
+		// A panic on ANY goroutine takes the whole process with it — there is
+		// no per-goroutine isolation in Go — so a bug in the terminal widget
+		// is indistinguishable, from the operator's side, from vmxplore
+		// crashing. It was:
+		//
+		//   panic: runtime error: index out of range [44] with length 0
+		//     fyne-io/terminal@…/term.go:419
+		//     fyne-io/terminal.(*Terminal).RunWithConnection
+		//     main.runGUI.func10.2()  ->  gui.go:990
+		//
+		// Observed on onyx 2026-08-20: selecting a freshly created clone
+		// attached the serial console, the guest emitted something the
+		// widget's parser mishandled, and the entire application died —
+		// estate, VNC, tools and all. Three times in ninety seconds.
+		//
+		// The pane is worth less than the application around it. A serial
+		// console that stops rendering is a nuisance; losing the window while
+		// mid-task is not, and it takes the log with it. Recovering here turns
+		// a fatal into a dead pane plus a line in vmx.log naming the widget.
+		//
+		// Deliberately NOT restarting the terminal: the input that killed it is
+		// still queued on the pty, so a retry loop would panic-recover forever
+		// and burn a core. Reselecting the VM builds a fresh one.
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					auditLog(fmt.Sprintf(
+						"serial console for %s panicked inside the fyne terminal widget (%v) — pane disabled, reselect the VM to retry",
+						name, r), 1)
+				}
+			}()
 			_ = term.RunWithConnection(p, p)
 		}()
 		// no focus steal: arrowing through the list must stay in the list —
