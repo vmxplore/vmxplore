@@ -303,13 +303,14 @@ func planClone(r Row, newName string) (verbPlan, error) {
 // configuration — vmxplore talks to remote libvirt targets that may not be
 // kldload machines at all.
 func dbRegisterClone(name, src string) [][]string {
-	if _, err := exec.LookPath("kldload-db"); err != nil {
+	db := kldloadDB()
+	if db == "" {
 		return nil
 	}
 	return [][]string{
-		{"kldload-db", "vm-register", "--name", name, "--role", "clone",
+		{db, "vm-register", "--name", name, "--role", "clone",
 			"--golden-src", src, "--status", "cloned"},
-		{"kldload-db", "event", "--type", "vm", "--subject", name,
+		{db, "event", "--type", "vm", "--subject", name,
 			"--message", "cloned from " + src},
 	}
 }
@@ -318,12 +319,13 @@ func dbRegisterClone(name, src string) [][]string {
 // nil when kldload-db is not installed. Without this the inventory grows
 // monotonically and every deleted VM stays in the estate view forever.
 func dbUnregisterVM(name string) [][]string {
-	if _, err := exec.LookPath("kldload-db"); err != nil {
+	db := kldloadDB()
+	if db == "" {
 		return nil
 	}
 	return [][]string{
-		{"kldload-db", "vm-delete", "--name", name},
-		{"kldload-db", "event", "--type", "vm", "--subject", name,
+		{db, "vm-delete", "--name", name},
+		{db, "event", "--type", "vm", "--subject", name,
 			"--message", "destroyed from vmxplore"},
 	}
 }

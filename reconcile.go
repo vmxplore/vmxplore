@@ -52,7 +52,7 @@ func LoadAnnotations() *Annotations {
 // so vmx carries no sqlite driver and no schema knowledge. Rows are decoded
 // generically: a schema change degrades to "no annotation", not a crash.
 func (a *Annotations) loadStateDB() {
-	if _, err := exec.LookPath("kldload-db"); err != nil {
+	if kldloadDB() == "" {
 		return
 	}
 	out, err := exec.Command("kldload-db", "dump").Output()

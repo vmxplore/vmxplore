@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // The gate must never claim a capability the host lacks. These assert the
 // REASONING, not this machine's answer, so the test is not a snapshot of
@@ -79,5 +83,35 @@ func TestTierColumnMatchesAMatrixColumn(t *testing.T) {
 	case "", "KVM", "KVM+ZFS", "kldload":
 	default:
 		t.Fatalf("TierColumn() = %q, not a column of FeatureMatrix", c)
+	}
+}
+
+// A GUI session's PATH does not include /usr/local/sbin, which is exactly
+// where kldload installs kldload-db. Before this, every caller used LookPath
+// alone and read the miss as "not a kldload host", so clones stamped out from
+// the GUI were never registered and nothing said so (.120, 2026-08-22).
+func TestFindToolFallsBackToAbsolutePathWhenPATHMisses(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "kldload-db")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	// An empty PATH guarantees LookPath cannot find it, which is the whole
+	// point: the fallback is the only thing that can succeed here.
+	t.Setenv("PATH", "")
+
+	if got := findTool("kldload-db", bin); got != bin {
+		t.Errorf("fallback not used: got %q, want %q", got, bin)
+	}
+	if got := findTool("kldload-db", filepath.Join(dir, "absent")); got != "" {
+		t.Errorf("a genuinely missing tool must report empty, got %q", got)
+	}
+	// A directory at the path, or a non-executable file, is not a usable tool.
+	noexec := filepath.Join(dir, "noexec")
+	if err := os.WriteFile(noexec, []byte("x"), 0o644); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if got := findTool("kldload-db", noexec); got != "" {
+		t.Errorf("non-executable file must not count as a tool, got %q", got)
 	}
 }

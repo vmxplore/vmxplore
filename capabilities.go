@@ -79,8 +79,7 @@ func HasStateDB() bool {
 	if target.SSHHost != "" {
 		return true
 	}
-	_, err := exec.LookPath("kldload-db")
-	return err == nil
+	return kldloadDB() != ""
 }
 
 // TierFeature is one row of the capability comparison: what a thing is, and
@@ -235,4 +234,48 @@ func Tier() string {
 	default:
 		return "KVM only — cloud and local images; no clones, no goldens"
 	}
+}
+
+// ─── Locating kldload's own tools ────────────────────────────────────
+//
+// kldloadDB resolves the kldload-db binary, or "" when it is genuinely absent.
+//
+// WHY THIS IS NOT JUST LookPath: kldload installs the tool to
+// /usr/local/sbin, and a desktop session's PATH does not include sbin
+// directories. Every caller here used LookPath alone and treated the miss as
+// "this is not a kldload host", silently. Measured on .120 (2026-08-22): nine
+// clones stamped out from the GUI, every one of them absent from state.db and
+// therefore invisible to the Ansible inventory and the estate's reconcile
+// annotation — while the exact same binary resolved fine from a root shell,
+// which is why it had looked correct every time it was checked by hand.
+//
+// Returns an absolute path so callers can exec it without depending on the
+// PATH of whatever session happens to be running.
+func kldloadDB() string {
+	// The locations kldload actually installs to, most specific first. sbin
+	// before bin: that is where it lives, and checking it first keeps the
+	// common case to one stat.
+	return findTool("kldload-db",
+		"/usr/local/sbin/kldload-db",
+		"/usr/local/bin/kldload-db",
+		"/usr/sbin/kldload-db",
+		"/usr/bin/kldload-db",
+	)
+}
+
+// findTool resolves an executable by PATH, then by the absolute fallbacks
+// given, and returns "" when none of them is a runnable file.
+//
+// Split out from kldloadDB so the fallback behaviour is testable without
+// depending on what happens to be installed on the machine running the tests.
+func findTool(name string, fallbacks ...string) string {
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, p := range fallbacks {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
 }
