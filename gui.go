@@ -362,6 +362,16 @@ type vmRow struct {
 	onRange  func() // ctrl/shift-click → check the range from the anchor
 	onMenu   func(pos fyne.Position)
 	modDown  bool // Ctrl or Shift held on MouseDown, read by the next Tapped
+
+	// The dot zone is a 22px target that does something completely different
+	// from the other ~95% of the row, and nothing was drawn to say so. The
+	// author of the feature could not find it (2026-08-26) — which is the
+	// clearest possible evidence that an invisible affordance is not one.
+	// zoneHL is a faint rectangle shown only while the pointer is inside the
+	// zone, so the batch target announces itself on approach instead of
+	// having to be known about in advance.
+	zoneHL *canvas.Rectangle
+	inZone bool
 }
 
 // dotZoneW is how wide (px) the leading state-dot hit zone is: clicking
@@ -397,8 +407,63 @@ func newVMRow() *vmRow {
 
 func (r *vmRow) CreateRenderer() fyne.WidgetRenderer {
 	// tight two-line stack; the detail sits just under the title
+	if r.zoneHL == nil {
+		r.zoneHL = canvas.NewRectangle(theme.Color(theme.ColorNameHover))
+		r.zoneHL.CornerRadius = 3
+		r.zoneHL.Hide()
+	}
 	box := container.New(&rowLayout{}, r.title, r.detail)
-	return widget.NewSimpleRenderer(box)
+	// The highlight is laid out by dotLayout so it covers exactly the hit
+	// zone Tapped tests against — one constant, dotZoneW, drives both.
+	return widget.NewSimpleRenderer(container.New(&dotOverlay{}, r.zoneHL, box))
+}
+
+// dotOverlay puts the zone highlight under the row content, sized to the same
+// dotZoneW that Tapped uses. Deriving both from one constant means the visible
+// target and the clickable target cannot drift apart.
+type dotOverlay struct{}
+
+func (dotOverlay) MinSize(o []fyne.CanvasObject) fyne.Size { return o[1].MinSize() }
+func (dotOverlay) Layout(o []fyne.CanvasObject, sz fyne.Size) {
+	o[0].Move(fyne.NewPos(0, 0))
+	o[0].Resize(fyne.NewSize(dotZoneW, sz.Height))
+	o[1].Move(fyne.NewPos(0, 0))
+	o[1].Resize(sz)
+}
+
+// Hoverable: reveal the batch target when the pointer enters it.
+func (r *vmRow) MouseIn(e *desktop.MouseEvent) { r.MouseMoved(e) }
+func (r *vmRow) MouseMoved(e *desktop.MouseEvent) {
+	in := e.Position.X < dotZoneW
+	if in == r.inZone {
+		return // no state change: do not repaint on every mouse move
+	}
+	r.inZone = in
+	if r.zoneHL == nil {
+		return
+	}
+	if in {
+		r.zoneHL.Show()
+	} else {
+		r.zoneHL.Hide()
+	}
+	r.zoneHL.Refresh()
+}
+func (r *vmRow) MouseOut() {
+	r.inZone = false
+	if r.zoneHL != nil {
+		r.zoneHL.Hide()
+		r.zoneHL.Refresh()
+	}
+}
+
+// Cursorable: a pointer cursor over the zone, the default elsewhere — the
+// second half of saying "this part is a different control".
+func (r *vmRow) Cursor() desktop.Cursor {
+	if r.inZone {
+		return desktop.PointerCursor
+	}
+	return desktop.DefaultCursor
 }
 
 // rowLayout stacks the title and detail with a small gap, sizing to both —
