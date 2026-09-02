@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -511,6 +512,85 @@ func ApplianceNames() []string {
 // picker opens on what the catalog started as; order here IS the order in
 // the GUI list and in `vmx appliances`.
 var applianceCatalog = []Appliance{
+	{
+		Name:     "Web Stack",
+		Summary:  "nginx reverse proxy in front of PostgreSQL and Redis, wired together and health-checked",
+		Homepage: "https://nginx.org",
+		License:  "BSD-2-Clause (nginx), PostgreSQL, BSD-3-Clause (Redis)",
+
+		Distro: "debian",
+		VCPUs:  2,
+		RAMMB:  2048,
+		DiskGB: 20,
+
+		Port:    80,
+		LandsOn: "http://<vm-ip>/  (stack health at /healthz)",
+
+		Notes: "The three tiers every web application starts with, configured the " +
+			"way you would configure them by hand and then verified.\n\n" +
+			"PostgreSQL and Redis both listen on loopback ONLY and are never " +
+			"reachable from outside the VM; nginx is the single public surface. " +
+			"Redis takes a password anyway, because a loopback bind is one " +
+			"misconfigured proxy away from not being one.\n\n" +
+			"nginx proxies / to the upstream port you nominate, so you drop your " +
+			"own application on that port and it is already fronted, gzipped and " +
+			"behind sane security headers. Until something listens there, / " +
+			"returns 502 by design — /healthz is what tells you the stack " +
+			"itself is up, and it proves it by actually querying both " +
+			"databases rather than reporting that a unit is active.\n\n" +
+			"Leave the domain blank for plain HTTP, which is right for a LAN VM " +
+			"or one behind your own edge proxy. Set it and certbot requests a " +
+			"Let's Encrypt certificate on first boot, which needs the name to " +
+			"already resolve here from the public internet with 80/443 open.",
+
+		Fields: []ApplianceField{
+			{Key: "WS_DB_NAME", Label: "database name", Default: "appdb", Required: true},
+			{Key: "WS_DB_USER", Label: "database user", Default: "appuser", Required: true},
+			{Key: "WS_DB_PASS", Label: "database password",
+				Placeholder: "blank = generate one", Secret: true,
+				Generate: true, Required: true},
+			{Key: "WS_REDIS_PASS", Label: "redis password",
+				Placeholder: "blank = generate one", Secret: true,
+				Generate: true, Required: true},
+			{Key: "WS_UPSTREAM_PORT", Label: "upstream port nginx proxies to",
+				Default: "8080", Required: true},
+			{Key: "WS_DOMAIN", Label: "public domain (optional, enables HTTPS)",
+				Placeholder: "app.example.com"},
+			{Key: "WS_TLS_EMAIL", Label: "email for certificate notices (optional)",
+				Placeholder: "you@example.com"},
+		},
+
+		Validate: func(v map[string]string) error {
+			if !webStackIdentRE.MatchString(v["WS_DB_NAME"]) {
+				return fmt.Errorf("database name %q must be lowercase letters, digits and underscores, starting with a letter", v["WS_DB_NAME"])
+			}
+			if !webStackIdentRE.MatchString(v["WS_DB_USER"]) {
+				return fmt.Errorf("database user %q must be lowercase letters, digits and underscores, starting with a letter", v["WS_DB_USER"])
+			}
+			if len(v["WS_DB_PASS"]) < 8 {
+				return fmt.Errorf("database password must be at least 8 characters")
+			}
+			if len(v["WS_REDIS_PASS"]) < 8 {
+				return fmt.Errorf("redis password must be at least 8 characters")
+			}
+			port, err := strconv.Atoi(v["WS_UPSTREAM_PORT"])
+			if err != nil || port < 1024 || port > 65535 {
+				return fmt.Errorf("upstream port %q must be a number between 1024 and 65535", v["WS_UPSTREAM_PORT"])
+			}
+			if port == 80 || port == 443 {
+				return fmt.Errorf("upstream port %d collides with nginx itself", port)
+			}
+			if d := v["WS_DOMAIN"]; d != "" && strings.Contains(d, "/") {
+				return fmt.Errorf("domain %q must be a bare hostname, not a URL", d)
+			}
+			if v["WS_DOMAIN"] == "" && v["WS_TLS_EMAIL"] != "" {
+				return fmt.Errorf("a certificate email without a domain has nothing to certify — set the domain too")
+			}
+			return nil
+		},
+
+		Script: webStackScript,
+	},
 	writeFreely, writeFreelyDesktop,
 	jellyfin, plex, gitea, adguardHome, syncthing,
 }
@@ -1339,4 +1419,240 @@ if [ "${wf_need_reboot:-0}" = 1 ]; then
     echo "rebooting once into the generic kernel — X needs its DRM drivers"
     systemctl reboot
 fi
+`
+
+// webStackIdentRE keeps database and role names to what PostgreSQL accepts
+// unquoted, so the script never has to quote an identifier it was handed.
+var webStackIdentRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// webStackScript is fixed bash — it reads WS_* from the preamble Render
+// prepends and interpolates nothing else.
+//
+// Three tiers, each configured rather than defaulted:
+//
+//	postgres  loopback-only, scram-sha-256, a dedicated role and database,
+//	          shared_buffers sized from the VM's actual RAM
+//	redis     loopback-only AND password-protected, maxmemory with an
+//	          eviction policy so it cannot OOM the box it shares
+//	nginx     the only public surface: proxies / to the upstream port,
+//	          gzip, security headers, and a /healthz that queries BOTH
+//	          databases rather than reporting that a unit is active
+//
+// Every service is installed and enabled in the same breath, because a unit
+// that ships without being enabled is a service that works until the first
+// reboot. Each tier is asserted by OUTCOME at the end — pg_isready, a real
+// Redis AUTH+PING, nginx -t, and an HTTP fetch of /healthz — since apt
+// returning 0 says nothing about whether the thing runs.
+const webStackScript = `export DEBIAN_FRONTEND=noninteractive
+
+# One transaction per tier. A single apt-get with everything in it is
+# all-or-nothing: one unavailable package takes the whole stack down, and the
+# operator gets a wall of dependency output instead of "redis is missing".
+apt-get update -y
+
+for _pkg in postgresql redis-server nginx; do
+    if ! apt-get install -y --no-install-recommends "$_pkg"; then
+        echo "FATAL: $_pkg did not install — the stack is incomplete" >&2
+        exit 1
+    fi
+done
+# curl is the health check's only dependency and is tiny; jq keeps /healthz
+# readable from a terminal.
+apt-get install -y --no-install-recommends curl jq ca-certificates || true
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+# shared_buffers at a quarter of RAM is the long-standing starting point; the
+# default 128MB is sized for a machine far smaller than any VM this builds.
+_ram_mb=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo)
+_shared_mb=$(( _ram_mb / 4 ))
+[ "$_shared_mb" -lt 128 ] && _shared_mb=128
+
+_pgdir=$(find /etc/postgresql -maxdepth 2 -name postgresql.conf -printf '%h\n' 2>/dev/null | sort -V | tail -1)
+if [ -z "$_pgdir" ]; then
+    echo "FATAL: no postgresql.conf found — cannot configure the database" >&2
+    exit 1
+fi
+
+cat >"$_pgdir/conf.d/10-webstack.conf" <<PGCONF
+# Loopback only. nginx is the public surface; the database must never be.
+listen_addresses = 'localhost'
+password_encryption = 'scram-sha-256'
+shared_buffers = ${_shared_mb}MB
+PGCONF
+
+systemctl enable --now postgresql
+for _i in $(seq 1 30); do
+    su - postgres -c 'pg_isready -q' && break
+    sleep 1
+done
+
+# Role and database. Created idempotently so re-running the post-install on a
+# rebuilt VM is not an error.
+su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$WS_DB_USER'\"" | grep -q 1 ||
+    su - postgres -c "psql -c \"CREATE ROLE $WS_DB_USER LOGIN PASSWORD '$WS_DB_PASS'\""
+su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='$WS_DB_NAME'\"" | grep -q 1 ||
+    su - postgres -c "createdb -O $WS_DB_USER $WS_DB_NAME"
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+# Bound to loopback AND given a password. The bind alone would be enough today,
+# but it is one misconfigured proxy away from not being enough.
+_redis_mb=$(( _ram_mb / 8 ))
+[ "$_redis_mb" -lt 64 ] && _redis_mb=64
+
+cat >/etc/redis/redis.conf.d-webstack.conf <<REDISCONF
+bind 127.0.0.1 -::1
+protected-mode yes
+requirepass $WS_REDIS_PASS
+maxmemory ${_redis_mb}mb
+maxmemory-policy allkeys-lru
+REDISCONF
+mkdir -p /etc/redis/conf.d
+mv /etc/redis/redis.conf.d-webstack.conf /etc/redis/conf.d/10-webstack.conf
+grep -q '^include /etc/redis/conf.d/' /etc/redis/redis.conf ||
+    echo 'include /etc/redis/conf.d/*.conf' >>/etc/redis/redis.conf
+systemctl enable --now redis-server
+
+# ── the health endpoint ─────────────────────────────────────────────────────
+# It QUERIES both databases. "systemctl is-active" would report a Redis that is
+# up and rejecting every AUTH, which is exactly the failure worth catching.
+install -d -m 0750 -o root -g www-data /etc/webstack
+umask 077
+cat >/etc/webstack/env <<ENVEOF
+PGPASSWORD=$WS_DB_PASS
+DB_NAME=$WS_DB_NAME
+DB_USER=$WS_DB_USER
+REDIS_PASS=$WS_REDIS_PASS
+ENVEOF
+chown root:www-data /etc/webstack/env
+chmod 0640 /etc/webstack/env
+umask 022
+
+cat >/usr/local/bin/webstack-health <<'HEALTHEOF'
+#!/usr/bin/env bash
+# Prints the stack's real state as JSON. Each tier is proven by a query, not
+# by asking systemd whether a unit is running.
+set -uo pipefail
+. /etc/webstack/env
+_pg=fail
+PGPASSWORD="$PGPASSWORD" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null 2>&1 && _pg=ok
+_redis=fail
+[ "$(redis-cli -h 127.0.0.1 -a "$REDIS_PASS" --no-auth-warning PING 2>/dev/null)" = "PONG" ] && _redis=ok
+_nginx=fail
+systemctl is-active --quiet nginx && _nginx=ok
+_all=ok
+[ "$_pg" = ok ] && [ "$_redis" = ok ] && [ "$_nginx" = ok ] || _all=degraded
+printf '{"status":"%s","postgres":"%s","redis":"%s","nginx":"%s","host":"%s"}\n' \
+    "$_all" "$_pg" "$_redis" "$_nginx" "$(hostname)"
+HEALTHEOF
+chmod 0755 /usr/local/bin/webstack-health
+
+# Regenerated every 15s by a timer rather than run per-request: an HTTP
+# endpoint that shells out to two databases is a denial-of-service waiting to
+# be discovered.
+cat >/etc/systemd/system/webstack-health.service <<'HSVC'
+[Unit]
+Description=Write the web stack health document nginx serves
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '/usr/local/bin/webstack-health > /var/www/html/healthz.tmp && mv /var/www/html/healthz.tmp /var/www/html/healthz'
+HSVC
+cat >/etc/systemd/system/webstack-health.timer <<'HTMR'
+[Unit]
+Description=Refresh the web stack health document
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=15s
+[Install]
+WantedBy=timers.target
+HTMR
+systemctl daemon-reload
+systemctl enable --now webstack-health.timer
+
+# ── nginx ───────────────────────────────────────────────────────────────────
+rm -f /etc/nginx/sites-enabled/default
+cat >/etc/nginx/sites-available/webstack <<NGINXEOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    # Do not advertise the version to anyone probing.
+    server_tokens off;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml;
+    gzip_min_length 512;
+
+    # Served from a file the timer refreshes, so hitting it hard costs nothing.
+    location = /healthz {
+        default_type application/json;
+        alias /var/www/html/healthz;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$WS_UPSTREAM_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 60s;
+    }
+}
+NGINXEOF
+ln -sf /etc/nginx/sites-available/webstack /etc/nginx/sites-enabled/webstack
+
+if ! nginx -t; then
+    echo "FATAL: nginx rejected the generated config" >&2
+    exit 1
+fi
+systemctl enable --now nginx
+systemctl reload nginx
+
+# ── TLS, only when a domain was given ───────────────────────────────────────
+if [ -n "${WS_DOMAIN:-}" ]; then
+    if apt-get install -y --no-install-recommends certbot python3-certbot-nginx; then
+        _mailarg="--register-unsafely-without-email"
+        [ -n "${WS_TLS_EMAIL:-}" ] && _mailarg="-m $WS_TLS_EMAIL"
+        # Non-fatal: a name that does not resolve yet is a DNS problem, not a
+        # reason to leave the operator with no stack at all. Plain HTTP still
+        # works and certbot can be re-run by hand.
+        certbot --nginx -n --agree-tos $_mailarg -d "$WS_DOMAIN" ||
+            echo "WARNING: certbot could not issue for $WS_DOMAIN — serving plain HTTP; re-run certbot once DNS resolves" >&2
+    else
+        echo "WARNING: certbot did not install — serving plain HTTP" >&2
+    fi
+fi
+
+# ── firewall ────────────────────────────────────────────────────────────────
+if command -v nft >/dev/null 2>&1; then
+    nft add table inet filter 2>/dev/null || true
+    nft add chain inet filter input '{ type filter hook input priority 0; policy accept; }' 2>/dev/null || true
+    nft add rule inet filter input tcp dport '{ 80, 443 }' accept 2>/dev/null || true
+fi
+
+# ── outcome, not exit codes ─────────────────────────────────────────────────
+# Every tier above can return 0 and still not work. Ask each one directly.
+systemctl start webstack-health.service || true
+sleep 2
+_health=$(/usr/local/bin/webstack-health)
+echo "webstack: $_health"
+
+_failed=0
+echo "$_health" | grep -q '"postgres":"ok"' || { echo "FATAL: PostgreSQL is not answering queries" >&2; _failed=1; }
+echo "$_health" | grep -q '"redis":"ok"'    || { echo "FATAL: Redis is not answering AUTH+PING" >&2; _failed=1; }
+echo "$_health" | grep -q '"nginx":"ok"'    || { echo "FATAL: nginx is not running" >&2; _failed=1; }
+if ! curl -fsS --max-time 10 http://127.0.0.1/healthz >/dev/null 2>&1; then
+    echo "FATAL: /healthz is not reachable through nginx" >&2
+    _failed=1
+fi
+[ "$_failed" -eq 0 ] || exit 1
+
+echo "webstack: nginx :80 -> 127.0.0.1:$WS_UPSTREAM_PORT | postgres $WS_DB_NAME as $WS_DB_USER | redis loopback+auth"
+echo "webstack: drop your application on port $WS_UPSTREAM_PORT and it is already fronted"
 `
