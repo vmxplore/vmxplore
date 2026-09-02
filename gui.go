@@ -1684,6 +1684,41 @@ func runGUI(rs *Ruleset) {
 			}, w)
 	})
 
+	// Grow the disk, and the partition and filesystem inside it. The size is
+	// read first so the field opens on the truth and the shrink guard in
+	// planResizeDisk has a real number to compare against — see resize.go for
+	// why an unknown current size is a refusal rather than a default.
+	resizeDialog := withSel(func(r Row) {
+		cur, err := currentDiskBytes(r)
+		if err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
+		size := widget.NewEntry()
+		size.SetText(fmt.Sprint(cur / gib))
+		form := container.NewVBox(
+			widget.NewLabel("New size (GiB) — currently "+humanGiB(cur)+":"), size,
+			widget.NewLabel("Grows the disk, its partition and its filesystem."),
+			widget.NewLabel("One way: a disk cannot be shrunk back."))
+		dialog.ShowCustomConfirm("Resize disk — "+r.D.Name, "Grow", "Cancel", form,
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				var g int
+				if _, err := fmt.Sscanf(strings.TrimSpace(size.Text), "%d", &g); err != nil || g < 1 {
+					dialog.ShowError(fmt.Errorf("size must be a positive number of GiB"), w)
+					return
+				}
+				p, err := planResizeDisk(r, g, cur)
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				firePlan(w, p, func() { refreshNow() })
+			}, w)
+	})
+
 	// menuButton drops a popup menu under the button — the submenu chrome.
 	menuButton := func(label string, icon fyne.Resource, items ...*fyne.MenuItem) *widget.Button {
 		var b *widget.Button
@@ -2940,6 +2975,7 @@ func runGUI(rs *Ruleset) {
 		fyne.NewMenuItem("Rollback…", rollbackDialog))
 	mConfig := menuButton("Configure", theme.SettingsIcon(),
 		fyne.NewMenuItem("vCPU / memory…", specsDialog),
+		fyne.NewMenuItem("Resize disk…", resizeDialog),
 		fyne.NewMenuItem("Autostart on/off", verb(planAutostart)))
 	mBuild := menuButton("Build", theme.ContentAddIcon(),
 		fyne.NewMenuItem("New VM…", newVMDialog),
@@ -2971,6 +3007,7 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("Make Golden…", goldenAct),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
+			fyne.NewMenuItem("Resize disk…", resizeDialog),
 			fyne.NewMenuItem("Autostart on/off", verb(planAutostart)),
 			fyne.NewMenuItemSeparator(),
 			// no ellipsis: nothing opens, it deletes
