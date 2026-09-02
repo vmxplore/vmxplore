@@ -37,47 +37,37 @@ jobs:
           # cross-reference and the lint gate fails on runner state rather
           # than on our page.
           sudo makewhatis /usr/share/man
-      - name: gofmt clean
-        run: test -z "$(gofmt -l .)"
-      - name: Vet + test (static flavor)
-        run: |
-          go vet ./...
-          go test ./...
-      - name: Vet + test (GUI flavor)
-        run: |
-          go vet -tags gui ./...
-          go test -tags gui ./...
-      - name: Race detector (both flavors)
-        run: |
-          go test -race ./...
-          go test -race -tags gui ./...
-      - name: staticcheck (both flavors)
+      # Every step below CALLS a make target rather than re-typing the command.
+      # The gate policy then lives in exactly one place, the Makefile, and the
+      # local `make check` cannot drift from the server. It had: on 2026-09-02
+      # four of this file's nine steps had no Makefile equivalent, `check`
+      # claimed parity it did not have, and a govulncheck advisory published
+      # against an untouched tree was found by a red email instead of locally.
+      #
+      # Kept as separate steps, not one `make check`, so a failure names the
+      # gate in the checks UI instead of a single opaque red block.
+      - name: Analysis tools
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
-          staticcheck ./...
-          staticcheck -tags gui ./...
-      - name: govulncheck
-        run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+      - name: gofmt clean
+        run: test -z "$(gofmt -l .)"
+      - name: Vet (both flavors)
+        run: make vet
+      - name: Test (both flavors)
+        run: make test
+      - name: Race detector (both flavors)
+        run: make race
+      - name: staticcheck (both flavors)
+        run: make staticcheck
+      - name: govulncheck
+        run: make vulncheck
       - name: Man page lint
         # Fail on WARNING/ERROR, tolerate STYLE. -T lint implies -W all and
         # ignores a -W override, so filter explicitly. STYLE is mostly
         # "referenced manual not found" — a property of which man pages the
         # runner happens to have, not of our page.
-        run: |
-          mandoc -T lint docs/vmxplore.1 > /tmp/lint.txt 2>&1 || true
-          # Drop STYLE, and drop the "outdated mandoc.db" notes too: those
-          # are about which man pages the RUNNER has indexed, not about our
-          # page, and they are not tagged STYLE so the filter above misses
-          # them. makewhatis above normally prevents them; this is the belt
-          # to that braces.
-          out=$(grep -v ' STYLE: ' /tmp/lint.txt | grep -v 'outdated mandoc.db' || true)
-          if [ -n "$out" ]; then
-            echo "$out"
-            echo "::error::mandoc lint failed — $(echo "$out" | head -1)"
-            exit 1
-          fi
+        run: make manlint
       - name: Build both binaries
         run: make build
 

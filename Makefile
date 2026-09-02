@@ -45,7 +45,7 @@ APPDIR   = $(DESTDIR)$(PREFIX)/share/applications
 ICONDIR  = $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps
 DOCDIR   = $(DESTDIR)$(PREFIX)/share/doc/vmxplore
 
-.PHONY: build bump tui gui test race vulncheck manlint vet fmt check clean install uninstall
+.PHONY: build bump tui gui test race vulncheck manlint staticcheck vet fmt check clean install uninstall
 
 bump:
 	@n=$$(cat $(BUILDNUM_FILE) 2>/dev/null || echo 0); echo $$((n + 1)) > $(BUILDNUM_FILE)
@@ -111,13 +111,20 @@ fmt:
 # reason. A gate that only exists on the server is a gate you find out about
 # from a red email, and a target that CLAIMS to mirror CI while skipping half
 # of it is worse than one that never claimed anything.
-check: vet test race build vulncheck manlint
-	@test -z "$$(gofmt -l .)" || { echo "gofmt drift:"; gofmt -l .; exit 1; }
+# staticcheck as its own target so ci.yml can CALL it rather than re-typing the
+# two invocations. Every gate this project has must exist exactly once, in the
+# Makefile, with CI as a thin caller -- the alternative is what was here on
+# 2026-09-02: four of CI's nine steps had no Makefile equivalent at all, `check`
+# claimed parity it did not have, and the drift was found by a red email.
+staticcheck:
 	@command -v staticcheck >/dev/null 2>&1 || { \
 		echo "staticcheck NOT INSTALLED — this check DID NOT RUN"; \
 		echo "  go install honnef.co/go/tools/cmd/staticcheck@latest"; exit 1; }
 	staticcheck ./...
 	staticcheck -tags gui ./...
+
+check: vet test race build vulncheck manlint staticcheck
+	@test -z "$$(gofmt -l .)" || { echo "gofmt drift:"; gofmt -l .; exit 1; }
 
 clean:
 	rm -f $(BIN_TUI) $(BIN_GUI)
