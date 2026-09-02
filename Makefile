@@ -73,8 +73,18 @@ vet:
 fmt:
 	gofmt -l .
 
+# check must run what CI runs. staticcheck is here because it catches a class
+# nothing else does -- unused functions, dead branches -- and CI failed on
+# exactly that (U1000, run 58) after a local build/vet/test/gofmt came back
+# clean. A gate that only exists on the server is a gate you find out about
+# from a red email.
 check: vet test build
 	@test -z "$$(gofmt -l .)" || { echo "gofmt drift:"; gofmt -l .; exit 1; }
+	@command -v staticcheck >/dev/null 2>&1 || { \
+		echo "staticcheck NOT INSTALLED — this check DID NOT RUN"; \
+		echo "  go install honnef.co/go/tools/cmd/staticcheck@latest"; exit 1; }
+	staticcheck ./...
+	staticcheck -tags gui ./...
 
 clean:
 	rm -f $(BIN_TUI) $(BIN_GUI)
