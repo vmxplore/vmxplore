@@ -204,12 +204,34 @@ exit 1
 // remote.go for why quoting here is a safety property rather than a formality —
 // a guest IP is data, and data never becomes shell syntax.
 func guestShellArgv(ip, script string) []string {
-	inner := append([]string{"ssh"}, sshFlags...)
+	inner := append([]string{"sudo", "-n", "ssh"}, guestSSHFlags...)
 	inner = append(inner, "root@"+ip, shellQuoteArgv("/bin/sh", "-c", script))
 	if target.SSHHost == "" {
 		return inner
 	}
 	return sshArgv(target.SSHHost, inner...)
+}
+
+// guestSSHFlags is the ssh policy for reaching a GUEST, which is a different
+// problem from reaching a hypervisor and needs different answers.
+//
+// Host keys: a guest here is a clone off a golden. It is created, destroyed and
+// recreated constantly, and libvirt hands out the same 192.168.122.x address to
+// whatever asks next -- fiend's root known_hosts carried three different keys
+// for each of five addresses on 2026-09-02. So a CHANGED host key is the normal
+// case, not an attack, and `accept-new` (which only auto-accepts UNKNOWN hosts)
+// fails hard on exactly that. This is the narrow situation the project rule
+// allows StrictHostKeyChecking=no for, and it is scoped to guest connections
+// only: sshFlags, used for the durable hypervisor connection, stays strict.
+// UserKnownHostsFile=/dev/null keeps the churn out of the file entirely rather
+// than growing an ever-staler list of dead clones.
+var guestSSHFlags = []string{
+	"-o", "BatchMode=yes",
+	"-o", "StrictHostKeyChecking=no",
+	"-o", "UserKnownHostsFile=/dev/null",
+	"-o", "GlobalKnownHostsFile=/dev/null",
+	"-o", "LogLevel=ERROR",
+	"-o", "ConnectTimeout=10",
 }
 
 // resizeTarget picks the guest-side disk name (vda) for the row's root disk.
