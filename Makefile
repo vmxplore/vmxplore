@@ -45,7 +45,7 @@ APPDIR   = $(DESTDIR)$(PREFIX)/share/applications
 ICONDIR  = $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps
 DOCDIR   = $(DESTDIR)$(PREFIX)/share/doc/vmxplore
 
-.PHONY: build bump tui gui test vet fmt check clean install uninstall
+.PHONY: build bump tui gui test race vulncheck manlint vet fmt check clean install uninstall
 
 bump:
 	@n=$$(cat $(BUILDNUM_FILE) 2>/dev/null || echo 0); echo $$((n + 1)) > $(BUILDNUM_FILE)
@@ -65,6 +65,36 @@ gui:
 test:
 	@mkdir -p $(CURDIR)/.gotmp
 	GOTMPDIR=$(CURDIR)/.gotmp go test ./...
+	GOTMPDIR=$(CURDIR)/.gotmp go test -tags gui ./...
+
+# The race detector is a SEPARATE target because it is the slow half. CI runs
+# it on both flavors; so does check.
+race:
+	@mkdir -p $(CURDIR)/.gotmp
+	GOTMPDIR=$(CURDIR)/.gotmp go test -race ./...
+	GOTMPDIR=$(CURDIR)/.gotmp go test -race -tags gui ./...
+
+# govulncheck reads the Go vulnerability database, so unlike every other gate
+# here it can go red with the tree untouched -- a newly published advisory in a
+# dependency is enough. That is exactly what happened on 2026-09-02: run 61 went
+# red on GO-2026-6354/6355 in golang.org/x/crypto v0.54.0, reachable through
+# libvirt.ConnectToURI -> ssh.Dial, on a push whose diff was six lines of ssh
+# flags. Running it locally is the difference between "I broke it" and "the
+# world moved".
+vulncheck:
+	@command -v govulncheck >/dev/null 2>&1 || { \
+		echo "govulncheck NOT INSTALLED -- this check DID NOT RUN"; \
+		echo "  go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
+	govulncheck ./...
+
+# CI fails on WARNING/ERROR and tolerates STYLE; mirror that filter exactly, or
+# this passes locally and fails on the server.
+manlint:
+	@command -v mandoc >/dev/null 2>&1 || { \
+		echo "mandoc NOT INSTALLED -- this check DID NOT RUN"; exit 1; }
+	@out=$$(mandoc -T lint docs/vmxplore.1 2>&1 | grep -v ' STYLE: ' | grep -v 'outdated mandoc.db' || true); \
+		if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
+	@echo "mandoc lint: clean"
 
 vet:
 	go vet ./...
@@ -73,12 +103,15 @@ vet:
 fmt:
 	gofmt -l .
 
-# check must run what CI runs. staticcheck is here because it catches a class
-# nothing else does -- unused functions, dead branches -- and CI failed on
-# exactly that (U1000, run 58) after a local build/vet/test/gofmt came back
-# clean. A gate that only exists on the server is a gate you find out about
-# from a red email.
-check: vet test build
+# check must run what CI runs -- ALL of it. staticcheck was added here after
+# CI failed on U1000 (run 58) with a local build/vet/test/gofmt all green, and
+# the comment then claimed this target matched CI. It did not: it still skipped
+# the GUI-tagged tests, the race detector, govulncheck and the man page lint,
+# which is four of CI's nine steps. Run 61 went red on govulncheck for that
+# reason. A gate that only exists on the server is a gate you find out about
+# from a red email, and a target that CLAIMS to mirror CI while skipping half
+# of it is worse than one that never claimed anything.
+check: vet test race build vulncheck manlint
 	@test -z "$$(gofmt -l .)" || { echo "gofmt drift:"; gofmt -l .; exit 1; }
 	@command -v staticcheck >/dev/null 2>&1 || { \
 		echo "staticcheck NOT INSTALLED — this check DID NOT RUN"; \
