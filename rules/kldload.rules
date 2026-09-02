@@ -27,6 +27,28 @@ snap provenance create-
 snap checkpoint pre-kube-
 snap repl       repl-
 
+# Pre-transaction rollback points. kldload-pkg-wrapper takes one before EVERY
+# dnf/apt transaction and kpkg before every package operation, so on a machine
+# that gets patched these outnumber everything an operator ever made by hand.
+# They are checkpoints in exactly the sense pre-kube-* is: a named point the
+# rollback tool can return to, not something a human chose to keep.
+#
+# HISTORY: none of these were classified, so all three fell through to "human"
+# and inflated the one count that is supposed to mean "what the operator made".
+# Found 2026-09-01 against a live estate: install-, dnf-pre- and the goldens'
+# clone- markers sitting side by side in the ✎ column. The operator hit the
+# same shape from the other end days earlier — "sanoid created a bunch of ss's
+# and pushed them off the list" — which is what this classification exists to
+# prevent.
+snap checkpoint dnf-pre-
+snap checkpoint apt-pre-
+snap checkpoint kpkg-
+
+# The installer's one-shot marker: taken once, at install time, to record where
+# this system began. Provenance, like clone-/create-, not a checkpoint anyone
+# rolls back to and not something a human made.
+snap provenance install-
+
 # Goldens first so `-golden` names never fall through to a cluster rule.
 group ^k8s-golden$              goldens
 group ^klab-golden-[a-z]+$      goldens
