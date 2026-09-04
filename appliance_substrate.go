@@ -138,16 +138,30 @@ app_install_zfs() {
         # still a working dkms target after reboot -- but try exact first.
         dnf -y install "kernel-devel-$(uname -r)" >/dev/null 2>&1 ||
             dnf -y install kernel-devel >/dev/null 2>&1 || true
-        local _v _got=""
-        for _v in 2-9 2-8 2-7 2-6; do
-            if dnf -y install "https://zfsonlinux.org/fedora/zfs-release-${_v}$(rpm -E %dist).noarch.rpm" >/dev/null 2>&1; then
-                _got="$_v"; break
-            fi
+        # kldload's proven resolver, ported verbatim in spirit: revisions
+        # newest-first ACROSS the current release and the fc43 bridge --
+        # zfsonlinux publishes release RPMs late for new Fedoras, while the
+        # per-release package dirs (baseurl $releasever) usually exist. Probe
+        # with curl BEFORE dnf so a miss is one clear line, not 200 lines of
+        # metadata noise. The first live run tried 2-9..2-6 on the current
+        # dist only and 404ed on all of them; the host's own installer was
+        # sitting on the working loop the whole time.
+        local _cur _rel _rev _url _got=""
+        _cur="$(rpm -E %fedora)"
+        for _rel in "$_cur" 43; do
+            for _rev in 3-0 2-10 2-9 2-8; do
+                _url="https://zfsonlinux.org/fedora/zfs-release-${_rev}.fc${_rel}.noarch.rpm"
+                if [ "$(curl -sSL -o /dev/null --max-time 10 -w '%{http_code}' "$_url" 2>/dev/null)" = 200 ]; then
+                    app_log "zfs-release found: ${_rev}.fc${_rel}"
+                    _got="$_url"; break 2
+                fi
+            done
         done
         if [ -z "$_got" ]; then
-            app_warn "no OpenZFS release RPM matched $(rpm -E %dist)"
+            app_warn "no OpenZFS release RPM answered for fc${_cur} or the fc43 bridge"
             return 1
         fi
+        dnf -y install "$_got" >/dev/null 2>&1 || return 1
         dnf -y install zfs >/dev/null 2>&1 || return 1
     else
         # zfs-dkms sits in contrib; cloud images enable main only.
@@ -240,6 +254,12 @@ app_dataset() {
         app_log "dataset $_ds -> $_mnt ($*)"
     fi
     mountpoint -q "$_mnt" || zfs mount "$_ds" 2>/dev/null || true
+    # A freshly created directory or mountpoint inherits its PARENT dir's
+    # SELinux type, not the policy's path match: /var/www made here came up
+    # var_t, and nginx served 403 on a file it could read by DAC (smk-web,
+    # 2026-09-04). restorecon applies whatever the policy says this path
+    # should be; where SELinux is absent it is a no-op.
+    command -v restorecon >/dev/null 2>&1 && restorecon -RF "$_mnt" 2>/dev/null || true
 }
 
 # app_snapshot <label> — a rollback point for the state worth keeping.

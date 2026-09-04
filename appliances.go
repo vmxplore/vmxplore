@@ -194,7 +194,11 @@ func (a Appliance) Render(vals map[string]string) (string, error) {
 	// Field order, not map order — a rendered script must be byte-identical
 	// for the same inputs so two operators can diff theirs.
 	for _, f := range a.Fields {
-		fmt.Fprintf(&b, "%s=%s\n", f.Key, shellSingleQuote(resolved[f.Key]))
+		// EXPORTED, not plain assignments: recipes verify themselves with
+		// `bash -c` one-liners, and a child shell never sees an unexported
+		// variable. On smk-web every check that referenced a field failed
+		// against a database that demonstrably existed.
+		fmt.Fprintf(&b, "export %s=%s\n", f.Key, shellSingleQuote(resolved[f.Key]))
 	}
 	b.WriteString("\n")
 	// The substrate prologue goes between the fields and the recipe: it reads
@@ -1651,6 +1655,10 @@ rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 # port is a 502 with a misleading log line.
 command -v setsebool >/dev/null 2>&1 && selinuxenabled 2>/dev/null &&
     setsebool -P httpd_can_network_connect on 2>/dev/null || true
+# the checks below run in bash -c children; they need these
+export _redcli WS_DB_NAME WS_DB_USER WS_DB_PASS WS_REDIS_PASS 2>/dev/null || true
+app_selinux httpd_sys_content_t "/var/www/app(/.*)?"
+app_relabel /var/www
 nginx -t >/dev/null 2>&1 || { nginx -t; app_die "nginx config does not parse"; }
 app_enable nginx
 systemctl reload nginx 2>/dev/null || systemctl restart nginx

@@ -144,7 +144,9 @@ func TestRenderEmitsEveryFieldInOrder(t *testing.T) {
 	}
 	at := -1
 	for _, f := range writeFreely.Fields {
-		i := strings.Index(script, "\n"+f.Key+"=")
+		// Fields render as `export KEY='v'` since 2026-09-04 — checks run
+		// in bash -c children, which never see unexported assignments.
+		i := strings.Index(script, "\nexport "+f.Key+"=")
 		if i < 0 {
 			t.Fatalf("field %s missing from rendered script", f.Key)
 		}

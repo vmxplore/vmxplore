@@ -174,6 +174,13 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	}
 
 	// ── mesh ──
+	// kvm-mesh mints the guest's key IN the guest, which needs wg there.
+	// Stock cloud images do not carry it; the first enrollment failed with
+	// "no 'wg' in the guest — install wireguard-tools there first", so do
+	// exactly that, family-aware, before asking.
+	_, _ = enrollGuestSSH(ip,
+		"command -v wg >/dev/null 2>&1 || dnf -y install wireguard-tools >/dev/null 2>&1 || "+
+			"(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools) >/dev/null 2>&1 || true")
 	mesh := enrollMeshName(vmName)
 	if subnet, err := allocMeshSubnet(mesh); err != nil {
 		log("enroll: mesh skipped — " + err.Error())
