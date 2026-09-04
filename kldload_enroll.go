@@ -28,7 +28,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -90,6 +92,49 @@ func enrollMeshName(vm string) string {
 		m = m[:15]
 	}
 	return strings.TrimRight(m, "-")
+}
+
+// meshStateDir is kvm-mesh's MESH_DIR: one <mesh>.members file per mesh,
+// world-readable, so an unprivileged console can ask "was this VM ever
+// enrolled?" without a sudo prompt.
+const meshStateDir = "/var/lib/kldload/mesh"
+
+// meshPresent reports whether kvm-mesh holds any state for the mesh — its
+// members file, or the interface itself. Either alone is enough to want a
+// `down`: a file with no interface is what a reboot leaves behind (onyx had
+// three of those), an interface with no file is a teardown that was cut off.
+func meshPresent(mesh string) bool {
+	if _, err := os.Stat(filepath.Join(meshStateDir, mesh+".members")); err == nil {
+		return true
+	}
+	_, err := os.Stat("/sys/class/net/" + mesh)
+	return err == nil
+}
+
+// meshTeardownPost is the delete verb's mesh cleanup: the argv list that takes
+// vm's ap-* mesh down and resyncs the host's network view. Empty when there is
+// nothing to do — the target is remote (the mesh lives on the hypervisor, and
+// this runs here), the host has no kvm-mesh, or the VM was never enrolled — so
+// a plain KVM host never sees a sudo prompt for it.
+func meshTeardownPost(vm string) [][]string {
+	if target.SSHHost != "" || !haveHostCmd("kvm-mesh") {
+		return nil
+	}
+	mesh := enrollMeshName(vm)
+	if !meshPresent(mesh) {
+		return nil
+	}
+	return meshTeardownArgv(mesh, os.Geteuid() == 0, haveHostCmd("kldload-networks"))
+}
+
+// meshTeardownArgv is the pure half of meshTeardownPost, split out so the
+// command shape is unit-testable on a host with no mesh at all.
+func meshTeardownArgv(mesh string, root, haveNetworks bool) [][]string {
+	out := [][]string{asRoot(root, "kvm-mesh", "down", mesh)}
+	if haveNetworks {
+		out = append(out, asRoot(root, "kldload-networks", "sync"))
+	}
+	return out
 }
 
 // enrollGuestSSH runs one command in the guest as root, with the same policy

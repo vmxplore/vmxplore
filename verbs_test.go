@@ -301,3 +301,71 @@ func TestAlreadyInDesiredState(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteTolerance pins two failures from onyx, 2026-09-03: appliance
+// deletes orphaned the -data companion zvol and the ap-* mesh, and a batch
+// delete that met an already-gone domain aborted before its post steps ran.
+func TestDeleteTolerance(t *testing.T) {
+	p, err := planDelete(offRow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.tolerateGone {
+		t.Error("delete must tolerate an already-absent domain")
+	}
+	for _, tc := range []struct {
+		msg  string
+		want bool
+	}{
+		{"error: failed to get domain 'blog'", true},
+		{"error: Domain not found: no domain with matching name 'blog'", true},
+		{"error: Failed to destroy domain 'blog': permission denied", false},
+		{"error: Requested operation is not valid: domain is not running", false},
+		{"", false},
+	} {
+		if got := domainGone(tc.msg); got != tc.want {
+			t.Errorf("domainGone(%q) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+	// The mesh teardown shape: down first, then the network resync, under
+	// sudo -n for an unprivileged console and bare for root.
+	got := meshTeardownArgv("ap-blog", false, true)
+	if len(got) != 2 ||
+		strings.Join(got[0], " ") != "sudo -n kvm-mesh down ap-blog" ||
+		strings.Join(got[1], " ") != "sudo -n kldload-networks sync" {
+		t.Errorf("mesh teardown argv = %v", got)
+	}
+	if got := meshTeardownArgv("ap-blog", true, false); len(got) != 1 ||
+		strings.Join(got[0], " ") != "kvm-mesh down ap-blog" {
+		t.Errorf("root mesh teardown argv = %v", got)
+	}
+	// The inventory write is root's, so it carries sudo -n exactly like the
+	// zfs step before it — bare, it failed silently and the row stayed.
+	if got := asRoot(false, "kldload-db", "vm-delete", "--name", "blog"); strings.Join(got, " ") !=
+		"sudo -n kldload-db vm-delete --name blog" {
+		t.Errorf("unprivileged inventory argv = %v", got)
+	}
+	if got := asRoot(true, "kldload-db", "vm-delete"); strings.Join(got, " ") != "kldload-db vm-delete" {
+		t.Errorf("root inventory argv = %v", got)
+	}
+	// Delete on an unreconciled row reconciles it instead of refusing: a
+	// register ghost has nothing to run and only bookkeeping to do; an
+	// orphaned zvol is destroyed, and that needs root.
+	ghost := Row{D: Dom{Name: "jelly", State: "absent"}, Synthetic: true}
+	gp, err := planDelete(ghost)
+	if err != nil || len(gp.cmds) != 0 || gp.needsRoot {
+		t.Errorf("ghost delete = %+v, %v; want no commands, unprivileged", gp.cmds, err)
+	}
+	orphan := offRow()
+	orphan.Synthetic = true
+	orphan.D.State = "no domain"
+	op, err := planDelete(orphan)
+	if err != nil || len(op.cmds) != 1 || !op.needsRoot ||
+		strings.Join(op.cmds[0], " ") != "zfs destroy -r rpool/vms/klab-blue-fedora" {
+		t.Errorf("orphan delete = %+v, %v; want one zfs destroy as root", op.cmds, err)
+	}
+	// The mesh name is the interface name and the kernel caps that at 15.
+	if m := enrollMeshName("a-very-long-appliance-name"); m != "ap-a-very-long" {
+		t.Errorf("enrollMeshName = %q", m)
+	}
+}

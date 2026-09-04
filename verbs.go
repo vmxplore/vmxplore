@@ -59,6 +59,12 @@ type verbPlan struct {
 	// no kldload-db, or a database that will not open, still gets its clone.
 	// Failures are written to the audit log and otherwise ignored.
 	post [][]string
+	// tolerateGone: for a DELETE plan, a virsh destroy/undefine that reports
+	// the domain already absent is SUCCESS, because absence is the goal. Only
+	// delete sets it — a standalone undefine on a missing domain is still a
+	// surprise worth aborting on (see TestAlreadyInDesiredState). This lives on
+	// the plan, not in the shared helper, so the two intents stay separate.
+	tolerateGone bool
 }
 
 // virsh() and zfsArgv() live in remote.go — they route to the connection
@@ -201,7 +207,7 @@ func planResume(r Row) (verbPlan, error) {
 // confirmation; there is no second one.
 func planDelete(r Row) (verbPlan, error) {
 	if r.Synthetic {
-		return verbPlan{}, fmt.Errorf("no domain behind this row")
+		return planReconcile(r)
 	}
 	var cmds [][]string
 	forced := ""
@@ -222,16 +228,63 @@ func planDelete(r Row) (verbPlan, error) {
 		warn = forced + "removes the domain AND destroys " + r.DS.Name +
 			" with every snapshot and clone under it"
 		needsRoot = true
+		// The APPLIANCE data disk. Builds attach a second zvol named
+		// <root>-data (its in-guest pool), and the estate Row only ever
+		// tracked the root — so every deleted appliance orphaned its data
+		// disk, snapshots and all. Found on onyx 2026-09-04: `jelly` gone,
+		// `jelly-data` still on the pool with a full sanoid snapshot set.
+		// Added only when it actually exists, because `zfs destroy` of a
+		// missing dataset is deliberately un-forgiven above.
+		if datasetExists(r.DS.Name + "-data") {
+			cmds = append(cmds, zfsArgv("destroy", "-r", r.DS.Name+"-data"))
+			warn += " (and its -data disk)"
+		}
 	}
 	return verbPlan{
 		title:     "DELETE " + r.D.Name,
 		cmds:      cmds,
 		warn:      warn,
 		needsRoot: needsRoot,
+		// A batch delete often meets a VM that was already half-removed; the
+		// domain being gone is exactly what delete wanted, so do not abort
+		// before the -data cleanup and the inventory unregister run.
+		tolerateGone: true,
 		// Drop it from the inventory too. Without this the estate view keeps
 		// showing VMs that no longer exist, which is the failure mode that
 		// makes people stop trusting an inventory at all.
-		post: dbUnregisterVM(r.D.Name),
+		//
+		// And off the management mesh. The self-test teardown always did
+		// this; the verb never did, so a mass delete of test appliances on
+		// onyx (2026-09-03) left nine ap-* meshes whose only peer no longer
+		// existed, and wgx showed every one of them as an inactive member.
+		post: append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
+	}, nil
+}
+
+// planReconcile is delete for a row with no domain behind it — the
+// "unreconciled" group: a register that still claims a VM libvirt no longer
+// has, or a zvol nobody references. Delete is the verb the operator reaches
+// for on those rows ("shouldn't they be deleted?", onyx 2026-09-03, looking
+// at nine yellow ghosts this tool's own delete had left), so it does the
+// cleanup the original delete should have: destroy the orphaned storage if
+// there is any, forget the register row, take the mesh down. A kspawn
+// manifest ghost has no register to forget; the plan still runs and the
+// note on the row says where it came from.
+func planReconcile(r Row) (verbPlan, error) {
+	var cmds [][]string
+	warn := "forgets " + r.D.Name + " in the register — nothing in libvirt to remove"
+	needsRoot := false
+	if r.DS != nil {
+		cmds = append(cmds, zfsArgv("destroy", "-r", r.DS.Name))
+		warn = "destroys orphaned " + r.DS.Name + " with every snapshot under it"
+		needsRoot = true
+	}
+	return verbPlan{
+		title:     "DELETE " + r.D.Name,
+		cmds:      cmds,
+		warn:      warn,
+		needsRoot: needsRoot,
+		post:      append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
 	}, nil
 }
 
@@ -295,6 +348,25 @@ func planClone(r Row, newName string) (verbPlan, error) {
 	}, nil
 }
 
+// asRoot prefixes argv with `sudo -n` unless the caller already is root. It
+// is the one spelling of privilege for every host-side bookkeeping command,
+// so the audit log shows exactly what ran and a password-prompting host
+// fails loudly instead of hanging a hidden prompt.
+//
+// WHY the inventory writes need it at all: state.db is root's. Called bare,
+// `kldload-db vm-delete` failed "attempt to write a readonly database" with
+// rc=1 into the audit log and nowhere else, so every VM deleted from this UI
+// left libvirt and ZFS and stayed in the inventory — fiend 2026-08-31 (two
+// control planes still Ansible targets), onyx 2026-09-03 (all nine deleted
+// appliances still rows). The zfs step in the same plan already ran under
+// sudo -n; the bookkeeping after it did not.
+func asRoot(root bool, argv ...string) []string {
+	if root {
+		return argv
+	}
+	return append([]string{"sudo", "-n"}, argv...)
+}
+
 // dbRegisterClone returns the inventory calls for a freshly cloned domain, or
 // nil when kldload-db is not installed.
 //
@@ -307,11 +379,12 @@ func dbRegisterClone(name, src string) [][]string {
 	if db == "" {
 		return nil
 	}
+	root := os.Geteuid() == 0
 	return [][]string{
-		{db, "vm-register", "--name", name, "--role", "clone",
-			"--golden-src", src, "--status", "cloned"},
-		{db, "event", "--type", "vm", "--subject", name,
-			"--message", "cloned from " + src},
+		asRoot(root, db, "vm-register", "--name", name, "--role", "clone",
+			"--golden-src", src, "--status", "cloned"),
+		asRoot(root, db, "event", "--type", "vm", "--subject", name,
+			"--message", "cloned from "+src),
 	}
 }
 
@@ -323,10 +396,11 @@ func dbUnregisterVM(name string) [][]string {
 	if db == "" {
 		return nil
 	}
+	root := os.Geteuid() == 0
 	return [][]string{
-		{db, "vm-delete", "--name", name},
-		{db, "event", "--type", "vm", "--subject", name,
-			"--message", "destroyed from vmxplore"},
+		asRoot(root, db, "vm-delete", "--name", name),
+		asRoot(root, db, "event", "--type", "vm", "--subject", name,
+			"--message", "destroyed from vmxplore"),
 	}
 }
 
@@ -436,6 +510,16 @@ func alreadyInDesiredState(argv []string, msg string) bool {
 	return strings.Contains(strings.ToLower(msg), "domain is not running")
 }
 
+// domainGone recognises libvirt's spellings of "no such domain". Only a plan
+// that set tolerateGone consults it, and never for a zfs argv — see the
+// field's comment for why the two intents are kept apart.
+func domainGone(msg string) bool {
+	lm := strings.ToLower(msg)
+	return strings.Contains(lm, "failed to get domain") ||
+		strings.Contains(lm, "domain not found") ||
+		strings.Contains(lm, "no domain with matching")
+}
+
 // runPlan executes the plan's commands in order, stopping at the first
 // failure. zfs mutations need root; when we aren't root, sudo -n is tried so
 // a NOPASSWD host works and a password host fails loudly instead of hanging
@@ -465,6 +549,12 @@ func runPlan(p verbPlan) error {
 				// Not a failure: the step asked for a state the domain is
 				// already in. Continuing is the whole point — see the
 				// function's comment for what aborting here cost.
+				continue
+			}
+			if p.tolerateGone && argv[0] != "zfs" && domainGone(msg) {
+				// Delete's target is already gone — keep going so the zfs
+				// cleanup, the mesh teardown and the inventory unregister
+				// still run.
 				continue
 			}
 			return fmt.Errorf("%s: %s", argv[0], msg)

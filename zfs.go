@@ -132,3 +132,12 @@ func humanBytes(b uint64) string {
 	}
 	return fmt.Sprintf("%.1f%s", v, suffix)
 }
+
+// datasetExists is a plan-time probe: true when the hypervisor has a dataset
+// by this exact name. Used to decide whether a delete plan should also carry
+// the appliance -data companion disk. Best-effort — a probe failure returns
+// false, which just means the extra destroy is not added.
+func datasetExists(name string) bool {
+	out, err := zfsRun("list", "-H", "-o", "name", name)
+	return err == nil && strings.TrimSpace(string(out)) == name
+}
