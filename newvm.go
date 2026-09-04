@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -316,6 +317,28 @@ var imageCaches = []string{
 	"/var/lib/klab/images",
 	"/var/lib/kube-cluster/images",
 	"/var/lib/vmxplore/images",
+}
+
+// imageFetchMu — see the "1 — the image" step in BuildNewVM.
+var imageFetchMu sync.Mutex
+
+// osinfoKnows reports whether this host's osinfo-db has the variant. True
+// when osinfo-query is not installed: the caller then tries the variant and
+// falls back on virt-install's own refusal, as it always did.
+func osinfoKnows(variant string) bool {
+	if _, err := exec.LookPath("osinfo-query"); err != nil {
+		return true
+	}
+	out, err := exec.Command("osinfo-query", "-f", "short-id", "os", "short-id="+variant).Output()
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(l) == variant {
+			return true
+		}
+	}
+	return false
 }
 
 func cachedImage(distro, url string) string {
@@ -681,8 +704,15 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	}
 
 	// 1 — the image
+	//
+	// Under imageFetchMu: build-all runs tiles in parallel, and two Fedora
+	// tiles that both miss the cache would curl the same URL to the same
+	// path at once — `curl -o` truncates, so the second download would
+	// clobber the first mid-write and VerifyImage would reject both. A
+	// cache hit is a stat, so the lock costs nothing in the common case.
 	img := s.ImagePath
 	variant := "linux2022"
+	imageFetchMu.Lock()
 	if img == "" {
 		ci := cloudImages[s.Distro]
 		variant = ci.Variant
@@ -692,20 +722,24 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		} else {
 			img = filepath.Join("/var/lib/vmxplore/images", filepath.Base(ci.URL))
 			if err := run(true, "mkdir", "-p", "/var/lib/vmxplore/images"); err != nil {
+				imageFetchMu.Unlock()
 				return err
 			}
 			progress("downloading " + s.Distro + " cloud image (once — cached after)")
 			if err := run(true, "curl", "-L", "--fail", "-o", img, ci.URL); err != nil {
+				imageFetchMu.Unlock()
 				return err
 			}
 			// Verify BEFORE the image is used, and before it becomes the
 			// cache for every later build. A failure here deletes the file,
 			// so a retry re-downloads instead of reusing bad bytes.
 			if err := VerifyImage(img, ci, progress); err != nil {
+				imageFetchMu.Unlock()
 				return fmt.Errorf("cloud image verification failed: %w", err)
 			}
 		}
 	}
+	imageFetchMu.Unlock()
 
 	// 2 — the disk
 	var diskArg string
@@ -850,7 +884,14 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			argv = append(argv, "--disk", dataDiskArg)
 		}
 		argv = append(argv,
-			"--disk", "path="+seedISO+",device=cdrom,bus=sata",
+			// virtio-scsi, not SATA: Debian's cloud kernel has no AHCI
+			// (bookworm 6.1 cloud config: CONFIG_SATA_AHCI is not set), so
+			// a SATA seed CD is invisible there, ds-identify finds no
+			// datasource, cloud-init never runs and the VM boots to a
+			// "localhost login:" with no network (SDR tile, onyx
+			// 2026-09-04). Every image in the catalog has virtio-scsi.
+			"--controller", "type=scsi,model=virtio-scsi",
+			"--disk", "path="+seedISO+",device=cdrom,bus=scsi",
 			"--import")
 		argv = append(argv, osinfo...)
 		argv = append(argv,
@@ -862,10 +903,21 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		argv = append(argv, audioArgs(target)...)
 		return append(argv, "--noautoconsole")
 	}
-	err = run(false, installArgs("--os-variant", variant)...)
-	if err != nil && strings.Contains(err.Error(), "Unknown OS name") {
+	// Ask osinfo-db first instead of letting virt-install refuse: the
+	// catalog names the newest Fedora, this host's osinfo-db (20251212)
+	// stops at fedora42, and every Fedora build logged a failing
+	// virt-install before the one that worked — rc=1 in the audit log for
+	// something that was never wrong (onyx, 2026-09-04). Hosts without
+	// osinfo-query keep the refuse-then-retry path.
+	if !osinfoKnows(variant) {
 		progress("os-variant " + variant + " unknown to this host's osinfo-db — using detection")
 		err = run(false, installArgs("--osinfo", "detect=on,require=off")...)
+	} else {
+		err = run(false, installArgs("--os-variant", variant)...)
+		if err != nil && strings.Contains(err.Error(), "Unknown OS name") {
+			progress("os-variant " + variant + " refused by virt-install — using detection")
+			err = run(false, installArgs("--osinfo", "detect=on,require=off")...)
+		}
 	}
 	if err != nil {
 		return err

@@ -30,12 +30,14 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"math"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -1249,7 +1251,7 @@ func runGUI(rs *Ruleset) {
 		}()
 		// no focus steal: arrowing through the list must stay in the list —
 		// clicking the pane focuses the terminal when you want to type
-		consoleHost.Objects = []fyne.CanvasObject{term}
+		consoleHost.Objects = []fyne.CanvasObject{fitTerminal(term)}
 		consoleHost.Refresh()
 	}
 	// Screen pane: the native RFB viewer (vnc.go) — same auto-follow
@@ -1432,7 +1434,7 @@ func runGUI(rs *Ruleset) {
 		bar := container.NewBorder(nil, nil,
 			back, nil, barLabel)
 		toolsHost.Objects = []fyne.CanvasObject{
-			container.NewBorder(bar, nil, nil, nil, term)}
+			container.NewBorder(bar, nil, nil, nil, fitTerminal(term))}
 		toolsHost.Refresh()
 		if selectToolsTab != nil {
 			selectToolsTab()
@@ -2245,6 +2247,13 @@ func runGUI(rs *Ruleset) {
 		appHead.TextStyle = fyne.TextStyle{Bold: true}
 		vmHead := widget.NewLabel("the machine's login — console and ssh, not the app")
 		vmHead.TextStyle = fyne.TextStyle{Bold: true}
+		// A golden is a template, not a member of the estate: it is sealed
+		// (machine-id and host keys stripped) and snapshotted @golden, and
+		// deliberately NOT enrolled — a mesh key baked into a template is
+		// one key shared by every clone. Right-click → Clone then stamps
+		// out ready copies in seconds instead of running the recipe again.
+		goldenChk := widget.NewCheck(
+			"seal as a golden when ready — a clone template, not enrolled", nil)
 		form := container.NewVBox(
 			widget.NewLabel("appliance"), pick, summary,
 			widget.NewSeparator(),
@@ -2255,6 +2264,7 @@ func runGUI(rs *Ruleset) {
 			vmHead,
 			user, pass, key,
 			widget.NewSeparator(),
+			goldenChk,
 			notes,
 		)
 		d := dialog.NewCustomConfirm("Application — a configured app in one shot",
@@ -2293,20 +2303,26 @@ func runGUI(rs *Ruleset) {
 				if selectScreenTab != nil {
 					selectScreenTab()
 				}
+				asGolden := goldenChk.Checked
 				go func() {
-					err := BuildNewVM(spec, parent, func(line string) {
+					say := func(line string) {
 						fyne.Do(func() { status.SetText(line) })
-					})
+					}
+					err := BuildNewVM(spec, parent, say)
 					if err == nil {
-						AttachUSBDevices(spec.Name, a.USB, func(line string) {
-							fyne.Do(func() { status.SetText(line) })
-						})
+						AttachUSBDevices(spec.Name, a.USB, say)
+					}
+					if err == nil && asGolden {
+						// Wait for the recipe to answer on its port — that
+						// is the proof it finished — then seal. No enrollment
+						// (see goldenChk).
+						if _, err = WaitAppliance(spec.Name, a.Port, say); err == nil {
+							err = SealApplianceGolden(spec.Name, say)
+						}
+					} else if err == nil {
 						// Substrate enrollment: mesh, estate cert, inventory.
 						// Narrates in the same status line as the build.
-						EnrollAppliance(spec.Name, applianceSlug(a.Name),
-							func(line string) {
-								fyne.Do(func() { status.SetText(line) })
-							})
+						EnrollAppliance(spec.Name, applianceSlug(a.Name), say)
 					}
 					fyne.Do(func() {
 						if err != nil {
@@ -2402,13 +2418,25 @@ func runGUI(rs *Ruleset) {
 			run.OnTapped()
 		}
 	}
+	// auto: the tile already says "Build all", and a window whose only
+	// content was that same button again read as nothing happening — the
+	// operator clicked the tile, saw no build start, and asked where the
+	// feedback was (onyx, 2026-09-04). Build-all skips what exists and is
+	// safe to fire, so the tile click IS the press; the window is the log.
 	openBuildAll = func() {
+		// The tile press itself is audited: on 2026-09-04 the operator
+		// clicked Build all twice and saw nothing, and the log could not say
+		// whether the click ever arrived. Now it can.
+		auditLog("gui: Build all tile pressed", 0)
 		batchLogWindow("Build every appliance",
-			"Builds every catalog tile as a kept VM named app-<tile>. Tiles\n"+
+			"Building every catalog tile as a kept VM named app-<tile>. Tiles\n"+
 				"whose VM already exists are skipped, so this is also \"build\n"+
-				"whatever is missing\". Expect ~10-20 min per ZFS tile.\n",
-			"Build all", false, func(log func(string)) string {
-				built, failed := BuildAllAppliances(log)
+				"whatever is missing\". Tiles build in parallel, as many at once\n"+
+				"as host memory allows; each line below is tagged with its VM.\n"+
+				"A ZFS tile takes ~10-20 min, so expect the whole run to take\n"+
+				"about as long as its slowest tile.\n",
+			"Build all", true, func(log func(string)) string {
+				built, failed := BuildAllAppliances("", log)
 				return fmt.Sprintf("done — %d built, %d failed", built, failed)
 			})
 	}
@@ -3243,13 +3271,25 @@ func runGUI(rs *Ruleset) {
 	// batchRun builds each row's plan and runs it — no confirmation step
 	// once for the whole set. Per-VM errors are collected, not fatal — one
 	// bad VM must not abort the rest of a 40-VM sweep.
+	// One batch at a time. Two clicks on Delete before the first sweep had
+	// cleared the checkboxes launched two goroutines over the same rows,
+	// interleaved: every destroy, undefine and zfs destroy ran twice, the
+	// second copy failing, and a "9 failed" dialog for nine VMs that were in
+	// fact gone (onyx, 2026-09-04 08:15). The audit log shows each command
+	// in duplicate. The second press is dropped, not queued — by the time
+	// the first batch finishes the rows it was asked about no longer exist.
+	var batchBusy atomic.Bool
 	batchRun := func(label string, build func(Row) (verbPlan, error)) {
 		rows := checkedRows()
 		if len(rows) == 0 {
 			return
 		}
+		if !batchBusy.CompareAndSwap(false, true) {
+			return
+		}
 		fire := func() {
 			go func() {
+				defer batchBusy.Store(false)
 				var failed []string
 				for _, r := range rows {
 					p, err := build(r)
@@ -3784,4 +3824,37 @@ func toolAccent(name string) accentPair {
 		return acOff // a plain prompt: no verb, no colour to earn
 	}
 	return acGold
+}
+
+// ─── terminal fit ────────────────────────────────────────────────────
+// fyne-io/terminal sizes itself by a guessed cell — the MinSize of a
+// monospace "M" — while its TextGrid draws rows at the grid's own row
+// height, which on this theme is taller. Rows = floor(height / guess)
+// then overflow the widget by (real − guess) per row, and the bottom line
+// lands below the pane's edge where no amount of resizing brings it back
+// (onyx, 2026-09-04). fitTerminal hands the terminal a height that makes
+// its row count fit the REAL row height, so the last line is on screen.
+type termFit struct{ rowH, cellH float32 }
+
+func (f *termFit) Layout(objs []fyne.CanvasObject, size fyne.Size) {
+	rows := float32(math.Floor(float64(size.Height / f.rowH)))
+	h := rows*f.cellH + 0.5 // +0.5 so the terminal's own floor lands on rows
+	if rows < 1 || h > size.Height {
+		h = size.Height
+	}
+	objs[0].Move(fyne.NewPos(0, 0))
+	objs[0].Resize(fyne.NewSize(size.Width, h))
+}
+
+func (f *termFit) MinSize(objs []fyne.CanvasObject) fyne.Size { return objs[0].MinSize() }
+
+func fitTerminal(term fyne.CanvasObject) fyne.CanvasObject {
+	cell := canvas.NewText("M", color.White)
+	cell.TextStyle.Monospace = true
+	cellH := float32(math.Round(float64(cell.MinSize().Height)))
+	rowH := widget.NewTextGridFromString("M").MinSize().Height
+	if rowH < cellH {
+		rowH = cellH
+	}
+	return container.New(&termFit{rowH: rowH, cellH: cellH}, term)
 }

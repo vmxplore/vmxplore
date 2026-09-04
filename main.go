@@ -55,7 +55,7 @@ const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--ve
        vmx --appliance NAME --vm VMNAME [KEY=VALUE ...]
        vmx --appliance-script NAME [KEY=VALUE ...]
        vmx --selftest [--only NAME] [--keep]
-       vmx --build-all
+       vmx --build-all [--only A,B]
        vmx --destroy-all [--yes]
        vmx --sysdiag
 
@@ -85,6 +85,10 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                             --ssh-key F   public key file
                                           (default: ~/.ssh/id_ed25519.pub)
                             --no-wait     return once the VM is defined
+                            --golden      once the app answers, seal the VM
+                                          as a clone template (@golden) and
+                                          skip enrollment; right-click →
+                                          Clone then stamps out ready copies
                           By default it waits for the first boot to finish
                           and prints the appliance's real URL on stdout.
   --appliance-script N    print the post-install script instead of building.
@@ -100,8 +104,12 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                             --keep        keep passing VMs too
   --build-all             build every tile as a kept VM named app-<tile>;
                           tiles whose VM already exists are skipped, so it is
-                          also "build whatever is missing". Exit status is
-                          the number of failed tiles.
+                          also "build whatever is missing". Tiles build in
+                          parallel, as many at once as host memory allows
+                          (VMX_BUILD_JOBS=N overrides). Exit status is the
+                          number of failed tiles.
+                            --only A,B    only these tiles (names or app-
+                                          VM names, comma-separated)
   --destroy-all           remove every VM this tool built — the app-* builds
                           and any st-* self-test leftover — with their disks,
                           data disks, mesh and inventory rows. Lists them and
@@ -190,7 +198,14 @@ func main() {
 		case "--build-all":
 			// One of everything, kept. Same exit convention as --selftest:
 			// the count of tiles that did not come up.
-			_, failed := BuildAllAppliances(
+			only := ""
+			for j := i + 1; j < len(args); j++ {
+				if args[j] == "--only" && j+1 < len(args) {
+					j++
+					only = args[j]
+				}
+			}
+			_, failed := BuildAllAppliances(only,
 				func(l string) { fmt.Fprintln(os.Stderr, l) })
 			os.Exit(failed)
 		case "--destroy-all":

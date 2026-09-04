@@ -25,9 +25,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -289,49 +292,187 @@ func applianceVMName(appName string) string {
 	return strings.TrimRight("app-"+s, "-")
 }
 
+// buildJobs is how many tiles build-all runs at once: every tile in
+// parallel when the host has the memory for it, fewer when it does not.
+//
+// WHY parallel at all: ten tiles in series was an afternoon — each one is a
+// cloud-image convert, a first boot, and for the ZFS tiles a 5-8 minute
+// dkms build on two vCPUs, while the other 22 cores sat idle (onyx,
+// 2026-09-04, "can the build all button build everything in parallel?").
+// The guests do not contend for anything but RAM: each one gets its own
+// zvol, seed ISO, transient domain and lease.
+//
+// WHY bounded by memory and not cores: a guest that cannot get its RAM is
+// swapped by the host, and ten guests swapping together finish later than
+// ten in series. The bound is MemAvailable minus headroom for the host,
+// divided by the largest tile's RAM, so the wave that starts is one that
+// fits. VMX_BUILD_JOBS overrides it for a host the arithmetic misjudges.
+//
+// Known bias: on a ZFS host the ARC is not counted as reclaimable in
+// MemAvailable, so after a few image converts the reading is lower than
+// what the guests could actually get (onyx: 21G before a two-tile run,
+// 7G during it, with the ARC at 15G). The bound therefore errs toward
+// fewer tiles, never more — the right way to be wrong here.
+//
+// Args: n is the number of tiles to build, maxTileMB the largest RAM
+// request among them, availMB the host's MemAvailable, env the value of
+// VMX_BUILD_JOBS ("" when unset). Returns a count in [1, n].
+func buildJobs(n, maxTileMB, availMB int, env string) int {
+	if n < 1 {
+		return 1
+	}
+	if env != "" {
+		if j, err := strconv.Atoi(env); err == nil && j >= 1 {
+			if j > n {
+				return n
+			}
+			return j
+		}
+	}
+	const headroomMB = 4096 // the host, libvirt, the ARC's working set
+	if maxTileMB < 1 {
+		maxTileMB = 1
+	}
+	j := (availMB - headroomMB) / maxTileMB
+	if j < 1 {
+		return 1
+	}
+	if j > n {
+		return n
+	}
+	return j
+}
+
+// memAvailableMB reads MemAvailable from /proc/meminfo. 0 when it cannot,
+// which buildJobs treats as "no room" and serialises — the safe reading.
+func memAvailableMB() int {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		fs := strings.Fields(sc.Text())
+		if len(fs) >= 2 && fs[0] == "MemAvailable:" {
+			kb, _ := strconv.Atoi(fs[1])
+			return kb / 1024
+		}
+	}
+	return 0
+}
+
 // BuildAllAppliances builds every tile as a KEPT VM (no audit, no teardown) —
 // the "give me one of everything" button. Already-present VMs are left alone,
-// so it doubles as "build whatever is missing". Returns built and failed
-// counts.
-func BuildAllAppliances(log func(string)) (built, failed int) {
+// so it doubles as "build whatever is missing". Tiles build in parallel, as
+// many at once as the host's memory allows (buildJobs); every log line is
+// prefixed with its VM so the interleaved stream still reads. Returns built
+// and failed counts.
+//
+// The host-side steps that two builds must not run at the same moment —
+// fetching a shared cloud image, allocating a mesh subnet, issuing a cert —
+// take their own locks inside BuildNewVM and EnrollAppliance; this loop does
+// not need to know about them.
+//
+// only, when not empty, is a comma-separated list of tile names or app-
+// VM names and restricts the run to those — the same addressing --selftest
+// --only uses, so two tiles can be built side by side without the other
+// eight.
+func BuildAllAppliances(only string, log func(string)) (built, failed int) {
+	want := map[string]bool{}
+	for _, o := range strings.Split(only, ",") {
+		if o = strings.TrimSpace(strings.ToLower(o)); o != "" {
+			want[o] = true
+		}
+	}
+	var todo []Appliance
+	maxRAM := 0
 	for _, a := range Appliances() {
 		vm := applianceVMName(a.Name)
+		if len(want) > 0 && !want[strings.ToLower(a.Name)] && !want[vm] {
+			continue
+		}
 		if domainExists(vm) {
 			log(vm + " already exists — skipped")
 			continue
 		}
-		log("")
-		log("building " + a.Name + " → " + vm)
-		spec, err := a.Spec(vm, "admin", "", "", a.Defaults())
-		if err != nil {
-			log("  spec: " + err.Error())
-			failed++
-			continue
+		todo = append(todo, a)
+		if a.RAMMB > maxRAM {
+			maxRAM = a.RAMMB
 		}
-		if KldloadTier() == "kldload" {
-			if k := hostOpsPubkey(); k != "" {
-				spec.RootSSHKeys = append(spec.RootSSHKeys, k)
-			}
-		}
-		parent := zfsParentForBuild()
-		if err := BuildNewVM(spec, parent, log); err != nil {
-			log("  build FAILED: " + err.Error())
-			failed++
-			continue
-		}
-		AttachUSBDevices(vm, a.USB, log)
-		if _, err := WaitAppliance(vm, a.Port, log); err != nil {
-			log("  came up but did not answer: " + err.Error())
-			failed++
-			continue
-		}
-		EnrollAppliance(vm, applianceSlug(a.Name), log)
-		log("  " + a.Name + " ready on " + a.LandsOn)
-		built++
 	}
+	if len(todo) == 0 {
+		if len(want) > 0 {
+			log("build-all: no catalog tile matches --only " + only)
+		} else {
+			log("build-all: nothing to build")
+		}
+		return 0, 0
+	}
+	jobs := buildJobs(len(todo), maxRAM, memAvailableMB(), os.Getenv("VMX_BUILD_JOBS"))
+	head := fmt.Sprintf("build-all: %d tile(s), %d at a time (VMX_BUILD_JOBS overrides)", len(todo), jobs)
+	log(head)
+	auditLog(head, 0) // a build-all starting is a fact the audit log should carry
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, jobs)
+	for _, a := range todo {
+		wg.Add(1)
+		go func(a Appliance) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			vm := applianceVMName(a.Name)
+			tlog := func(l string) {
+				if l == "" {
+					return
+				}
+				log("[" + vm + "] " + l)
+			}
+			ok := buildOneAppliance(a, vm, tlog)
+			mu.Lock()
+			if ok {
+				built++
+			} else {
+				failed++
+			}
+			mu.Unlock()
+		}(a)
+	}
+	wg.Wait()
 	log("")
 	log(fmt.Sprintf("build-all: %d built, %d failed", built, failed))
 	return built, failed
+}
+
+// buildOneAppliance is one tile of build-all: spec, build, USB, wait for
+// the port, enroll. Returns false on any failure, having logged why.
+func buildOneAppliance(a Appliance, vm string, log func(string)) bool {
+	log("building " + a.Name)
+	spec, err := a.Spec(vm, "admin", "", "", a.Defaults())
+	if err != nil {
+		log("  spec: " + err.Error())
+		return false
+	}
+	if KldloadTier() == "kldload" {
+		if k := hostOpsPubkey(); k != "" {
+			spec.RootSSHKeys = append(spec.RootSSHKeys, k)
+		}
+	}
+	parent := zfsParentForBuild()
+	if err := BuildNewVM(spec, parent, log); err != nil {
+		log("  build FAILED: " + err.Error())
+		return false
+	}
+	AttachUSBDevices(vm, a.USB, log)
+	if _, err := WaitAppliance(vm, a.Port, log); err != nil {
+		log("  came up but did not answer: " + err.Error())
+		return false
+	}
+	EnrollAppliance(vm, applianceSlug(a.Name), log)
+	log("  " + a.Name + " ready on " + a.LandsOn)
+	return true
 }
 
 // ExistingApplianceVMs lists the VMs this tool built that libvirt still knows
@@ -372,25 +513,49 @@ func domainExists(vm string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
-// zfsParentForBuild resolves the pool parent for new VM disks, or "" for the
-// qcow2 fallback — the same probe the CLI and GUI build paths do, factored
-// out so the batch builders share it.
-func zfsParentForBuild() string {
+// estateRows is the estate as the GUI sees it, built once on demand — for
+// the paths that have no estate pane to ask: the CLI, the batch builders.
+func estateRows() []Row {
 	lv, err := ConnectSystem()
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer lv.Close()
 	doms, err := lv.Estate()
-	if err != nil || !HasZFS() {
-		return ""
+	if err != nil {
+		return nil
 	}
-	dss, _ := ListDatasets()
-	snaps, _ := ListSnapshots()
+	var dss map[string]*Dataset
+	var snaps map[string][]string
+	if HasZFS() {
+		dss, _ = ListDatasets()
+		snaps, _ = ListSnapshots()
+	}
 	rs, _ := LoadRules("")
 	var rows []Row
 	for _, g := range BuildEstate(doms, dss, snaps, rs, LoadAnnotations()) {
 		rows = append(rows, g.Rows...)
 	}
-	return ZFSVMParent(rows)
+	return rows
+}
+
+// zfsParentForBuild resolves the pool parent for new VM disks, or "" for the
+// qcow2 fallback — the same probe the CLI and GUI build paths do, factored
+// out so the batch builders share it.
+func zfsParentForBuild() string {
+	if !HasZFS() {
+		return ""
+	}
+	return ZFSVMParent(estateRows())
+}
+
+// rowForDomain finds one domain's estate row — with its zvol, which is what
+// MakeGolden needs — or ok=false when libvirt does not know the name.
+func rowForDomain(name string) (Row, bool) {
+	for _, r := range estateRows() {
+		if !r.Synthetic && r.D.Name == name {
+			return r, true
+		}
+	}
+	return Row{}, false
 }

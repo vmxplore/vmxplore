@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -145,9 +146,21 @@ func enrollGuestSSH(ip string, cmd string) (string, error) {
 	return sudoRun(argv...)
 }
 
+// enrollHostMu serialises the host-side enrollment steps across parallel
+// builds. allocMeshSubnet reads `ip addr` and returns the first free
+// 10.254.x; the subnet only becomes visibly used once `kvm-mesh up` has
+// created the interface. Two enrollments between those two moments pick
+// the same /24, and the second `up` either fails or lands two meshes on
+// one subnet. Build-all runs tiles in parallel since 2026-09-04, so the
+// pick-and-create pair holds this lock; the CA issue does too, since the
+// estate CA keeps a serial index file. Everything else in enrollment is
+// ssh into one guest and needs no ordering.
+var enrollHostMu sync.Mutex
+
 // allocMeshSubnet picks the /24 for a mesh: the one it already has when the
 // interface exists (re-enrolling is how an operator repairs), else the first
-// free 10.254.x. Returned as the first three octets.
+// free 10.254.x. Returned as the first three octets. Callers hold
+// enrollHostMu through the `kvm-mesh up` that makes the pick real.
 func allocMeshSubnet(mesh string) (string, error) {
 	if out, err := sudoRun("ip", "-o", "-4", "addr", "show", mesh); err == nil && out != "" {
 		f := strings.Fields(out)
@@ -219,6 +232,22 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	}
 
 	// ── mesh ──
+	// First let the recipe finish. WaitAppliance returns when the tile's
+	// port answers, and on the Debian tiles that is minutes before cloud-init
+	// is done: tvheadend's port was up at 11:51:36 and its cloud-init
+	// finished at 11:51:38; WriteFreely's enrollment ran 90 s before its
+	// recipe ended (onyx, 2026-09-04, the first parallel build-all). The
+	// wireguard-tools install below then met the recipe's own apt holding
+	// the dpkg lock, failed under its 2>/dev/null, and kvm-mesh refused with
+	// "no 'wg' in the guest" — an empty members file and no mesh, on tiles
+	// whose recipes had passed. cloud-init status --wait blocks until every
+	// module has run; bounded, because a recipe that never finishes is a
+	// different problem and enrollment must still report it.
+	log("enroll: waiting for " + vmName + "'s first boot to finish before touching its packages")
+	if _, err := enrollGuestSSH(ip,
+		"command -v cloud-init >/dev/null 2>&1 && timeout 900 cloud-init status --wait >/dev/null 2>&1; true"); err != nil {
+		log("enroll: could not wait on cloud-init in " + vmName + " — continuing")
+	}
 	// kvm-mesh mints the guest's key IN the guest, which needs wg there.
 	// Stock cloud images do not carry it; the first enrollment failed with
 	// "no 'wg' in the guest — install wireguard-tools there first", so do
@@ -227,6 +256,7 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 		"command -v wg >/dev/null 2>&1 || dnf -y install wireguard-tools >/dev/null 2>&1 || "+
 			"(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools) >/dev/null 2>&1 || true")
 	mesh := enrollMeshName(vmName)
+	enrollHostMu.Lock()
 	if subnet, err := allocMeshSubnet(mesh); err != nil {
 		log("enroll: mesh skipped — " + err.Error())
 	} else if out, err := sudoRun("kvm-mesh", "up", mesh, subnet, vmName); err != nil {
@@ -238,12 +268,17 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	} else {
 		log("enroll: mesh '" + mesh + "' up on " + subnet + ".0/24 — wgxplore picks it up on next sync")
 	}
+	enrollHostMu.Unlock()
 
 	// ── TLS leaf from the estate CA ──
+	issue := func() (string, error) {
+		enrollHostMu.Lock()
+		defer enrollHostMu.Unlock()
+		return sudoRun("kldload-ca", "issue", vmName, "--dns", vmName, "--ip", ip)
+	}
 	if _, err := sudoRun("test", "-f", "/etc/kldload/ca/root/ca.crt"); err != nil {
 		log("enroll: no estate CA root on this host — cert step skipped")
-	} else if out, err := sudoRun("kldload-ca", "issue", vmName,
-		"--dns", vmName, "--ip", ip); err != nil {
+	} else if out, err := issue(); err != nil {
 		log("enroll: kldload-ca issue failed — " + strings.SplitN(out, "\n", 2)[0])
 	} else {
 		crt := "/etc/kldload/ca/leaves/" + vmName + ".crt"

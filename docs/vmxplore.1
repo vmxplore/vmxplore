@@ -30,6 +30,7 @@
 .Op Fl -keep
 .Nm
 .Fl -build-all
+.Op Fl -only Ar tiles
 .Nm
 .Fl -destroy-all
 .Op Fl -yes
@@ -143,12 +144,22 @@ restricts it to one entry;
 keeps the passing VMs too.
 See
 .Sx Build, audit and destroy the whole catalog .
-.It Fl -build-all
+.It Fl -build-all Op Fl -only Ar tiles
 Build every catalog entry as a kept VM named
 .Ql app- Ns Ar tile
 and exit with the number that failed.
 Entries whose VM already exists are skipped, so a second run builds only
 what is missing.
+Tiles build in parallel, as many at once as the host's free memory allows
+(each tile's RAM plus headroom for the host);
+.Ev VMX_BUILD_JOBS
+overrides the count.
+Every progress line is prefixed with its VM name so the interleaved stream
+still reads.
+.Fl -only
+restricts the run to a comma-separated list of tile names or
+.Ql app-
+VM names.
 .It Fl -destroy-all
 Remove every VM this tool built \(em the
 .Ql app-*
@@ -188,6 +199,18 @@ Guest password.
 Public key file to install for the guest login.
 .It Fl -no-wait
 Return as soon as the VM is defined, without waiting for its first boot.
+.It Fl -golden
+Once the appliance answers on its port, shut it down, seal it and snapshot
+its root and data disks
+.Pa @golden ,
+and skip enrollment: a template carries no mesh key, certificate or
+inventory row, because a clone must mint its own.
+Prints
+.Ar vmname Ns @golden .
+The same is a checkbox in the build dialog, and
+.Sy Clone
+on the golden then stamps out ready copies in seconds instead of running
+the recipe again.
 .El
 .Sh THE ESTATE
 The left pane is the estate: every domain libvirt knows about, joined to
@@ -544,6 +567,11 @@ snapshot the volume as
 .Pa @golden .
 .El
 .Pp
+An appliance's data disk
+.Pq Ar name Ns -data
+is snapshotted
+.Pa @golden
+with the root and cloned alongside it, so a clone comes up with its pool.
 Re-sealing is refused while clones still depend on the existing golden,
 and the dependants are named.
 .Ss Clone
@@ -555,6 +583,17 @@ so it gets a fresh UUID and MAC addresses over the same blocks.
 When the source has a
 .Pa @golden ,
 that snapshot is used directly and no new one is taken.
+Every zvol the domain names is cloned, in the domain's disk order, and
+handed to
+.Xr virt-clone 1
+one
+.Fl -file
+at a time; a disk the domain still names but the pool no longer has refuses
+the clone before anything is created, naming the disk.
+Should
+.Xr virt-clone 1
+refuse anyway, the zvol clones it was meant to attach are destroyed again
+and the error says so.
 .Pp
 Blocks are shared until a clone diverges, so a clone costs almost nothing
 until it is used.
@@ -846,6 +885,8 @@ Both are rows in the catalog too
 .Pq Sy Build all , Sy Destroy all ,
 the latter behind a confirmation that names every VM it is about to remove.
 .Dl vmx --build-all
+.Dl vmx --build-all --only \(dqWeb Stack,AdGuard Home\(dq
+.Dl VMX_BUILD_JOBS=2 vmx --build-all
 .Dl vmx --destroy-all
 .Dl vmx --destroy-all --yes
 .Pp
@@ -968,6 +1009,14 @@ and add
 lines to teach it your convention.
 .Sh ENVIRONMENT
 .Bl -tag -width "VMX_FULLSCREEN_KEY"
+.It Ev VMX_BUILD_JOBS
+How many tiles
+.Fl -build-all
+builds at once.
+Unset, the count is derived from the host's free memory; set it when that
+arithmetic misjudges the host, or to
+.Ql 1
+to build in series.
 .It Ev VMX_FULLSCREEN_KEY
 The fullscreen chord, as modifiers and a key joined by
 .Ql + ,
