@@ -297,7 +297,12 @@ func applianceOverrides(a Appliance, vals map[string]string,
 func WaitAppliance(name string, port int, progress func(string)) (string, error) {
 	const (
 		leaseTimeout = 3 * time.Minute
-		bootTimeout  = 10 * time.Minute
+		// 25m, not 10: a NeedsZFS recipe on a stock cloud image now
+		// INSTALLS ZFS first, and the dkms build alone is 5-8 minutes on
+		// two vCPUs before the app's own install starts. The golden fast
+		// path (seal a built appliance, stamp clones) is what brings this
+		// back to seconds.
+		bootTimeout = 25 * time.Minute
 	)
 	lv, err := ConnectSystem()
 	if err != nil {
@@ -1574,9 +1579,15 @@ fi
 
 # Role and database, idempotently, with psql's :'var' binding so the password
 # is quoted by psql itself rather than interpolated into SQL text.
+# The statement goes in on STDIN, not -c: psql only interpolates :'var'
+# bindings in input it reads, and -c text is sent to the server verbatim —
+# the literal :'pw' produced "syntax error at or near :". Proven live on
+# smk-web 2026-09-04; the stdin form created the role with the same
+# binding. The binding is still the point: psql quotes the password, so
+# it never becomes SQL text.
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$WS_DB_USER'" | grep -q 1 ||
-    sudo -u postgres psql -v pw="$WS_DB_PASS" \
-        -c "CREATE ROLE $WS_DB_USER LOGIN PASSWORD :'pw'" >/dev/null
+    echo "CREATE ROLE $WS_DB_USER LOGIN PASSWORD :'pw';" |
+    sudo -u postgres psql -v pw="$WS_DB_PASS" >/dev/null
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$WS_DB_NAME'" | grep -q 1 ||
     sudo -u postgres createdb -O "$WS_DB_USER" "$WS_DB_NAME"
 

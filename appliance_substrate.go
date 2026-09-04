@@ -121,11 +121,57 @@ APP_POOL="${APP_POOL:-tank}"
 # Anything else and we fall back to plain directories with a warning. An
 # appliance without tuned datasets still works; an appliance that ate the
 # wrong disk is unrecoverable, and "zpool create" does not ask twice.
+# app_install_zfs — put ZFS into a guest that shipped without it.
+#
+# Stock cloud images carry no ZFS, and an appliance whose whole storage story
+# is dataset tuning cannot shrug that off. rpm: the OpenZFS repo release RPM
+# is versioned, so candidates are tried newest-first rather than pinning a
+# literal that goes stale. deb: zfs lives in contrib, which cloud images do
+# not enable; the deb822 Components line gains it. Both end in a dkms build —
+# minutes, not seconds; the sealed-golden path is the fast lane later.
+app_install_zfs() {
+    command -v zpool >/dev/null 2>&1 && return 0
+    app_log "installing ZFS in the guest (dkms build — several minutes)"
+    if [ "$APP_FAMILY" = rpm ]; then
+        # headers for the RUNNING kernel; the repo may have moved past it, in
+        # which case generic kernel-devel plus the distro kernel update is
+        # still a working dkms target after reboot -- but try exact first.
+        dnf -y install "kernel-devel-$(uname -r)" >/dev/null 2>&1 ||
+            dnf -y install kernel-devel >/dev/null 2>&1 || true
+        local _v _got=""
+        for _v in 2-9 2-8 2-7 2-6; do
+            if dnf -y install "https://zfsonlinux.org/fedora/zfs-release-${_v}$(rpm -E %dist).noarch.rpm" >/dev/null 2>&1; then
+                _got="$_v"; break
+            fi
+        done
+        if [ -z "$_got" ]; then
+            app_warn "no OpenZFS release RPM matched $(rpm -E %dist)"
+            return 1
+        fi
+        dnf -y install zfs >/dev/null 2>&1 || return 1
+    else
+        # zfs-dkms sits in contrib; cloud images enable main only.
+        if [ -d /etc/apt/sources.list.d ]; then
+            sed -i '/^Components:/ { /contrib/! s/$/ contrib/ }'                 /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+        fi
+        sed -i '/^deb .* main *$/ s/$/ contrib/' /etc/apt/sources.list 2>/dev/null || true
+        apt-get update -qq >/dev/null 2>&1 || true
+        apt-get install -y -qq "linux-headers-$(uname -r)" >/dev/null 2>&1 ||
+            apt-get install -y -qq linux-headers-amd64 >/dev/null 2>&1 || true
+        apt-get install -y -qq zfsutils-linux zfs-dkms >/dev/null 2>&1 || return 1
+    fi
+    modprobe zfs 2>/dev/null || true
+    command -v zpool >/dev/null 2>&1
+}
+
 app_pool_init() {
     if ! command -v zpool >/dev/null 2>&1; then
-        app_warn "no ZFS in this guest — datasets will be plain directories"
-        APP_POOL=""
-        return 0
+        if ! app_install_zfs; then
+            app_warn "ZFS could not be installed — datasets will be plain directories"
+            APP_POOL=""
+            return 0
+        fi
+        app_log "ZFS installed: $(zfs version 2>/dev/null | head -1)"
     fi
     if zpool list -H -o name "$APP_POOL" >/dev/null 2>&1; then
         app_log "pool '$APP_POOL' already present"
