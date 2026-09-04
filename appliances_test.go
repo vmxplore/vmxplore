@@ -360,3 +360,17 @@ func TestApplianceSpecsAreBuildable(t *testing.T) {
 		}
 	}
 }
+
+// TestNeedsZFSImpliesDataDisk: a recipe that declares NeedsZFS builds its
+// value on an in-guest pool, and that pool comes from the data disk. A
+// catalog entry claiming the first without carrying the second is the
+// written-not-wired shape that let every ZFS recipe silently degrade to
+// plain directories on 2026-09-04 — DataGB existed on the struct and was
+// copied by nothing. The wiring is fixed; this pins the declaration side.
+func TestNeedsZFSImpliesDataDisk(t *testing.T) {
+	for _, a := range Appliances() {
+		if a.Needs == NeedsZFS && a.DataGB == 0 {
+			t.Errorf("%s declares NeedsZFS but has no DataGB — its datasets would silently become plain directories", a.Name)
+		}
+	}
+}

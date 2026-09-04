@@ -223,6 +223,7 @@ func (a Appliance) Spec(vmName, user, password, sshKey string,
 		VCPUs:    a.VCPUs,
 		RAMMB:    a.RAMMB,
 		DiskGB:   a.DiskGB,
+		DataGB:   a.DataGB,
 		User:     strings.TrimSpace(user),
 		Password: password,
 		SSHKey:   strings.TrimSpace(sshKey),
@@ -1516,7 +1517,9 @@ app_pool_init
 # own data roots, so the mountpoint follows the family.
 if [ "$APP_FAMILY" = rpm ]; then _pgroot=/var/lib/pgsql; else _pgroot=/var/lib/postgresql; fi
 app_dataset pgdata "$_pgroot"        recordsize=8K
-app_dataset redis  /var/lib/redis    recordsize=16K
+# valkey on Fedora, redis on Debian — one dataset serves whichever,
+# mounted where that family's daemon keeps its state.
+app_dataset redis "$([ "$APP_FAMILY" = rpm ] && echo /var/lib/valkey || echo /var/lib/redis)" recordsize=16K
 app_dataset www    /var/www          compression=zstd
 
 # ─── one transaction per tier ───────────────────────────────────────────────
@@ -1526,14 +1529,27 @@ app_dataset www    /var/www          compression=zstd
 if [ "$APP_FAMILY" = rpm ]; then
     app_pkg nginx
     app_pkg postgresql-server
-    app_pkg redis
-    _pgsvc=postgresql; _redsvc=redis
-    _redconfdir=/etc/redis; _redconf=/etc/redis/redis.conf
+    _pgsvc=postgresql
+    # Fedora 41+ replaced redis with valkey; "dnf install redis" exits 0 via
+    # the virtual provide while installing NO redis RPM. app_pkg's artefact
+    # check caught exactly that on this recipe's first live run (smk-web,
+    # 2026-09-04): "transaction returned 0 but these are NOT installed:
+    # redis". Install what the distro actually ships.
+    if dnf -q info valkey >/dev/null 2>&1; then
+        app_pkg valkey
+        _redsvc=valkey; _reduser=valkey; _redcli=valkey-cli
+        _redconfdir=/etc/valkey; _redconf=/etc/valkey/valkey.conf
+    else
+        app_pkg redis
+        _redsvc=redis; _reduser=redis; _redcli=redis-cli
+        _redconfdir=/etc/redis; _redconf=/etc/redis/redis.conf
+    fi
 else
     app_pkg nginx
     app_pkg postgresql
     app_pkg redis-server
-    _pgsvc=postgresql; _redsvc=redis-server
+    _pgsvc=postgresql
+    _redsvc=redis-server; _reduser=redis; _redcli=redis-cli
     _redconfdir=/etc/redis; _redconf=/etc/redis/redis.conf
 fi
 
@@ -1572,6 +1588,9 @@ if ! grep -qE '^host\s+all\s+all\s+127.0.0.1/32\s+(scram-sha-256|md5)' "$_hba"; 
 fi
 
 # ─── redis ──────────────────────────────────────────────────────────────────
+_reddir=/var/lib/$_reduser
+install -d -m 0750 -o "$_reduser" -g "$_reduser" "$_reddir" 2>/dev/null ||
+    install -d -m 0750 "$_reddir"
 install -d -m 0755 "$_redconfdir"
 if [ -f "$_redconf" ] && ! grep -q '^# kldload appliance' "$_redconf"; then
     cp -n "$_redconf" "$_redconf.dist"
@@ -1582,13 +1601,13 @@ bind 127.0.0.1 -::1
 port 6379
 requirepass $WS_REDIS_PASS
 appendonly yes
-dir /var/lib/redis
+dir $_reddir
 REDIS
-chown redis:redis "$_redconf" 2>/dev/null || true
+chown "$_reduser:$_reduser" "$_redconf" 2>/dev/null || true
 chmod 0640 "$_redconf"
-chown -R redis:redis /var/lib/redis 2>/dev/null || true
-app_selinux redis_var_lib_t "/var/lib/redis(/.*)?"
-app_relabel /var/lib/redis
+chown -R "$_reduser:$_reduser" "$_reddir" 2>/dev/null || true
+app_selinux redis_var_lib_t "${_reddir}(/.*)?"
+app_relabel "$_reddir"
 app_enable "$_redsvc"
 systemctl restart "$_redsvc" 2>/dev/null || true
 
@@ -1644,8 +1663,8 @@ echo
 app_check "postgres accepts SQL"   sudo -u postgres psql -tAc "SELECT 1"
 app_check "database exists"        bash -c 'sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='"'"'$WS_DB_NAME'"'"'" | grep -q 1'
 app_check "app user can connect"   bash -c 'PGPASSWORD="$WS_DB_PASS" psql -h 127.0.0.1 -U "$WS_DB_USER" -d "$WS_DB_NAME" -tAc "SELECT 1" | grep -q 1'
-app_check "redis AUTH ping"        bash -c 'redis-cli -a "$WS_REDIS_PASS" ping 2>/dev/null | grep -q PONG'
-app_check "redis refuses no-auth"  bash -c '! redis-cli ping 2>/dev/null | grep -q PONG'
+app_check "redis AUTH ping"        bash -c '"$_redcli" -a "$WS_REDIS_PASS" ping 2>/dev/null | grep -q PONG'
+app_check "redis refuses no-auth"  bash -c '! "$_redcli" ping 2>/dev/null | grep -q PONG'
 app_check "nginx healthz"          bash -c 'curl -fsS http://127.0.0.1/healthz | grep -q ok'
 app_check "nginx serves index"     bash -c 'curl -fsS http://127.0.0.1/ | grep -q "web stack up"'
 app_check "postgres enabled"       systemctl is-enabled "$_pgsvc"

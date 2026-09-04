@@ -158,9 +158,14 @@ type NewVMSpec struct {
 	VCPUs     int
 	RAMMB     int
 	DiskGB    int
-	User      string // cloud mode only
-	Password  string // cloud mode only
-	SSHKey    string // cloud mode only — one authorized_keys line
+	// DataGB attaches a SECOND, blank virtio disk. The appliance substrate
+	// turns it into the guest's own pool (app_pool_init), which is what makes
+	// a recipe's dataset tuning real. Zero = no data disk. It stays blank on
+	// purpose: app_pool_init refuses anything that carries a signature.
+	DataGB   int
+	User     string // cloud mode only
+	Password string // cloud mode only
+	SSHKey   string // cloud mode only — one authorized_keys line
 	// RootSSHKeys authorizes root directly — set only by the kldload
 	// enrollment path, which needs root in the guest for kvm-mesh and the
 	// cert push. Ordinary VMs never get one.
@@ -738,6 +743,41 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		diskArg = "path=" + f + ",bus=virtio,format=qcow2"
 	}
 
+	// 2b — the data disk, blank by design.
+	//
+	// HISTORY: DataGB sat on the Appliance struct for half a day, documented
+	// and copied by nothing — the classic written-not-wired. Every NeedsZFS
+	// recipe silently degraded to plain directories because app_pool_init
+	// found no disk. Caught while writing the appliance smoke suite, before
+	// any operator hit it.
+	var dataDiskArg string
+	if s.DataGB > 0 {
+		if zfsParent != "" {
+			dds := zfsParent + "/" + s.Name + "-data"
+			if err := run(true, zfsArgv("create", "-s", "-V",
+				fmt.Sprintf("%dG", s.DataGB), dds)...); err != nil {
+				return err
+			}
+			rb.add(destroyZvol(dds))
+			if err := waitZvolNode("/dev/zvol/"+dds, progress); err != nil {
+				return err
+			}
+			dataDiskArg = "path=/dev/zvol/" + dds + ",bus=virtio,format=raw"
+		} else {
+			df := "/var/lib/libvirt/images/" + s.Name + "-data.qcow2"
+			dfresh := fileAbsent(df)
+			if err := run(true, "qemu-img", "create", "-f", "qcow2", df,
+				fmt.Sprintf("%dG", s.DataGB)); err != nil {
+				return err
+			}
+			if dfresh {
+				rb.add(removeFile(df))
+			}
+			dataDiskArg = "path=" + df + ",bus=virtio,format=qcow2"
+		}
+		progress(fmt.Sprintf("data disk: %dG, blank — the guest makes its pool from it", s.DataGB))
+	}
+
 	// 3 — the NoCloud seed
 	tmp, err := os.MkdirTemp("", "vmx-seed-")
 	if err != nil {
@@ -799,9 +839,13 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			"--name", s.Name,
 			"--memory", fmt.Sprint(s.RAMMB),
 			"--vcpus", fmt.Sprint(s.VCPUs),
-			"--disk", diskArg,
-			"--disk", "path=" + seedISO + ",device=cdrom,bus=sata",
-			"--import"}
+			"--disk", diskArg}
+		if dataDiskArg != "" {
+			argv = append(argv, "--disk", dataDiskArg)
+		}
+		argv = append(argv,
+			"--disk", "path="+seedISO+",device=cdrom,bus=sata",
+			"--import")
 		argv = append(argv, osinfo...)
 		argv = append(argv,
 			"--network", "network=default,model=virtio",
