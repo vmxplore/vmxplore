@@ -392,6 +392,7 @@ const (
 	applianceBranchUID = "appliances"
 	applianceUIDPrefix = "app/"
 	selfTestUID        = "app-selftest"
+	tierChartUID       = "app-tiers"
 )
 
 func newVMRow() *vmRow {
@@ -819,6 +820,7 @@ func runGUI(rs *Ruleset) {
 	// is built before it, so the catalog branch reaches it through this.
 	var openAppliance func(name string)
 	var openSelfTest func()
+	var openTierChart func()
 	childUIDs := func(uid string) []string {
 		if uid == "" {
 			out := make([]string, 0, len(viewGroups)+1)
@@ -831,8 +833,8 @@ func runGUI(rs *Ruleset) {
 			return append(out, applianceBranchUID)
 		}
 		if uid == applianceBranchUID {
-			out := make([]string, 0, len(Appliances())+1)
-			out = append(out, selfTestUID)
+			out := make([]string, 0, len(Appliances())+2)
+			out = append(out, tierChartUID, selfTestUID)
 			for _, n := range ApplianceNames() {
 				out = append(out, applianceUIDPrefix+n)
 			}
@@ -889,6 +891,30 @@ func runGUI(rs *Ruleset) {
 			// Every callback is reassigned because Fyne recycles leaf
 			// widgets — a stale closure here would aim a VM verb at an
 			// appliance.
+			if uid == tierChartUID {
+				row := o.(*vmRow)
+				row.title.Text = "◫ What works where"
+				row.title.Color = acGold.at()
+				tier := KldloadTier()
+				blurb := map[string]string{
+					"kldload": "this host: kldloadOS — every column lights up",
+					"kvm+zfs": "this host: KVM + ZFS — one step from the full estate",
+					"kvm":     "this host: plain KVM — the tiles run; kldloadOS is where they shine",
+				}[tier]
+				row.detail.Text = blurb
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() {
+					if openTierChart != nil {
+						openTierChart()
+					}
+				}
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.title.Refresh()
+				row.detail.Refresh()
+				return
+			}
 			if uid == selfTestUID {
 				row := o.(*vmRow)
 				row.title.Text = "▶ Self-test"
@@ -914,10 +940,28 @@ func runGUI(rs *Ruleset) {
 				}
 				row := o.(*vmRow)
 				row.title.Text = "＋ " + a.Name
-				row.title.Color = acBrand.at()
+				// The colour IS the availability verdict for THIS host:
+				// green builds fully, gold degrades (the detail says how),
+				// dull cannot build here at all.
+				level, blurb := ApplianceFit(a)
+				switch level {
+				case "degraded":
+					row.title.Color = acGold.at()
+				case "unavailable":
+					row.title.Color = acOff.at()
+				default:
+					row.title.Color = acGreen.at()
+				}
 				row.detail.Text = fmt.Sprintf("%s   ·   %d vCPU, %d MB, %d GB",
 					a.Summary, a.VCPUs, a.RAMMB, a.DiskGB)
-				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				if blurb != "" {
+					row.detail.Text += "   ·   " + blurb
+				}
+				if level == "degraded" {
+					row.detail.Color = acGold.at()
+				} else {
+					row.detail.Color = theme.Color(theme.ColorNameForeground)
+				}
 				row.onTap = func() {
 					if openAppliance != nil {
 						openAppliance(a.Name)
@@ -2270,6 +2314,42 @@ func runGUI(rs *Ruleset) {
 	}
 	// close the forward reference the catalog branch in the tree holds
 	openAppliance = applianceDialog
+	// The tier chart: what an appliance gets on each substrate, with THIS
+	// host's column marked. Most people arrive with plain KVM; the chart is
+	// the honest upsell — every row it cannot light up here is one the same
+	// click lights up on kldloadOS.
+	openTierChart = func() {
+		tier := KldloadTier()
+		mark := func(t string) string {
+			if t == tier {
+				return "▲ this host"
+			}
+			return ""
+		}
+		chart := "  what a tile gets              bare KVM   KVM + ZFS   kldloadOS\n" +
+			"  ──────────────────────────    ────────   ─────────   ─────────\n" +
+			"  tuned in-guest datasets           ✓           ✓           ✓\n" +
+			"  recordsize / quota tuning         ✓           ✓           ✓\n" +
+			"  per-title media datasets          ✓           ✓           ✓\n" +
+			"  USB radio/tuner passthrough       ✓           ✓           ✓\n" +
+			"  zvol backing (sparse, fast)       —           ✓           ✓\n" +
+			"  instant whole-VM clones           —           ✓           ✓\n" +
+			"  whole-VM snapshot/rollback        —           ✓           ✓\n" +
+			"  WireGuard management mesh         —           —           ✓\n" +
+			"  estate CA: trusted TLS            —           —           ✓\n" +
+			"  Ansible inventory, automatic      —           —           ✓\n" +
+			"\n" +
+			fmt.Sprintf("  %-30s%-11s%-12s%s\n", "", mark("kvm"), mark("kvm+zfs"), mark("kldload")) +
+			"\n" +
+			"  kldloadOS is a free multi-distro ZFS-on-root installer.\n" +
+			"  Same tiles, every column — kldload.com\n"
+		out := widget.NewLabel(chart)
+		out.TextStyle = fyne.TextStyle{Monospace: true}
+		tw := fyne.CurrentApp().NewWindow("What works where")
+		tw.SetContent(container.NewVScroll(out))
+		tw.Resize(fyne.NewSize(640, 460))
+		tw.Show()
+	}
 	// The self-test window: a live log of the engine building and auditing
 	// every tile, exactly what `vmx --selftest` prints. Sequential and slow
 	// by nature — the point is proof, and the window says so.

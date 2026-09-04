@@ -34,6 +34,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // appliancePrologue is prepended to every recipe by Appliance.Render.
@@ -498,4 +499,49 @@ func checkPoolName(s string) error {
 		}
 	}
 	return nil
+}
+
+// ─── live host probe for the picker ─────────────────────────────────────────
+
+var hostCapsCache struct {
+	at   time.Time
+	caps HostCaps
+}
+
+// CurrentHostCaps probes what the target host offers RIGHT NOW, cached for
+// 30s — the picker repaints every refresh and libvirt does not need the
+// traffic. A pool imported mid-session shows up within the half-minute.
+func CurrentHostCaps() HostCaps {
+	if time.Since(hostCapsCache.at) < 30*time.Second && !hostCapsCache.at.IsZero() {
+		return hostCapsCache.caps
+	}
+	kvm := false
+	if lv, err := ConnectSystem(); err == nil {
+		kvm = true
+		lv.Close()
+	}
+	hostCapsCache.caps = HostCaps{KVM: kvm, ZFS: HasZFS()}
+	hostCapsCache.at = time.Now()
+	return hostCapsCache.caps
+}
+
+// ApplianceFit is the one-line answer to "what happens if I click this HERE".
+// Level drives the colour; the blurb is the detail text beside the tile.
+func ApplianceFit(a Appliance) (level, blurb string) {
+	caps := CurrentHostCaps()
+	av := a.Availability(caps)
+	switch av.Level {
+	case "unavailable":
+		return av.Level, "unavailable here — " + av.Reason
+	case "degraded":
+		return av.Level, "degraded here — " + av.Reason
+	}
+	// recommended, with the estate story told rather than implied
+	if KldloadTier() == "kldload" {
+		return "full", "full build here · estate enrollment: mesh + CA + inventory"
+	}
+	if caps.ZFS {
+		return "full", "full build here · zvol-backed (no estate enrollment: host is not kldload)"
+	}
+	return "full", ""
 }

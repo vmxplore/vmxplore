@@ -258,6 +258,10 @@ func PrintAppliances(w *os.File) {
 		fmt.Fprintf(w, "  %s · %s · %d vCPU, %d MB RAM, %d GB disk\n",
 			a.License, a.Distro, a.VCPUs, a.RAMMB, a.DiskGB)
 		fmt.Fprintf(w, "  serves: %s\n", a.LandsOn)
+		// The same verdict the GUI colours by: what happens on THIS host.
+		if level, blurb := ApplianceFit(a); blurb != "" {
+			fmt.Fprintf(w, "  fit: [%s] %s\n", level, blurb)
+		}
 		for _, f := range a.Fields {
 			req := ""
 			if f.Required {
