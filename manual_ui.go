@@ -64,7 +64,12 @@ type manualUI struct {
 //	man := newManualUI(w, func() fyne.CanvasObject { return mainContent })
 //	helpBtn.OnTapped = man.Show
 //	w.Canvas().SetOnTypedKey(func(e *fyne.KeyEvent) { man.HandleKey(e) })
-func newManualUI(w fyne.Window, back func() fyne.CanvasObject) *manualUI {
+//
+// extras go in the footer beside the site link: controls that belong with
+// the documentation rather than the estate — sysdiag lives there, because
+// "what can this host do" is a question for the manual, not a tile in the
+// Apps catalog (operator, 2026-09-03).
+func newManualUI(w fyne.Window, back func() fyne.CanvasObject, extras ...fyne.CanvasObject) *manualUI {
 	pageColor := func() color.Color {
 		if variantDark() {
 			return color.NRGBA{R: 0x08, G: 0x09, B: 0x0c, A: 0xff}
@@ -103,9 +108,10 @@ func newManualUI(w fyne.Window, back func() fyne.CanvasObject) *manualUI {
 	powered := widget.NewHyperlink("powered by kldload.com", siteU)
 	manClose := widget.NewButtonWithIcon("Close  ⏎", theme.ConfirmIcon(), nil)
 	manClose.Importance = widget.HighImportance
+	footLeft := container.NewHBox(append([]fyne.CanvasObject{powered}, extras...)...)
 	page := container.NewStack(pageBG, container.NewBorder(
 		container.NewPadded(pageHead), container.NewPadded(
-			container.NewBorder(nil, nil, powered, manClose, nil)),
+			container.NewBorder(nil, nil, footLeft, manClose, nil)),
 		nil, nil, manScroll))
 
 	open := false

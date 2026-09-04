@@ -33,6 +33,8 @@
 .Nm
 .Fl -destroy-all
 .Op Fl -yes
+.Nm
+.Fl -sysdiag
 .Sh DESCRIPTION
 .Nm
 is a console for the KVM hypervisor your kernel already has.
@@ -158,6 +160,14 @@ Without
 .Fl -yes
 it prints the list it would remove and exits 2.
 A VM it did not build is never touched.
+.It Fl -sysdiag
+Print the requirements screen as text and exit: the host's OS, kernel,
+CPU, memory and installed versions, every capability probe with its
+reason, and the three substrates with their requirements ticked or crossed
+for this host.
+The same screen opens from the
+.Sy sysdiag
+button on the Manual page.
 .It Fl -version
 Print the version and exit.
 .El
@@ -674,7 +684,7 @@ A recipe therefore installs and configures identically on an
 or
 .Xr apt 8
 guest and ends by proving the service answers.
-.Ss What works where
+.Ss sysdiag
 On a
 .Nm kldload
 host an appliance is born enrolled: it joins its own WireGuard management
@@ -693,6 +703,18 @@ The catalog colours each tile green, amber or grey for this host and, in
 the terminal listing, prints a
 .Ql fit\&:
 line saying the same.
+The
+.Sy sysdiag
+button on the Manual page
+.Pq or Fl -sysdiag
+is the requirements screen: the detected substrate as a badge, the host's
+OS, kernel, CPU, memory and installed versions, every probe \(em KVM,
+libvirt, ZFS and the VM parent dataset,
+.Xr virt-install 1 ,
+.Xr virt-clone 1
+and the kldload toolset \(em as a green or red card with its reason, then
+the three substrates side by side with their requirements ticked or crossed
+for this host and the same chart, with this host's column outlined.
 .Ss The catalog
 Each tile builds a VM whose root disk is a clone off a cloud image and
 whose second disk becomes an in-guest ZFS pool.
@@ -1062,6 +1084,11 @@ vmx --selftest
 vmx --build-all
 vmx --destroy-all          # lists app-* and st-* VMs, exits 2
 vmx --destroy-all --yes
+.Ed
+.Pp
+Ask a box what it can do before copying the binary onto it:
+.Bd -literal -offset indent
+vmx --sysdiag
 .Ed
 .Ss Post-install scripts
 Anything in the post-install box is written into the guest and run once,

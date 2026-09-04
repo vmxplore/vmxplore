@@ -57,6 +57,7 @@ const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--ve
        vmx --selftest [--only NAME] [--keep]
        vmx --build-all
        vmx --destroy-all [--yes]
+       vmx --sysdiag
 
   (no flags)   native GUI — the estate frame (list · console · details);
                static/terminal-only builds start the TUI instead
@@ -106,6 +107,11 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           data disks, mesh and inventory rows. Lists them and
                           exits 2 unless --yes is given. Never touches a VM
                           it did not build.
+  --sysdiag               the requirements screen, as text: what this host
+                          is (OS, kernel, CPU, memory, versions), every
+                          capability probe with its reason, and the three
+                          substrates — bare KVM, KVM + ZFS, kldloadOS — with
+                          their requirements ticked for this host.
 
     vmx --appliance "WriteFreely Desktop" --vm blog \
         WF_SITE_NAME='My Blog' WF_ADMIN_USER=matt
@@ -214,6 +220,9 @@ func main() {
 			return
 		case "--appliances":
 			PrintAppliances(os.Stdout)
+			return
+		case "--sysdiag":
+			PrintSysdiag(os.Stdout, RunSysdiag(nil))
 			return
 		case "--appliance":
 			i++
