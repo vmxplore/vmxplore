@@ -61,15 +61,28 @@ func BuildEstate(doms []Dom, dss map[string]*Dataset,
 
 	for _, d := range doms {
 		r := Row{D: d, Group: rs.GroupFor(d.Name)}
+		// Every zvol the domain references is claimed, not just the first.
+		// The loop used to `break` at the system disk, so an appliance's
+		// second zvol (its -data pool) was never claimed and surfaced below
+		// as "zvol without a domain" — and delete on that row ran `zfs
+		// destroy` on a disk a defined domain still had as vdb. onyx
+		// 2026-09-04 09:30: web-golden-data destroyed from the unreconciled
+		// group; every clone of web-golden then failed in virt-clone with
+		// "missing source information for device vdb". The row still
+		// tracks the first zvol as its system disk, by every tool's layout.
+		sysDisk := false
 		for _, disk := range d.Disks {
 			if ds := zvolDataset(disk.Dev); ds != "" {
-				r.Backing = ds
 				claimed[ds] = true
-				if dset, ok := dss[ds]; ok {
-					r.DS = dset
-					r.Origin = dset.Origin
+				if !sysDisk {
+					sysDisk = true
+					r.Backing = ds
+					if dset, ok := dss[ds]; ok {
+						r.DS = dset
+						r.Origin = dset.Origin
+					}
 				}
-				break // first zvol is the system disk by every tool's layout
+				continue
 			}
 			if disk.File != "" && r.Backing == "" {
 				r.Backing = disk.File

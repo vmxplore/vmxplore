@@ -111,6 +111,26 @@ func MakeGolden(r Row, progress func(string)) error {
 	if err := runStep(progress, true, zfsArgv("snapshot", ds+"@golden")...); err != nil {
 		return err
 	}
+	// An appliance's second disk is its in-guest pool: the database, the
+	// media, the thing the tile exists for. A golden that sealed only the
+	// root would stamp out clones that boot and then have nothing to serve.
+	// The disk list comes from the domain, the same list planCloneFrom
+	// walks, so what gets a @golden here is exactly what a clone looks for.
+	for _, extra := range domainZvols(r)[1:] {
+		if !datasetExists(extra) {
+			return fmt.Errorf("%s: disk %s is in the domain but not on the pool"+
+				" — recreate it or detach it before making a golden", name, extra)
+		}
+		if datasetExists(extra + "@golden") {
+			if err := runStep(progress, true, zfsArgv("destroy", extra+"@golden")...); err != nil {
+				return fmt.Errorf("%v — existing clones depend on the old data golden", err)
+			}
+		}
+		if err := runStep(progress, true, zfsArgv("snapshot", extra+"@golden")...); err != nil {
+			return err
+		}
+		progress(extra + " is golden too — clones get their pool")
+	}
 	progress(name + " is golden — right-click → Clone stamps out instant copies")
 	return nil
 }
@@ -124,21 +144,12 @@ func havePath(tool string) bool {
 // clone shares the sealed template's blocks. The GUI picks this over
 // planClone whenever @golden exists on the source.
 func planCloneGolden(r Row, newName string) (verbPlan, error) {
-	p, err := planClone(r, newName) // reuse every gate + the virt-clone leg
-	if err != nil {
-		return p, err
-	}
-	parent := r.DS.Name
-	if i := strings.LastIndexByte(parent, '/'); i >= 0 {
-		parent = parent[:i]
-	}
-	p.title = "clone golden " + r.D.Name + " → " + newName
-	p.cmds = [][]string{
-		zfsArgv("clone", r.DS.Name+"@golden", parent+"/"+newName),
-		p.cmds[2], // the virt-clone leg, unchanged
-	}
-	p.warn = "clone of the sealed @golden — boots as a fresh machine"
-	return p, nil
+	// One builder for both shapes: this used to rewrite planClone's command
+	// list by index ("the root pair is cmds[0:2], the data pair is next")
+	// and every disk-list change threatened to shift those indexes under
+	// it. planCloneFrom walks the domain's disks once and picks the anchor
+	// per disk instead.
+	return planCloneFrom(r, newName, true)
 }
 
 // ─── Naming the things we stamp out ──────────────────────────────────

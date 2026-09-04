@@ -128,3 +128,38 @@ func TestOriginChain(t *testing.T) {
 		t.Errorf("chain = %v", chain)
 	}
 }
+
+// An appliance's second zvol is claimed by its domain, not listed as a
+// leftover. onyx 2026-09-04: web-golden-data was offered as "zvol without a
+// domain" and destroyed from that row while web-golden still had it as vdb.
+func TestBuildEstateSecondZvolIsNotAnOrphan(t *testing.T) {
+	doms := []Dom{
+		{Name: "web-golden", State: "shut off", Disks: []Disk{
+			{Target: "sda", File: "/var/lib/libvirt/images/web-golden-seed.iso"},
+			{Target: "vda", Dev: "/dev/zvol/rpool/vms/web-golden"},
+			{Target: "vdb", Dev: "/dev/zvol/rpool/vms/web-golden-data"},
+		}},
+	}
+	dss := map[string]*Dataset{
+		"rpool/vms":                 {Name: "rpool/vms", Type: "filesystem"},
+		"rpool/vms/web-golden":      {Name: "rpool/vms/web-golden", Type: "volume"},
+		"rpool/vms/web-golden-data": {Name: "rpool/vms/web-golden-data", Type: "volume"},
+		"rpool/vms/truly-orphaned":  {Name: "rpool/vms/truly-orphaned", Type: "volume"},
+	}
+	groups := BuildEstate(doms, dss, map[string][]string{}, kldloadRS(t), nil)
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			if r.D.Name == "web-golden-data" {
+				t.Fatalf("the domain's second zvol surfaced as an orphan row in %q", g.Label)
+			}
+		}
+	}
+	web, _ := findRow(t, groups, "web-golden")
+	if web.DS == nil || web.DS.Name != "rpool/vms/web-golden" {
+		t.Errorf("system disk must stay the first zvol, got %+v", web.DS)
+	}
+	orphan, g := findRow(t, groups, "truly-orphaned")
+	if g != groupUnreconciled || !orphan.Synthetic {
+		t.Errorf("a zvol no domain names must still be reported: %q %+v", g, orphan)
+	}
+}

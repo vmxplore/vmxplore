@@ -134,10 +134,14 @@ func humanBytes(b uint64) string {
 }
 
 // datasetExists is a plan-time probe: true when the hypervisor has a dataset
-// by this exact name. Used to decide whether a delete plan should also carry
-// the appliance -data companion disk. Best-effort — a probe failure returns
-// false, which just means the extra destroy is not added.
-func datasetExists(name string) bool {
+// by this exact name. Delete uses it to decide whether to carry the
+// appliance -data companion disk; clone and golden use it to refuse a
+// domain whose disk is no longer on the pool, and to pick @golden over a
+// live snapshot per disk. Best-effort — a probe failure returns false.
+//
+// A variable so the plan tests can answer for datasets the test host does
+// not have (verbs_test.go stubs it); nothing outside tests reassigns it.
+var datasetExists = func(name string) bool {
 	out, err := zfsRun("list", "-H", "-o", "name", name)
 	return err == nil && strings.TrimSpace(string(out)) == name
 }

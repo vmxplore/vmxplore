@@ -65,6 +65,17 @@ type verbPlan struct {
 	// surprise worth aborting on (see TestAlreadyInDesiredState). This lives on
 	// the plan, not in the shared helper, so the two intents stay separate.
 	tolerateGone bool
+	// undo, when set, is parallel to cmds: undo[i] reverses cmds[i], or is
+	// nil when that step leaves nothing behind. When cmds[k] fails, runPlan
+	// runs undo[k-1]…undo[0] (newest first) so the plan leaves the host as
+	// it found it. Best effort and audited, like post.
+	//
+	// WHY: a clone is [zfs clone, (zfs clone), virt-clone]. When virt-clone
+	// refused, the zvol clones it was meant to attach stayed on the pool
+	// with no domain — four of them in one minute on onyx 2026-09-04, each
+	// a fresh "zvol without a domain" row for the operator to clean up by
+	// hand. The failure was real; the litter was not part of it.
+	undo [][]string
 }
 
 // virsh() and zfsArgv() live in remote.go — they route to the connection
@@ -288,12 +299,57 @@ func planReconcile(r Row) (verbPlan, error) {
 	}, nil
 }
 
+// domainZvols returns the datasets behind every zvol-backed disk of r's
+// domain, system disk first, then the rest in the order the domain lists
+// them. A row whose Dom carries no disk list (a bare fixture, a remote
+// probe that skipped the XML) yields just the system disk.
+//
+// This is the one place the "which disks does this VM have" question is
+// answered for clone and golden. It used to be a naming convention —
+// "<root>-data exists on the pool" — which is not the same question: the
+// domain XML is what virt-clone walks, and a disk the XML names that the
+// pool no longer has is exactly the case the convention cannot see.
+func domainZvols(r Row) []string {
+	if r.DS == nil {
+		return nil
+	}
+	out := []string{r.DS.Name}
+	for _, d := range r.D.Disks {
+		ds := zvolDataset(d.Dev)
+		if ds == "" || ds == r.DS.Name {
+			continue
+		}
+		out = append(out, ds)
+	}
+	return out
+}
+
+// cloneDatasetName maps a source disk's dataset onto the clone's name:
+// <root>-data becomes <new>-data, and a disk with an unrelated name gets
+// <new>-<its basename>. Keeping the -data suffix is what lets planDelete
+// find the clone's data disk by the same convention the builders use.
+func cloneDatasetName(rootDS, newDS, ds string) string {
+	if strings.HasPrefix(ds, rootDS+"-") {
+		return newDS + strings.TrimPrefix(ds, rootDS)
+	}
+	return newDS + "-" + baseName(ds)
+}
+
 // planClone builds "clone r into newName": snapshot the source zvol, clone
 // the snapshot, then virt-clone the domain onto the new zvol with
 // --preserve-data (new uuid + MACs, same disk bytes). Generic — works on
 // any libvirt host whose guest sits on ZFS and has virt-clone installed;
 // the kldload golden-image workflow is exactly this shape.
 func planClone(r Row, newName string) (verbPlan, error) {
+	return planCloneFrom(r, newName, false)
+}
+
+// planCloneFrom is planClone with the choice of anchor: fromGolden clones
+// each disk from its @golden snapshot when one exists (no fresh snapshot,
+// the clone shares the sealed template's blocks) and falls back to a live
+// snapshot+clone per disk that was never sealed — so a golden made before
+// data disks were part of one still clones whole.
+func planCloneFrom(r Row, newName string, fromGolden bool) (verbPlan, error) {
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -318,20 +374,82 @@ func planClone(r Row, newName string) (verbPlan, error) {
 		parent = parent[:i]
 	}
 	newDS := parent + "/" + newName
-	snap := r.DS.Name + "@clone-" + newName
+
+	// Every zvol the domain names must still be on the pool. virt-clone
+	// walks the XML and refuses a disk whose source is gone ("missing source
+	// information for device vdb") — but only after the zfs clones have
+	// already been made. Refusing here, before anything is created, turns
+	// four orphaned zvols and a one-line dialog into a message that names
+	// the disk and what to do about it (onyx, 2026-09-04).
+	disks := domainZvols(r)
+	for _, d := range r.D.Disks {
+		ds := zvolDataset(d.Dev)
+		if ds == "" || datasetExists(ds) {
+			continue
+		}
+		return verbPlan{}, fmt.Errorf("%s: disk %s points at %s, which is no longer on the pool"+
+			" — recreate it or detach the disk (virsh detach-disk %s %s --persistent) before cloning",
+			r.D.Name, d.Target, ds, r.D.Name, d.Target)
+	}
+
+	// The system disk must actually have the anchor a golden clone is
+	// named for; the GUI offers this verb only when it does, and a missing
+	// @golden here means the golden was never made (or was re-made and
+	// failed). Extra disks may fall back to a live clone — see the loop.
+	if fromGolden && !datasetExists(r.DS.Name+"@golden") {
+		return verbPlan{}, fmt.Errorf("%s has no @golden snapshot — make it golden first", r.D.Name)
+	}
+
+	var cmds, undo [][]string
+	var files []string
+	sealed, live := 0, 0
+	for _, ds := range disks {
+		target := newDS
+		if ds != r.DS.Name {
+			target = cloneDatasetName(r.DS.Name, newDS, ds)
+		}
+		if fromGolden && datasetExists(ds+"@golden") {
+			cmds = append(cmds, zfsArgv("clone", ds+"@golden", target))
+			// -r on the clone target only: it is ours, seconds old, and
+			// sanoid may already have snapshotted it — the four orphans of
+			// 2026-09-04 each carried four autosnaps within the hour, and a
+			// plain destroy of any of them refused "volume has children".
+			undo = append(undo, zfsArgv("destroy", "-r", target))
+			sealed++
+		} else {
+			snap := ds + "@clone-" + newName
+			cmds = append(cmds, zfsArgv("snapshot", snap), zfsArgv("clone", snap, target))
+			undo = append(undo, zfsArgv("destroy", snap), zfsArgv("destroy", "-r", target))
+			live++
+		}
+		// virt-clone --preserve-data takes one --file per disk, in the
+		// original's disk order. Without one per zvol a clone of an
+		// appliance came up with a root disk and a hole where its pool was.
+		files = append(files, "--file", "/dev/zvol/"+target)
+	}
+	cmds = append(cmds, append([]string{"virt-clone", "--connect", target.LibvirtURI,
+		"--original", r.D.Name, "--name", newName, "--preserve-data"}, files...))
+	undo = append(undo, nil) // a refused virt-clone defines nothing
+
+	title := "clone " + r.D.Name + " → " + newName
 	warn := "clone shares blocks with " + r.DS.Name + " until it diverges"
 	if r.D.State == "running" {
 		warn = "source is running — the clone is crash-consistent; " + warn
 	}
+	if fromGolden {
+		title = "clone golden " + r.D.Name + " → " + newName
+		warn = "clone of the sealed @golden — boots as a fresh machine"
+		if live > 0 && sealed > 0 {
+			warn += fmt.Sprintf(" (%d disk(s) were never sealed and are cloned live)", live)
+		}
+	}
+	if len(disks) > 1 {
+		warn += fmt.Sprintf("; its %d extra disk(s) are cloned with it", len(disks)-1)
+	}
 	return verbPlan{
-		title: "clone " + r.D.Name + " → " + newName,
-		cmds: [][]string{
-			zfsArgv("snapshot", snap),
-			zfsArgv("clone", snap, newDS),
-			{"virt-clone", "--connect", target.LibvirtURI, "--original", r.D.Name,
-				"--name", newName, "--preserve-data",
-				"--file", "/dev/zvol/" + newDS},
-		},
+		title:     title,
+		cmds:      cmds,
+		undo:      undo,
 		warn:      warn,
 		needsRoot: true, // zfs snapshot/clone; virt-clone rides along as root
 		// Register the clone in the shared inventory the rest of kldload
@@ -525,7 +643,7 @@ func domainGone(msg string) bool {
 // a NOPASSWD host works and a password host fails loudly instead of hanging
 // a TUI on a hidden prompt. Every command lands in the audit log either way.
 func runPlan(p verbPlan) error {
-	for _, argv := range p.cmds {
+	for i, argv := range p.cmds {
 		// Only the zfs mutation in a mixed plan needs root. Wrapping the
 		// whole plan — as this did — also ran virsh as root, which on a
 		// remote target means root's ssh keys and a connection the
@@ -557,7 +675,7 @@ func runPlan(p verbPlan) error {
 				// still run.
 				continue
 			}
-			return fmt.Errorf("%s: %s", argv[0], msg)
+			return fmt.Errorf("%s: %s%s", argv[0], msg, unwind(p, i))
 		}
 	}
 	// Bookkeeping, best effort. Deliberately after the success return path of
@@ -574,6 +692,53 @@ func runPlan(p verbPlan) error {
 		_ = out
 	}
 	return nil
+}
+
+// unwind runs the undo steps for every cmd before the one that failed at
+// index failed, newest first, and returns a suffix for the error message
+// saying what was put back — or which undo itself failed, since a rollback
+// that half-worked is something the operator has to know about.
+//
+// Root is added exactly as runPlan adds it for the forward step, so an undo
+// never runs with more privilege than the thing it reverses.
+func unwind(p verbPlan, failed int) string {
+	if len(p.undo) == 0 {
+		return ""
+	}
+	var done, broken []string
+	for j := failed - 1; j >= 0; j-- {
+		if j >= len(p.undo) || p.undo[j] == nil {
+			continue
+		}
+		argv := p.undo[j]
+		if p.needsRoot && argv[0] == "zfs" && os.Geteuid() != 0 {
+			argv = append([]string{"sudo", "-n"}, argv...)
+		}
+		out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+		rc := 0
+		if err != nil {
+			rc = 1
+		}
+		auditLog(strings.Join(argv, " "), rc)
+		line := strings.Join(p.undo[j], " ")
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg == "" {
+				msg = err.Error()
+			}
+			broken = append(broken, line+" ("+msg+")")
+			continue
+		}
+		done = append(done, line)
+	}
+	s := ""
+	if len(done) > 0 {
+		s += "\nrolled back: " + strings.Join(done, "; ")
+	}
+	if len(broken) > 0 {
+		s += "\nROLLBACK FAILED, clean up by hand: " + strings.Join(broken, "; ")
+	}
+	return s
 }
 
 // auditLogFailed fires once, ever, when neither audit path can be written.

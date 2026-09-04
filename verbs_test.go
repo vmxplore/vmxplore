@@ -2,6 +2,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -224,6 +225,7 @@ func TestPlanCloneGolden(t *testing.T) {
 	if _, err := exec.LookPath("virt-clone"); err != nil {
 		t.Skip("virt-clone not installed on this host")
 	}
+	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora@golden")
 	p, err := planCloneGolden(offRow(), "stamped")
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +240,10 @@ func TestPlanCloneGolden(t *testing.T) {
 	}
 	if strings.Contains(joined, "zfs snapshot") {
 		t.Error("golden clone must NOT take a fresh snapshot")
+	}
+	stubDatasets(t, "rpool/vms/klab-blue-fedora") // never made golden
+	if _, err := planCloneGolden(offRow(), "stamped"); err == nil {
+		t.Error("golden clone of a source with no @golden must refuse")
 	}
 }
 
@@ -367,5 +373,174 @@ func TestDeleteTolerance(t *testing.T) {
 	// The mesh name is the interface name and the kernel caps that at 15.
 	if m := enrollMeshName("a-very-long-appliance-name"); m != "ap-a-very-long" {
 		t.Errorf("enrollMeshName = %q", m)
+	}
+}
+
+// stubDatasets answers datasetExists from a fixed set for the duration of
+// one test, so clone plans can be exercised for disks and @golden anchors
+// the test host does not have.
+func stubDatasets(t *testing.T, have ...string) {
+	t.Helper()
+	orig := datasetExists
+	set := map[string]bool{}
+	for _, h := range have {
+		set[h] = true
+	}
+	datasetExists = func(name string) bool { return set[name] }
+	t.Cleanup(func() { datasetExists = orig })
+}
+
+// applianceRow is offRow with the disk list an appliance build defines:
+// root zvol, -data zvol, seed cdrom — the web-golden shape from onyx.
+func applianceRow() Row {
+	r := offRow()
+	r.D.Disks = []Disk{
+		{Target: "vda", Dev: "/dev/zvol/rpool/vms/klab-blue-fedora"},
+		{Target: "vdb", Dev: "/dev/zvol/rpool/vms/klab-blue-fedora-data"},
+		{Target: "sda", File: "/var/lib/libvirt/images/klab-blue-fedora-seed.iso"},
+	}
+	return r
+}
+
+func joinCmds(cmds [][]string) string {
+	joined := ""
+	for _, c := range cmds {
+		joined += strings.Join(c, " ") + ";"
+	}
+	return joined
+}
+
+// Every zvol the domain names is cloned and handed to virt-clone, in disk
+// order, and each creating step carries its undo.
+func TestPlanCloneCarriesEveryZvol(t *testing.T) {
+	if _, err := exec.LookPath("virt-clone"); err != nil {
+		t.Skip("virt-clone not installed on this host")
+	}
+	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora-data")
+	p, err := planClone(applianceRow(), "copy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := joinCmds(p.cmds)
+	for _, want := range []string{
+		"zfs snapshot rpool/vms/klab-blue-fedora@clone-copy;",
+		"zfs clone rpool/vms/klab-blue-fedora@clone-copy rpool/vms/copy;",
+		"zfs snapshot rpool/vms/klab-blue-fedora-data@clone-copy;",
+		"zfs clone rpool/vms/klab-blue-fedora-data@clone-copy rpool/vms/copy-data;",
+		"--preserve-data --file /dev/zvol/rpool/vms/copy --file /dev/zvol/rpool/vms/copy-data;",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("clone plan missing %q in %s", want, joined)
+		}
+	}
+	if len(p.undo) != len(p.cmds) {
+		t.Fatalf("undo must be parallel to cmds: %d vs %d", len(p.undo), len(p.cmds))
+	}
+	if p.undo[len(p.undo)-1] != nil {
+		t.Error("virt-clone step must have no undo — a refused clone defines nothing")
+	}
+	if got := strings.Join(p.undo[1], " "); got != "zfs destroy -r rpool/vms/copy" {
+		t.Errorf("undo for the root clone = %q", got)
+	}
+}
+
+// A disk the domain still names but the pool no longer has must refuse
+// before anything is created — the onyx 2026-09-04 web-golden case.
+func TestPlanCloneRefusesMissingDisk(t *testing.T) {
+	if _, err := exec.LookPath("virt-clone"); err != nil {
+		t.Skip("virt-clone not installed on this host")
+	}
+	stubDatasets(t, "rpool/vms/klab-blue-fedora") // -data is gone
+	p, err := planClone(applianceRow(), "copy")
+	if err == nil {
+		t.Fatalf("clone with a missing disk must refuse, got %s", joinCmds(p.cmds))
+	}
+	for _, want := range []string{"vdb", "rpool/vms/klab-blue-fedora-data", "detach"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must name %q: %v", want, err)
+		}
+	}
+	if _, err := planCloneGolden(applianceRow(), "copy"); err == nil {
+		t.Error("golden clone with a missing disk must refuse too")
+	}
+}
+
+// A golden clone anchors each disk on its own @golden when it has one and
+// falls back to a live snapshot for a disk that was never sealed.
+func TestPlanCloneGoldenPerDiskAnchor(t *testing.T) {
+	if _, err := exec.LookPath("virt-clone"); err != nil {
+		t.Skip("virt-clone not installed on this host")
+	}
+	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora-data",
+		"rpool/vms/klab-blue-fedora@golden")
+	p, err := planCloneGolden(applianceRow(), "stamped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := joinCmds(p.cmds)
+	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora@golden rpool/vms/stamped;") {
+		t.Errorf("root must clone @golden: %s", joined)
+	}
+	if !strings.Contains(joined, "zfs snapshot rpool/vms/klab-blue-fedora-data@clone-stamped;") {
+		t.Errorf("unsealed data disk must be cloned live: %s", joined)
+	}
+
+	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora-data",
+		"rpool/vms/klab-blue-fedora@golden", "rpool/vms/klab-blue-fedora-data@golden")
+	p, err = planCloneGolden(applianceRow(), "stamped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = joinCmds(p.cmds)
+	if strings.Contains(joined, "zfs snapshot") {
+		t.Errorf("fully sealed golden must take no snapshot: %s", joined)
+	}
+	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora-data@golden rpool/vms/stamped-data;") {
+		t.Errorf("data disk must clone its @golden: %s", joined)
+	}
+}
+
+func TestCloneDatasetName(t *testing.T) {
+	for _, c := range [][3]string{
+		{"rpool/vms/web-golden-data", "rpool/vms/x", "rpool/vms/x-data"},
+		{"rpool/vms/web-golden-media", "rpool/vms/x", "rpool/vms/x-media"},
+		{"rpool/isos/shared", "rpool/vms/x", "rpool/vms/x-shared"},
+	} {
+		if got := cloneDatasetName("rpool/vms/web-golden", c[1], c[0]); got != c[2] {
+			t.Errorf("cloneDatasetName(%s) = %s, want %s", c[0], got, c[2])
+		}
+	}
+}
+
+// When a later step fails, runPlan runs the undo of every earlier step,
+// newest first, and says so in the error.
+func TestRunPlanUnwindsOnFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // keep the audit log out of the real one
+	dir := t.TempDir()
+	a, b := dir+"/a", dir+"/b"
+	p := verbPlan{
+		cmds: [][]string{{"touch", a}, {"touch", b}, {"false"}},
+		undo: [][]string{{"rm", a}, {"rm", b}, nil},
+	}
+	err := runPlan(p)
+	if err == nil {
+		t.Fatal("plan with a failing step must error")
+	}
+	if !strings.Contains(err.Error(), "rolled back: rm "+b+"; rm "+a) {
+		t.Errorf("error must list the undo steps newest first: %v", err)
+	}
+	for _, f := range []string{a, b} {
+		if _, statErr := os.Stat(f); statErr == nil {
+			t.Errorf("%s still exists after unwind", f)
+		}
+	}
+	// A broken undo is reported, not hidden.
+	p = verbPlan{
+		cmds: [][]string{{"true"}, {"false"}},
+		undo: [][]string{{"rm", dir + "/never-there"}, nil},
+	}
+	err = runPlan(p)
+	if err == nil || !strings.Contains(err.Error(), "ROLLBACK FAILED") {
+		t.Errorf("failed undo must be named in the error: %v", err)
 	}
 }
