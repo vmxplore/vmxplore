@@ -648,7 +648,11 @@ var applianceCatalog = []Appliance{
 
 		Script: webStackScript,
 	},
-	writeFreely, writeFreelyDesktop,
+	// writeFreely (the bare server) left the catalog 2026-09-03 by request;
+	// the Desktop tile stays and still composes writeFreelyScript, so the
+	// recipe text remains live code and the hostile-values test keeps its
+	// subject.
+	writeFreelyDesktop,
 	jellyfin, plex, seedbox, icecast, gitea, adguardHome, syncthing,
 }
 
