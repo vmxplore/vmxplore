@@ -151,9 +151,12 @@ shown before it runs.
 ## The Screen tab
 
 The screen pane is the heart of it — pick a running VM and the right tab
-attaches automatically, in-window, no external viewer. Five tabs, in the
-order of the work: **Serial · Screen · Apps · VM · kldload** — look at the
-machine you have, then make one, with the substrate's own toolset last.
+attaches automatically, in-window, no external viewer. Two tabs, **Screen ·
+Serial** — the two ways to look at the machine you have, Screen first and
+selected by default. Building lives in
+the estate tree (the **Apps** branch) and the **Build** menu; the substrate's
+tools are the tree's **kldload tools** branch, and a **kldload** tab appears
+beside the two only while one of them is running.
 
 There is no button bar. **Alt+Insert** collapses the three-pane layout to the
 console alone — estate, details, tabs and border gone — and asks the guest to
@@ -220,14 +223,14 @@ extra open port, and nothing on the wire that a passer-by can type into.
 
 ### kldload — tool launcher
 
-<img src="assets/screenshots/kldload-tools.png" width="900" alt="the kldload tab: a tile launcher for cluster builds, golden images, exports, and demos"/>
+<img src="assets/screenshots/kldload-tools.png" width="900" alt="a kldload tool's verb page, running in the console pane"/>
 
-<sub><em>The kldload tab on a kernel-loaded substrate: the whole toolset — clusters, goldens, exports, demos — one tile away, running right in the pane.</em></sub>
+<sub><em>A kldload tool on a kernel-loaded substrate: pick it in the estate tree, its verbs and its terminal open right in the console pane.</em></sub>
 
-On a plain libvirt host this tab pitches the OS. On a **kldload** host it
-becomes a command center — a tile launcher for the whole kernel-loaded
-substrate (see [Enhanced on kldload](#3--on-kldload)). Same one binary —
-features appear when the host supports them.
+On a plain libvirt host the tree's last branch pitches the OS. On a
+**kldload** host it becomes a command center — the whole kernel-loaded
+toolset, grouped, one click away (see [Enhanced on kldload](#3--on-kldload)).
+Same one binary — features appear when the host supports them.
 
 ## New VM options
 
@@ -364,10 +367,14 @@ From the terminal, no GUI needed:
 
 ```bash
 vmx --appliances                       # the catalog, with each entry's fields
-vmx --appliance-script "WriteFreely"   # just print the installer, build nothing
+vmx --appliance-script "WriteFreely Desktop"   # print the installer, build nothing
 
-vmx --appliance "WriteFreely" --vm blog \
+vmx --appliance "WriteFreely Desktop" --vm blog \
     WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
+
+vmx --selftest                         # build + audit every tile, keep the failures
+vmx --build-all                        # one of everything, kept as app-<tile>
+vmx --destroy-all --yes                # remove every app-* and st-* VM, nothing else
 ```
 
 It waits for the first boot to finish and prints the appliance's real URL on

@@ -393,6 +393,15 @@ const (
 	applianceUIDPrefix = "app/"
 	selfTestUID        = "app-selftest"
 	tierChartUID       = "app-tiers"
+	buildAllUID        = "app-build-all"
+	destroyAllUID      = "app-destroy-all"
+	// The kldload tool launcher, also a tree branch: one sub-branch per
+	// tool group, one row per tool. On a host without the toolset the branch
+	// holds a single row that says where to get it.
+	toolsBranchUID     = "tools"
+	toolGroupUIDPrefix = "tools/"
+	toolUIDPrefix      = "tool/"
+	getKldloadUID      = "tool-get-kldload"
 )
 
 func newVMRow() *vmRow {
@@ -820,21 +829,59 @@ func runGUI(rs *Ruleset) {
 	// is built before it, so the catalog branch reaches it through this.
 	var openAppliance func(name string)
 	var openSelfTest func()
+	var openBuildAll func()
+	var openDestroyAll func()
 	var openTierChart func()
+	// openTool is wired once the tools pane exists (it needs the pty host);
+	// the groups are probed once because the tree repaints constantly and
+	// each probe is a LookPath per tool.
+	var openTool func(tool string)
+	toolGroups := KldloadToolGroups()
 	childUIDs := func(uid string) []string {
 		if uid == "" {
-			out := make([]string, 0, len(viewGroups)+1)
+			out := make([]string, 0, len(viewGroups)+2)
 			for _, g := range viewGroups {
 				out = append(out, "grp/"+g.Label)
 			}
-			// The catalog sits last and closed: it is a menu of things to
-			// build, not estate, so it must never push the running VMs
-			// down the pane.
-			return append(out, applianceBranchUID)
+			// The catalog and the toolset sit last and closed: they are
+			// menus of things to build or run, not estate, so they must
+			// never push the running VMs down the pane. They used to be
+			// tabs in the console card as well; listing the same things
+			// twice was the redundancy the operator asked to lose
+			// (2026-09-03), so the console keeps Serial and Screen only.
+			return append(out, applianceBranchUID, toolsBranchUID)
+		}
+		if uid == toolsBranchUID {
+			if len(toolGroups) == 0 {
+				return []string{getKldloadUID}
+			}
+			out := make([]string, 0, len(toolGroups)+1)
+			for _, g := range toolGroups {
+				out = append(out, toolGroupUIDPrefix+g.Name)
+			}
+			// The plain prompt is not one of the tools and gets its own
+			// footer group, so it never sits inside a category it does not
+			// belong to.
+			return append(out, toolGroupUIDPrefix+"Shell")
+		}
+		if name, ok := strings.CutPrefix(uid, toolGroupUIDPrefix); ok {
+			if name == "Shell" {
+				return []string{toolUIDPrefix + "shell"}
+			}
+			for _, g := range toolGroups {
+				if g.Name == name {
+					out := make([]string, 0, len(g.Tools))
+					for _, t := range g.Tools {
+						out = append(out, toolUIDPrefix+t)
+					}
+					return out
+				}
+			}
+			return nil
 		}
 		if uid == applianceBranchUID {
-			out := make([]string, 0, len(Appliances())+2)
-			out = append(out, tierChartUID, selfTestUID)
+			out := make([]string, 0, len(Appliances())+4)
+			out = append(out, tierChartUID, selfTestUID, buildAllUID, destroyAllUID)
 			for _, n := range ApplianceNames() {
 				out = append(out, applianceUIDPrefix+n)
 			}
@@ -854,8 +901,8 @@ func runGUI(rs *Ruleset) {
 		return nil
 	}
 	isBranch := func(uid string) bool {
-		return uid == "" || uid == applianceBranchUID ||
-			strings.HasPrefix(uid, "grp/")
+		return uid == "" || uid == applianceBranchUID || uid == toolsBranchUID ||
+			strings.HasPrefix(uid, "grp/") || strings.HasPrefix(uid, toolGroupUIDPrefix)
 	}
 	tree = widget.NewTree(childUIDs, isBranch,
 		func(branch bool) fyne.CanvasObject {
@@ -871,6 +918,25 @@ func runGUI(rs *Ruleset) {
 				t := o.(*canvas.Text)
 				if uid == applianceBranchUID {
 					t.Text = fmt.Sprintf("Apps  (%d)", len(Appliances()))
+					t.Color = acBrand.at()
+					t.Refresh()
+					return
+				}
+				if uid == toolsBranchUID {
+					n := 0
+					for _, g := range toolGroups {
+						n += len(g.Tools)
+					}
+					t.Text = "kldload"
+					if n > 0 {
+						t.Text = fmt.Sprintf("kldload tools  (%d)", n)
+					}
+					t.Color = acBrand.at()
+					t.Refresh()
+					return
+				}
+				if name, ok := strings.CutPrefix(uid, toolGroupUIDPrefix); ok {
+					t.Text = name
 					t.Color = acBrand.at()
 					t.Refresh()
 					return
@@ -915,15 +981,70 @@ func runGUI(rs *Ruleset) {
 				row.detail.Refresh()
 				return
 			}
-			if uid == selfTestUID {
+			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID {
+				// The three catalog-wide verbs. `open` is a pointer because
+				// the window closures are assigned after the tree exists.
 				row := o.(*vmRow)
-				row.title.Text = "▶ Self-test"
-				row.title.Color = acBrand.at()
-				row.detail.Text = "build and audit every tile — the proof, not the promise"
+				var open *func()
+				switch uid {
+				case selfTestUID:
+					row.title.Text = "▶ Self-test"
+					row.title.Color = acBrand.at()
+					row.detail.Text = "build and audit every tile — the proof, not the promise"
+					open = &openSelfTest
+				case buildAllUID:
+					row.title.Text = "▶ Build all"
+					row.title.Color = acBrand.at()
+					row.detail.Text = "one of everything, kept — tiles that already exist are skipped"
+					open = &openBuildAll
+				default:
+					row.title.Text = "✕ Destroy all"
+					row.title.Color = acGold.at()
+					row.detail.Text = "remove every VM this catalog built (app-* and st-*), nothing else"
+					open = &openDestroyAll
+				}
 				row.detail.Color = theme.Color(theme.ColorNameForeground)
 				row.onTap = func() {
-					if openSelfTest != nil {
-						openSelfTest()
+					if *open != nil {
+						(*open)()
+					}
+				}
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.title.Refresh()
+				row.detail.Refresh()
+				return
+			}
+			if uid == getKldloadUID {
+				// the promotion surface on generic hosts — tier 3, sold not faked
+				row := o.(*vmRow)
+				row.title.Text = "⇗ Get kldload"
+				row.title.Color = acGold.at()
+				row.detail.Text = "kldload hosts grow a tool launcher here — clusters, goldens, demos, one click"
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() {
+					u, _ := url.Parse("https://kldload.com")
+					_ = a.OpenURL(u)
+				}
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.title.Refresh()
+				row.detail.Refresh()
+				return
+			}
+			if name, ok := strings.CutPrefix(uid, toolUIDPrefix); ok {
+				// A tool row: the colour says what it does before you read
+				// it, same language the verb page uses one level down.
+				row := o.(*vmRow)
+				row.title.Text = "▸ " + name
+				row.title.Color = toolAccent(name).at()
+				row.detail.Text = toolDesc[name]
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() {
+					if openTool != nil {
+						openTool(name)
 					}
 				}
 				row.onToggle = func() {}
@@ -1255,12 +1376,12 @@ func runGUI(rs *Ruleset) {
 	// tool drops into a shell afterwards so wizards and follow-ups work.
 	// On a generic host the same menu pitches the OS instead — the
 	// promote-through-the-app strategy, capability-probed as always.
-	ktools := KldloadTools()
 	toolsHost := container.NewStack()
 	var toolCmd *exec.Cmd
 	var toolPty interface{ Close() error }
 	var selectToolsTab func()  // set once the tab bar exists below
 	var selectScreenTab func() // ditto — where a new VM's first boot shows
+	var hideTools func()       // ditto — the tools tab leaves with its tool
 	var showToolTiles func()
 	// Where "← back" goes from a running tool. A tool is almost always reached
 	// THROUGH its verb page (klab → ztest goldens), so returning to the top
@@ -1382,29 +1503,6 @@ func runGUI(rs *Ruleset) {
 	//
 	// Unknown tools fall through to gold rather than a neutral grey: a new
 	// k-tool nobody has classified yet is, at worst, safe to look at.
-	toolAccent := func(name string) accentPair {
-		switch {
-		case strings.HasSuffix(name, "-demo") || name == "bob":
-			return acBrand
-		case name == "kvm-delete":
-			return acRed
-		case name == "kvm-snap" || name == "ksnap" || name == "kexport" ||
-			name == "kimage" || name == "zxplore" || name == "wgx" ||
-			name == "kbe" || name == "kldload-snapshot" || name == "krecovery":
-			return acBlue
-		case name == "kvm-list" || name == "kst" || name == "kst-dashboard" ||
-			name == "kldload-sysdiag" || name == "kldload-doctor" ||
-			name == "kldload-console":
-			return acGold
-		case name == "klab" || name == "kube-cluster" || name == "kspawn" ||
-			name == "kvm-create" || name == "kvm-clone" || name == "kvm-win" ||
-			name == "kube-init":
-			return acGreen
-		case name == "shell":
-			return acOff // a plain prompt: no verb, no colour to earn
-		}
-		return acGold
-	}
 	// The action catalog (the toolAction type and the toolActions table)
 	// lives in actions.go: 157 lines of static data that read as logic
 	// when inlined here.
@@ -1509,78 +1607,26 @@ func runGUI(rs *Ruleset) {
 			container.NewVScroll(container.NewPadded(grid)))}
 		toolsHost.Refresh()
 	}
-	openTool := func(tool string) {
+	openTool = func(tool string) {
 		if _, ok := toolActions[tool]; ok {
 			showToolActions(tool)
+			if selectToolsTab != nil {
+				selectToolsTab()
+			}
 			return
 		}
 		runArgv([]string{tool})
 	}
 
+	// Top level. The launcher is the estate tree's "kldload tools" branch,
+	// so "back" from a tool or its verb page means: the tools tab has
+	// nothing left to show and leaves the console card again.
 	showToolTiles = func() {
-		// Top level — anything launched straight from the grid comes back here.
 		backFromTool = func() { showToolTiles() }
-		if len(ktools) == 0 {
-			// the promotion surface on generic hosts — tier 3, sold not faked
-			get := widget.NewButtonWithIcon(
-				"Get kldload — unlock the estate extras", theme.ComputerIcon(),
-				func() {
-					u, _ := url.Parse("https://kldload.com")
-					_ = a.OpenURL(u)
-				})
-			toolsHost.Objects = []fyne.CanvasObject{container.NewCenter(
-				container.NewVBox(widget.NewLabel(
-					"kldload hosts grow a tool launcher here —\n"+
-						"cluster builds, golden images, demos, one click."), get))}
-			toolsHost.Refresh()
-			return
+		if hideTools != nil {
+			hideTools()
 		}
-		// Sectioned rather than one 27-tile wall. A flat grid meant reading
-		// every label to find anything: the colour language told you what a
-		// tile would DO but not where to look for it. Headings give the eye
-		// somewhere to stop, and each section is small enough to scan.
-		// Tiles are narrower too (250 -> 210) so a section fits on one row
-		// at common widths instead of wrapping into the next heading.
-		sections := make([]fyne.CanvasObject, 0, len(vmKToolGroups)*3+3)
-		addSection := func(name string, names []string) {
-			if len(names) == 0 {
-				return
-			}
-			h := widget.NewLabelWithStyle(name, fyne.TextAlignLeading,
-				fyne.TextStyle{Bold: true})
-			row := make([]fyne.CanvasObject, 0, len(names))
-			for _, t := range names {
-				t := t
-				row = append(row, newTile(toolIcon(t), t, toolDesc[t],
-					toolAccent(t).at(), func() { openTool(t) }))
-			}
-			sections = append(sections,
-				container.NewPadded(h),
-				container.NewGridWrap(tileSize, row...),
-				widget.NewSeparator())
-		}
-		for _, g := range KldloadToolGroups() {
-			addSection(g.Name, g.Tools)
-		}
-		// The plain prompt is not one of the tools and gets its own footer
-		// section, so it never sits inside a category it does not belong to.
-		addSection("Shell", []string{"shell"})
-		// The legend is spelled out because a colour language nobody
-		// explains is decoration. One line, once, at the top.
-		legend := widget.NewLabel(
-			"green builds · blue storage · gold reads · red destroys · purple demos")
-		legend.TextStyle = fyne.TextStyle{Italic: true}
-		head := container.NewVBox(
-			pageHeading("kldload tools", acBrand),
-			widget.NewLabel("clusters, goldens, clones, demos — they run right here"),
-			legend)
-		body := container.NewVBox(sections...)
-		toolsHost.Objects = []fyne.CanvasObject{container.NewBorder(
-			container.NewPadded(head), nil, nil, nil,
-			container.NewVScroll(container.NewPadded(body)))}
-		toolsHost.Refresh()
 	}
-	showToolTiles()
 
 	// conName/conState remember what the panes are actually attached TO,
 	// as opposed to what is merely selected — the refresh loop compares
@@ -2383,6 +2429,73 @@ func runGUI(rs *Ruleset) {
 			container.NewHBox(run, keep), nil, nil, nil, sc))
 		stw.Resize(fyne.NewSize(720, 560))
 		stw.Show()
+	}
+	// batchLogWindow is the shell the other two catalog-wide verbs share: the
+	// self-test window minus its checkbox. job returns the line to append
+	// when it is done; auto presses the button on open, for a verb that was
+	// already confirmed in a dialog and should not ask twice.
+	batchLogWindow := func(title, intro, button string, auto bool,
+		job func(log func(string)) string) {
+		bw := fyne.CurrentApp().NewWindow(title)
+		out := widget.NewLabel(intro)
+		out.Wrapping = fyne.TextWrapWord
+		out.TextStyle = fyne.TextStyle{Monospace: true}
+		sc := container.NewVScroll(out)
+		var run *widget.Button
+		run = widget.NewButton(button, func() {
+			run.Disable()
+			go func() {
+				sum := job(func(l string) {
+					fyne.Do(func() {
+						out.SetText(out.Text + l + "\n")
+						sc.ScrollToBottom()
+					})
+				})
+				fyne.Do(func() {
+					out.SetText(out.Text + "\n" + sum + "\n")
+					run.Enable()
+				})
+			}()
+		})
+		bw.SetContent(container.NewBorder(container.NewHBox(run), nil, nil, nil, sc))
+		bw.Resize(fyne.NewSize(720, 560))
+		bw.Show()
+		if auto {
+			run.OnTapped()
+		}
+	}
+	openBuildAll = func() {
+		batchLogWindow("Build every appliance",
+			"Builds every catalog tile as a kept VM named app-<tile>. Tiles\n"+
+				"whose VM already exists are skipped, so this is also \"build\n"+
+				"whatever is missing\". Expect ~10-20 min per ZFS tile.\n",
+			"Build all", false, func(log func(string)) string {
+				built, failed := BuildAllAppliances(log)
+				return fmt.Sprintf("done — %d built, %d failed", built, failed)
+			})
+	}
+	// Destroy-all confirms with the exact list it will act on — the same
+	// call that then does the acting, so the dialog cannot promise one set
+	// of VMs and remove another.
+	openDestroyAll = func() {
+		vms := ExistingApplianceVMs()
+		if len(vms) == 0 {
+			dialog.ShowInformation("Destroy all",
+				"nothing to remove — no app-* or st-* VM exists", w)
+			return
+		}
+		dialog.ShowConfirm("Destroy every appliance VM",
+			"Removes, with their disks, data disks, mesh and inventory rows:\n\n  "+
+				strings.Join(vms, "\n  ")+"\n\nNo other VM is touched. There is no undo.",
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				batchLogWindow("Destroy every appliance", "", "Destroy all", true,
+					func(log func(string)) string {
+						return fmt.Sprintf("done — %d removed", DestroyAllAppliances(log))
+					})
+			}, w)
 	}
 
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
@@ -3460,79 +3573,48 @@ func runGUI(rs *Ruleset) {
 	left := gap(card(container.NewBorder(
 		container.NewVBox(estateHead, search, batchBar), nil, nil, nil,
 		tree)))
-	// The build surfaces are tabs in the console card, not menu items,
-	// because the tile grid the kldload tab already uses reads as a menu
-	// you can see: every way to make a VM is one glance, and a tile opens
-	// the dialog that collects its details. Same layout in all three tabs
-	// so the pane behaves identically wherever you are.
-	tileGrid := func(tiles ...fyne.CanvasObject) fyne.CanvasObject {
-		return container.NewVScroll(container.NewPadded(
-			container.NewGridWrap(tileSize, tiles...)))
-	}
-	vmsHost := container.NewBorder(
-		container.NewCenter(pageHeading("NEW VM", acBrand)), nil, nil, nil,
-		// Same colour language as the tools grid: the three that end with
-		// a new machine are green; Make Golden is blue because it seals
-		// storage rather than creating a VM.
-		tileGrid(
-			newTile(theme.ContentAddIcon(), "New VM",
-				"cloud image, or boot an installer ISO",
-				acGreen.at(), newVMDialog),
-			// ONE tile, not two. "EZ Fleet" and "Clone" were the same job --
-			// stamp out machines -- split by whether the golden existed yet,
-			// which is a detail of the source, not a different action. The
-			// dialog's source list now covers both (operator, 2026-08-15:
-			// "I guess that's 2 tiles for the same job?").
-			newTile(theme.ContentCopyIcon(), "Clone / Fleet",
-				"stamp N machines from a golden — or build the golden first",
-				acGreen.at(), cloneAny),
-			newTile(theme.ConfirmIcon(), "Make Golden",
-				"seal the selected VM into a clone template",
-				acBlue.at(), goldenAct),
-		))
-
-	// One tile per catalog entry (appliances.go). The catalog is data, so
-	// this grid grows on its own as entries are added — nothing here to
-	// edit per app.
-	appTiles := make([]fyne.CanvasObject, 0, len(Appliances()))
-	for _, ap := range Appliances() {
-		ap := ap // the tile closure outlives the loop iteration
-		appTiles = append(appTiles, newTile(theme.StorageIcon(), ap.Name,
-			ap.Summary, acGreen.at(), func() { applianceDialog(ap.Name) }))
-	}
-	appliancesHost := container.NewBorder(
-		container.NewCenter(pageHeading("APPS", acGreen)), nil, nil, nil,
-		tileGrid(appTiles...))
-
-	// The tab order is the order of the work: look at the machine you have
-	// (Serial, Screen), then make one — a bare VM, or an Apps entry if
-	// somebody already solved that problem — and the kldload toolset last,
-	// since it is the only tab that isn't there on every host.
+	// The console card carries two tabs: Screen, then Serial — the two ways
+	// to look at the machine you have, the one that lands first in front.
+	// Screen leads because it is where the work happens (it shows the same
+	// console plus everything graphical); Serial stays for the guest Screen
+	// cannot reach — no video, or a broken X. Building and the toolset live in
+	// the estate tree (the Apps and kldload tools branches) and the Build
+	// menu; until 2026-09-03 they were also VM, Apps and kldload tabs here,
+	// which listed the same things twice (operator: "redundant").
 	//
-	// VM sits before Apps because it is the broader door: every Apps entry
-	// is a VM with the form pre-filled, so the general case should not be
-	// reached past the special one (operator, 2026-08-15).
+	// The kldload tab still exists, but only while a tool is running or its
+	// verb page is up: it is appended when a tool opens and removed when
+	// the tool's "back" leaves it, so a session started from the tree stays
+	// one click away while it runs, and the bar reads Screen · Serial the
+	// rest of the time. Re-launching from the tree would restart the tool
+	// (runArgv kills the previous one), which is why the tab has to exist
+	// while one is live.
 	//
 	// The tabs share the console card; ⛶ toggles the card full-window (and
 	// back) for real console work.
 	screenTab := container.NewTabItem(tabLabel("Screen"), vncHost)
 	tabs := container.NewAppTabs(
-		container.NewTabItem(tabLabel("Serial"), consoleHost),
 		screenTab,
-		container.NewTabItem(tabLabel("VM"), vmsHost),
-		container.NewTabItem(tabLabel("Apps"), appliancesHost))
-	// this one exists on every host too, but says different things: the
-	// tools launcher on kldload, the get-kldload pitch elsewhere
+		container.NewTabItem(tabLabel("Serial"), consoleHost))
 	toolsTab := container.NewTabItem(tabLabel("kldload"), toolsHost)
-	tabs.Append(toolsTab)
+	toolsOpen := false
 	// Select by tab, never by index: the index form silently pointed at
 	// whatever had moved into slot 2 the first time these were reordered.
-	selectToolsTab = func() { tabs.Select(toolsTab) }
+	selectToolsTab = func() {
+		if !toolsOpen {
+			tabs.Append(toolsTab)
+			toolsOpen = true
+		}
+		tabs.Select(toolsTab)
+	}
+	hideTools = func() {
+		if toolsOpen {
+			tabs.Remove(toolsTab)
+			toolsOpen = false
+		}
+		tabs.Select(screenTab)
+	}
 	selectScreenTab = func() { tabs.Select(screenTab) }
-	// Screen, not Serial, is where the work happens: it shows the same
-	// console plus everything graphical, so it is the right landing tab.
-	// Serial stays for the case Screen cannot cover — a guest with no
-	// video, or one whose X is broken, where it is the only way in.
 	tabs.Select(screenTab)
 	var mainContent fyne.CanvasObject
 	consoleCard := cardTight(container.NewBorder(nil, nil, nil, nil, tabs))
@@ -3732,4 +3814,31 @@ func runGUI(rs *Ruleset) {
 		fyne.Do(applyPalette)
 	}()
 	w.ShowAndRun()
+}
+
+// toolAccent is the colour language of the tool launcher: green builds,
+// blue is storage, gold reads, red destroys, purple demos. Package level so
+// the estate tree can paint a tool row before the tools pane exists.
+func toolAccent(name string) accentPair {
+	switch {
+	case strings.HasSuffix(name, "-demo") || name == "bob":
+		return acBrand
+	case name == "kvm-delete":
+		return acRed
+	case name == "kvm-snap" || name == "ksnap" || name == "kexport" ||
+		name == "kimage" || name == "zxplore" || name == "wgx" ||
+		name == "kbe" || name == "kldload-snapshot" || name == "krecovery":
+		return acBlue
+	case name == "kvm-list" || name == "kst" || name == "kst-dashboard" ||
+		name == "kldload-sysdiag" || name == "kldload-doctor" ||
+		name == "kldload-console":
+		return acGold
+	case name == "klab" || name == "kube-cluster" || name == "kspawn" ||
+		name == "kvm-create" || name == "kvm-clone" || name == "kvm-win" ||
+		name == "kube-init":
+		return acGreen
+	case name == "shell":
+		return acOff // a plain prompt: no verb, no colour to earn
+	}
+	return acGold
 }

@@ -1,6 +1,6 @@
 .\" vmxplore.1 — manual page for vmxplore, the KVM console.
 .\" Format: mdoc(7). Render check: mandoc -Tlint docs/vmxplore.1
-.Dd August 9, 2026
+.Dd September 3, 2026
 .Dt VMXPLORE 1
 .Os
 .Sh NAME
@@ -24,6 +24,15 @@
 .Nm
 .Fl -appliance-script Ar name
 .Op Ar KEY Ns = Ns Ar value ...
+.Nm
+.Fl -selftest
+.Op Fl -only Ar name
+.Op Fl -keep
+.Nm
+.Fl -build-all
+.Nm
+.Fl -destroy-all
+.Op Fl -yes
 .Sh DESCRIPTION
 .Nm
 is a console for the KVM hypervisor your kernel already has.
@@ -123,6 +132,32 @@ The result is ordinary
 with no dependency on
 .Nm ,
 libvirt or ZFS.
+.It Fl -selftest
+Build every catalog entry as a real VM, audit each outcome, tear down the
+passes and keep the failures, then exit with the number of failed entries.
+.Fl -only Ar name
+restricts it to one entry;
+.Fl -keep
+keeps the passing VMs too.
+See
+.Sx Build, audit and destroy the whole catalog .
+.It Fl -build-all
+Build every catalog entry as a kept VM named
+.Ql app- Ns Ar tile
+and exit with the number that failed.
+Entries whose VM already exists are skipped, so a second run builds only
+what is missing.
+.It Fl -destroy-all
+Remove every VM this tool built \(em the
+.Ql app-*
+builds and any
+.Ql st-*
+self-test leftover \(em with their disks, data disks, mesh and inventory
+rows.
+Without
+.Fl -yes
+it prints the list it would remove and exits 2.
+A VM it did not build is never touched.
 .It Fl -version
 Print the version and exit.
 .El
@@ -179,16 +214,15 @@ bad machine cannot stop a run of forty.
 The search box filters the tree as you type; branches with no surviving
 member disappear with their members.
 .Sh THE CONSOLE
-The right pane carries five tabs, in the order of the work — look at the
-machine you have, then make one, with the substrate's toolset last.
-.Ss Serial
-A real terminal attached to
-.Xr virsh 1
-.Cm console
-for the selected domain, inside the window.
-Boot messages, a login prompt, a headless tty, copy and paste.
-It follows the selection automatically: attaching when a running domain is
-picked, swapping when the selection changes, detaching when it stops.
+The right pane carries two tabs, Screen and Serial: the two ways to look at
+the machine you have, with Screen in front and selected by default.
+Building lives in the estate tree's
+.Sy Apps
+branch and the
+.Sy Build
+menu; the substrate's toolset is the tree's
+.Sy kldload tools
+branch, and a third tab appears while one of its tools is running.
 .Ss Screen
 The guest's framebuffer, rendered by a from-scratch RFB (VNC) client
 directly into the window.
@@ -243,24 +277,32 @@ with a driver loaded can and a guest sitting in legacy VGA text mode cannot.
 Where either is missing the framebuffer keeps its own size and is
 letterboxed to fit, exactly as before: this improves the view, it is never
 required for one.
+.Ss Serial
+A real terminal attached to
+.Xr virsh 1
+.Cm console
+for the selected domain, inside the window.
+Boot messages, a login prompt, a headless tty, copy and paste.
+It follows the selection automatically: attaching when a running domain is
+picked, swapping when the selection changes, detaching when it stops.
 .Ss Apps
-The catalog: a self-hosted application delivered as a configured machine.
+The catalog, a branch of the estate tree: a self-hosted application
+delivered as a configured machine.
 See
 .Sx APPS .
-.Ss VM
-The builders: New VM, Application, EZ Fleet, Clone and Make Golden, as a
-grid of tiles.
-See
-.Sx BUILDING MACHINES .
-.Ss kldload
-On a kldload host, a launcher for the substrate's own tools, each running
-in an embedded terminal in the pane.
-Tools are coloured by what they do: green builds, blue is storage, gold
-reads, red destroys, purple is a guided demo.
-Selecting a tool opens a second page of its verbs, curated from that
-tool's real usage banner rather than guessed.
+.Ss kldload tools
+On a kldload host, the last branch of the estate tree lists the
+substrate's own tools by group, coloured by what they do: green builds,
+blue is storage, gold reads, red destroys, purple is a guided demo.
+Selecting a tool opens its verbs, curated from that tool's real usage
+banner rather than guessed, or runs it in an embedded terminal; either
+one appears as a
+.Sy kldload
+tab beside Screen and Serial for as long as it is up, and the tab leaves
+with it.
 .Pp
-On any other host the tab explains what a kldload substrate adds.
+On any other host the branch holds one row that says what a kldload
+substrate adds.
 .Ss Console controls
 The console has no button bar.
 Both of its controls are keys, because both used to be icons in the pane's
@@ -620,6 +662,177 @@ The result has no dependency on
 libvirt or ZFS: it is an ordinary script an upstream project could publish
 as its own install page, and it lets you read exactly what the button is
 about to run.
+.Ss The substrate
+Every recipe is prepended with a fixed prologue that gives it, inside the
+guest, a family-detecting package installer that verifies the artefact
+rather than the exit code, a pool built on the appliance's second
+.Pq blank
+disk, dataset helpers that apply per-workload tuning, a firewall zone
+scoped to a source, service enable-and-verify, and counted outcome checks.
+A recipe therefore installs and configures identically on an
+.Xr rpm 8
+or
+.Xr apt 8
+guest and ends by proving the service answers.
+.Ss What works where
+On a
+.Nm kldload
+host an appliance is born enrolled: it joins its own WireGuard management
+mesh, is issued a TLS leaf from the estate certificate authority, and is
+registered in the Ansible inventory \(em all reachable over the mesh while
+the service itself stays on the ordinary LAN address.
+On a plain
+.Xr kvm 4
+host the same tile still builds, and its tuned datasets are still real
+.Pq the guest installs ZFS and builds its own pool ,
+but the disks are
+.Xr qcow2 5
+rather than zvols \(em no instant clones, no whole-VM rollback \(em and there
+is no estate to enroll in.
+The catalog colours each tile green, amber or grey for this host and, in
+the terminal listing, prints a
+.Ql fit\&:
+line saying the same.
+.Ss The catalog
+Each tile builds a VM whose root disk is a clone off a cloud image and
+whose second disk becomes an in-guest ZFS pool.
+Hardware tiles pass USB devices through automatically.
+.Bl -tag -width Ds
+.It Sy Plex on ZFS Pq :32400
+Plex behind the dataset layout from the Plex-on-ZFS recipe: one dataset
+.Em per title
+under
+.Pa media/movies
+and
+.Pa media/tv
+.Pq compression off, 1M records ,
+an 8K-record dataset for the SQLite library, and a throwaway
+never-snapshotted transcode dataset.
+.Ql add-movie \(dqThe Matrix\(dq 1999
+creates a title's dataset so it can be snapshotted, quota'd or
+.Xr zfs 8 Ns -sent
+on its own \(em replicating one film, not four hundred.
+.Dl vmx --appliance \(dqPlex on ZFS\(dq --vm plex --set PLEX_MEDIA_DIR=/srv/media
+.It Sy Jellyfin on ZFS Pq :8096
+The free-software media server on the same per-title layout, family-aware
+.Pq RPM Fusion on Fedora, the pinned-key upstream repo on Debian ,
+with a quota'd never-snapshotted cache and, when the admin fields are set,
+a headless first-run wizard so the VM comes up already configured.
+.Dl vmx --appliance \(dqJellyfin on ZFS\(dq --vm jelly \(rs
+.Dl "    --set JF_ADMIN_USER=admin --set JF_ADMIN_PASS=secret123"
+.It Sy Seedbox Pq :8080
+qBittorrent on a landing dataset that feeds the same
+.Pa media
+containers the media servers read.
+Supply the four VPN fields and all outbound traffic is forced through
+.Ql wg0
+behind an
+.Xr nft 8
+kill switch whose output policy is
+.Em drop :
+if the tunnel falls, torrents stop rather than leak.
+The management mesh is exempt, so Ansible still reaches the VM.
+.Dl vmx --appliance Seedbox --vm seed \(rs
+.Dl "    --set SB_VPN_PRIVKEY=... --set SB_VPN_ENDPOINT=vpn.example:51820 \(rs"
+.Dl "    --set SB_VPN_ADDRESS=10.2.0.2/32 --set SB_VPN_PEER_PUB=..."
+.It Sy Icecast Stations Pq :8001+
+A rack of independent Icecast instances \(em one
+.Xr systemd 1
+unit
+.Pq icecast@N ,
+one port
+.Pq 8000+N ,
+one dataset per station \(em so restarting station 7 touches one stream.
+.Ql add-station 31 jazz-after-dark
+stamps out the next one.
+.Dl vmx --appliance \(dqIcecast Stations\(dq --vm radio --set IC_STATIONS=8
+.It Sy SDR Station Pq :8073
+OpenWebRX+ waterfall in the browser and a SoapyRemote server on :55132 so
+SDR++ or GQRX on the LAN opens this box's radio as if local.
+IQ captures land on a compression-off, quota'd dataset.
+A HackRF or RTL-SDR plugged into the host is passed through automatically;
+the tile runs on Debian 12, where OpenWebRX+'s Python dependency resolves.
+.Dl vmx --appliance \(dqSDR Station\(dq --vm sdr
+.Dl "# then: hackrf_transfer -r /srv/captures/fm.iq -f 99500000 -s 10000000"
+.It Sy Tvheadend DVR Pq :9981
+Over-the-air
+.Pq ATSC/DVB-T
+and satellite
+.Pq DVB-S2
+in one tile: recordings on a quota'd 1M dataset, a never-snapshotted
+timeshift dataset, tuner firmware pulled in automatically.
+A USB tuner is passed through; a PCI capture card needs host-side
+.Xr vfio 4
+first, which the tile's notes describe rather than attempt.
+.Dl vmx --appliance \(dqTvheadend DVR\(dq --vm tv --set TVH_REC_QUOTA=400G
+.It Sy Web Stack Pq :80
+nginx reverse proxy in front of PostgreSQL and Redis
+.Pq valkey where the distro ships it ,
+the database on an 8K-record dataset matching its page size, passwords
+bound through
+.Xr psql 1 Ns 's
+.Ql :\(aqvar\(aq
+so they are never SQL text, and \(em with a public name and email \(em an
+automatic HTTPS certificate.
+.Dl vmx --appliance \(dqWeb Stack\(dq --vm app \(rs
+.Dl "    --set WS_DB_NAME=appdb --set WS_DB_USER=appuser"
+.It Sy AdGuard Home Pq :3000
+Network-wide DNS filtering; point your router's DNS at the VM.
+The only tile that needs no pool, so it is
+.Sy recommended
+on a bare
+.Xr kvm 4
+host.
+.Dl vmx --appliance \(dqAdGuard Home\(dq --vm dns
+.It Sy Syncthing Pq :8384
+Continuous file sync with each shared folder on its own dataset \(em
+Syncthing propagates deletions, so a snapshot turns a fat-fingered
+.Xr rm 1
+on one machine into a five-second rollback rather than a restore.
+.Ql add-share photos
+creates a snapshot-isolated dataset for a new folder.
+.Dl vmx --appliance Syncthing --vm sync
+.It Sy WriteFreely Desktop Pq :80
+A minimalist federated blog whose VM boots straight into the editor,
+signed in, in the Screen tab.
+.Dl vmx --appliance \(dqWriteFreely Desktop\(dq --vm blog
+.El
+.Ss Build, audit and destroy the whole catalog
+.Fl -selftest
+deploys every tile as a real VM, audits the outcome \(em the recipe's own
+in-guest verdict, the pool on the data disk, the service on its port, a
+live mesh handshake, the estate certificate, the inventory row \(em then
+tears down the passes and keeps the failures, with each build log under
+.Pa /tmp/selftest-<vm>.log .
+The exit status is the number of tiles that failed.
+It is the same engine the
+.Sy Self-test
+row in the catalog runs, and the
+.Sy Build & audit
+button drives.
+.Dl vmx --selftest
+.Dl vmx --selftest --only \(dqPlex on ZFS\(dq --keep
+.Pp
+.Fl -build-all
+is the kept form: one of everything, named
+.Ql app- Ns Ar tile ,
+skipping tiles that already exist.
+.Fl -destroy-all
+is its inverse and lists what it will remove before it needs
+.Fl -yes .
+Both are rows in the catalog too
+.Pq Sy Build all , Sy Destroy all ,
+the latter behind a confirmation that names every VM it is about to remove.
+.Dl vmx --build-all
+.Dl vmx --destroy-all
+.Dl vmx --destroy-all --yes
+.Pp
+Deleting an appliance by hand, from the estate list or the
+.Sy delete
+verb, also takes down its management mesh and drops its inventory row.
+It did not always: a mass delete of test appliances left every one of
+their meshes behind as an inactive member in
+.Xr wgx 1 .
 .Sh REMOTE
 .Fl -connect
 points the whole tool at another hypervisor.
@@ -807,6 +1020,15 @@ Downloaded cloud images.
 .El
 .Sh EXIT STATUS
 .Ex -std
+.Fl -selftest
+and
+.Fl -build-all
+exit with the number of catalog entries that failed, so 0 is a clean
+catalog.
+.Fl -destroy-all
+without
+.Fl -yes
+exits 2 after printing what it would remove.
 .Sh EXAMPLES
 .Ss Everyday
 Print the estate once, for a script or a cron check:
@@ -825,13 +1047,21 @@ List the catalog with every entry's fields, then build one and wait for
 its URL:
 .Bd -literal -offset indent
 vmx --appliances
-vmx --appliance "WriteFreely" --vm blog \e
+vmx --appliance "WriteFreely Desktop" --vm blog \e
     WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
 .Ed
 .Pp
 Read the installer an entry would run, without building anything:
 .Bd -literal -offset indent
-vmx --appliance-script "WriteFreely" > writefreely-install.sh
+vmx --appliance-script "WriteFreely Desktop" > writefreely-install.sh
+.Ed
+.Pp
+Prove the whole catalog, keep one of everything, then clear it all away:
+.Bd -literal -offset indent
+vmx --selftest
+vmx --build-all
+vmx --destroy-all          # lists app-* and st-* VMs, exits 2
+vmx --destroy-all --yes
 .Ed
 .Ss Post-install scripts
 Anything in the post-install box is written into the guest and run once,

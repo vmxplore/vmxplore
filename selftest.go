@@ -276,3 +276,121 @@ func SelfTestAppliances(only string, keep bool, log func(string)) int {
 	log(fmt.Sprintf("  %d tile(s), %d failed", len(results), failed))
 	return failed
 }
+
+// applianceVMName is the persistent-build name for a tile: the same short,
+// deterministic slug the self-test uses, so "build all" and a later
+// "destroy all" agree on what exists. "app-" not "st-": these are meant to
+// stay, and the estate list should not read them as test scaffolding.
+func applianceVMName(appName string) string {
+	s := applianceSlug(appName)
+	if len(s) > 10 {
+		s = s[:10]
+	}
+	return strings.TrimRight("app-"+s, "-")
+}
+
+// BuildAllAppliances builds every tile as a KEPT VM (no audit, no teardown) —
+// the "give me one of everything" button. Already-present VMs are left alone,
+// so it doubles as "build whatever is missing". Returns built and failed
+// counts.
+func BuildAllAppliances(log func(string)) (built, failed int) {
+	for _, a := range Appliances() {
+		vm := applianceVMName(a.Name)
+		if domainExists(vm) {
+			log(vm + " already exists — skipped")
+			continue
+		}
+		log("")
+		log("building " + a.Name + " → " + vm)
+		spec, err := a.Spec(vm, "admin", "", "", a.Defaults())
+		if err != nil {
+			log("  spec: " + err.Error())
+			failed++
+			continue
+		}
+		if KldloadTier() == "kldload" {
+			if k := hostOpsPubkey(); k != "" {
+				spec.RootSSHKeys = append(spec.RootSSHKeys, k)
+			}
+		}
+		parent := zfsParentForBuild()
+		if err := BuildNewVM(spec, parent, log); err != nil {
+			log("  build FAILED: " + err.Error())
+			failed++
+			continue
+		}
+		AttachUSBDevices(vm, a.USB, log)
+		if _, err := WaitAppliance(vm, a.Port, log); err != nil {
+			log("  came up but did not answer: " + err.Error())
+			failed++
+			continue
+		}
+		EnrollAppliance(vm, applianceSlug(a.Name), log)
+		log("  " + a.Name + " ready on " + a.LandsOn)
+		built++
+	}
+	log("")
+	log(fmt.Sprintf("build-all: %d built, %d failed", built, failed))
+	return built, failed
+}
+
+// ExistingApplianceVMs lists the VMs this tool built that libvirt still knows
+// — the kept "app-" builds and any "st-" self-test leftover — in catalog
+// order. It is what destroy-all shows before it acts and then acts on, so the
+// confirmation and the deed cannot disagree.
+func ExistingApplianceVMs() []string {
+	var out []string
+	for _, a := range Appliances() {
+		for _, vm := range []string{applianceVMName(a.Name), selfTestVM(a.Name)} {
+			if domainExists(vm) {
+				out = append(out, vm)
+			}
+		}
+	}
+	return out
+}
+
+// DestroyAllAppliances tears down every VM this tool builds — both the kept
+// "app-" builds AND the "st-" self-test leftovers, because "destroy all" that
+// left half the scaffolding behind would be a lie. Estate VMs (klab-*,
+// kldload-*, anything not matching our prefixes) are never touched: the list
+// comes from the catalog's own names, not from a prefix scan of the estate.
+func DestroyAllAppliances(log func(string)) int {
+	vms := ExistingApplianceVMs()
+	for _, vm := range vms {
+		log("destroying " + vm)
+		destroyApplianceVM(vm)
+	}
+	log(fmt.Sprintf("destroy-all: %d removed", len(vms)))
+	return len(vms)
+}
+
+// domainExists is true when libvirt knows a domain by this name, running or
+// not — the guard both build-all (skip) and destroy-all (act) turn on.
+func domainExists(vm string) bool {
+	out, err := sudoRun("virsh", "domstate", vm)
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// zfsParentForBuild resolves the pool parent for new VM disks, or "" for the
+// qcow2 fallback — the same probe the CLI and GUI build paths do, factored
+// out so the batch builders share it.
+func zfsParentForBuild() string {
+	lv, err := ConnectSystem()
+	if err != nil {
+		return ""
+	}
+	defer lv.Close()
+	doms, err := lv.Estate()
+	if err != nil || !HasZFS() {
+		return ""
+	}
+	dss, _ := ListDatasets()
+	snaps, _ := ListSnapshots()
+	rs, _ := LoadRules("")
+	var rows []Row
+	for _, g := range BuildEstate(doms, dss, snaps, rs, LoadAnnotations()) {
+		rows = append(rows, g.Rows...)
+	}
+	return ZFSVMParent(rows)
+}

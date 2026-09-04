@@ -773,6 +773,7 @@ var syncthing = Appliance{
 		"port 8384 can add folders to it.",
 
 	Fields: []ApplianceField{
+		{Key: "ST_POOL", Label: "pool name", Default: "tank", Required: true},
 		{Key: "ST_DATA_DIR", Label: "shared folder directory",
 			Placeholder: "where synced folders live",
 			Default:     "/srv/sync", Required: true},
@@ -787,11 +788,35 @@ var syncthing = Appliance{
 
 const syncthingScript = `
 APP_TAG=syncthing
-# The sync tree is other machines' data — snapshots here are what turn an
-# accidental deletion propagated by sync into a non-event.
-APP_POOL=tank
+APP_POOL="$ST_POOL"
 app_pool_init
-app_dataset syncthing /var/lib/syncthing
+# The config DB is small and precious; the SYNCED DATA is the reason ZFS is
+# here at all. Syncthing propagates deletions by design, so a fat-fingered
+# rm on one machine reaches every machine — a snapshot is what makes that a
+# five-second rollback instead of a restore-from-backup. sync/ is a
+# canmount=off container: add-share gives each shared folder its own dataset,
+# so one folder rolls back, sends or quotas without touching the others.
+app_dataset syncthing /var/lib/syncthing recordsize=16K
+app_dataset sync      /srv/sync          canmount=off
+mkdir -p /srv/sync
+
+# add-share <name> — one dataset per shared folder, the per-title model.
+cat >/usr/local/bin/add-share <<'ADDSHARE'
+#!/usr/bin/env bash
+# add-share <name> — a snapshot-isolated dataset for one Syncthing folder.
+set -Eeuo pipefail
+NAME="${1:-}"
+[ -n "$NAME" ] || { echo "usage: add-share <name>" >&2; exit 2; }
+SLUG=$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' - | tr -cd 'a-z0-9-')
+[ -n "$SLUG" ] || { echo "name produced an empty slug" >&2; exit 2; }
+DS="__POOL__/sync/$SLUG"; MNT="/srv/sync/$SLUG"
+if zfs list "$DS" >/dev/null 2>&1; then echo "already exists: $DS"; exit 0; fi
+zfs create -o mountpoint="$MNT" "$DS"
+chown syncthing:syncthing "$MNT"; chmod 0770 "$MNT"
+echo "created $DS -> $MNT — add it as a folder in the Syncthing UI"
+ADDSHARE
+sed -i "s|__POOL__|${APP_POOL:-tank}|g" /usr/local/bin/add-share
+chmod 0755 /usr/local/bin/add-share
 ST_KEY_URL='https://syncthing.net/release-key.gpg'
 ST_KEY_FPR='FBA2E162F2F44657B38F0309E5665F9BD5970C47'
 

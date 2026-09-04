@@ -54,6 +54,9 @@ const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--ve
        vmx --appliances
        vmx --appliance NAME --vm VMNAME [KEY=VALUE ...]
        vmx --appliance-script NAME [KEY=VALUE ...]
+       vmx --selftest [--only NAME] [--keep]
+       vmx --build-all
+       vmx --destroy-all [--yes]
 
   (no flags)   native GUI — the estate frame (list · console · details);
                static/terminal-only builds start the TUI instead
@@ -87,11 +90,27 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           The output is a standalone bash installer: it needs
                           no vmxplore, no libvirt and no kldload, so it also
                           works by hand on any fresh cloud VM.
+  --selftest              build EVERY tile as a real VM, audit each outcome
+                          (recipe verdict, pool, port, mesh, cert, inventory),
+                          tear down the passes and keep the failures under
+                          /tmp/selftest-<vm>.log. Exit status is the number
+                          of failed tiles.
+                            --only N      one tile instead of the catalog
+                            --keep        keep passing VMs too
+  --build-all             build every tile as a kept VM named app-<tile>;
+                          tiles whose VM already exists are skipped, so it is
+                          also "build whatever is missing". Exit status is
+                          the number of failed tiles.
+  --destroy-all           remove every VM this tool built — the app-* builds
+                          and any st-* self-test leftover — with their disks,
+                          data disks, mesh and inventory rows. Lists them and
+                          exits 2 unless --yes is given. Never touches a VM
+                          it did not build.
 
-    vmx --appliance WriteFreely --vm blog \
+    vmx --appliance "WriteFreely Desktop" --vm blog \
         WF_SITE_NAME='My Blog' WF_ADMIN_USER=matt
 
-    vmx --appliance-script WriteFreely WF_DOMAIN=blog.example.com
+    vmx --appliance-script "WriteFreely Desktop" WF_DOMAIN=blog.example.com
 
 Environment:
   VMX_SSH_USER   user for the TUI's ssh-to-guest verb
@@ -162,6 +181,37 @@ func main() {
 			}
 			os.Exit(SelfTestAppliances(only, keep,
 				func(l string) { fmt.Fprintln(os.Stderr, l) }))
+		case "--build-all":
+			// One of everything, kept. Same exit convention as --selftest:
+			// the count of tiles that did not come up.
+			_, failed := BuildAllAppliances(
+				func(l string) { fmt.Fprintln(os.Stderr, l) })
+			os.Exit(failed)
+		case "--destroy-all":
+			// The one verb here with no undo, so it shows its list and
+			// stops unless told otherwise. Exit 2 is "usage": the operator
+			// asked for a deletion without confirming which one.
+			yes := false
+			for j := i + 1; j < len(args); j++ {
+				if args[j] == "--yes" {
+					yes = true
+				}
+			}
+			vms := ExistingApplianceVMs()
+			if len(vms) == 0 {
+				fmt.Fprintln(os.Stderr, "destroy-all: nothing to remove — no app-* or st-* VM exists")
+				return
+			}
+			if !yes {
+				fmt.Fprintln(os.Stderr, "destroy-all would remove:")
+				for _, v := range vms {
+					fmt.Fprintln(os.Stderr, "  "+v)
+				}
+				fmt.Fprintln(os.Stderr, "re-run with --yes to proceed")
+				os.Exit(2)
+			}
+			DestroyAllAppliances(func(l string) { fmt.Fprintln(os.Stderr, l) })
+			return
 		case "--appliances":
 			PrintAppliances(os.Stdout)
 			return
