@@ -654,6 +654,11 @@ var applianceCatalog = []Appliance{
 			if err := checkPoolName(v["WS_POOL"]); err != nil {
 				return err
 			}
+			// The address goes straight to certbot; a typo'd one costs an
+			// ACME round trip and a cryptic failure inside the guest.
+			if e := v["WS_TLS_EMAIL"]; e != "" && !applianceEmailRE.MatchString(e) {
+				return fmt.Errorf("certificate email %q does not look like an address", e)
+			}
 			port, err := strconv.Atoi(v["WS_UPSTREAM_PORT"])
 			if err != nil || port < 1024 || port > 65535 {
 				return fmt.Errorf("upstream port %q must be a number between 1024 and 65535", v["WS_UPSTREAM_PORT"])
