@@ -144,6 +144,24 @@ func main() {
 			target = ParseTarget(args[i])
 		case "--setup":
 			os.Exit(RunSetup())
+		case "--selftest":
+			// The build-and-audit-everything button, terminal form. Deploys
+			// every catalog tile for real and verifies outcomes; exit status
+			// is the number of failed tiles.
+			keep, only := false, ""
+			for j := i + 1; j < len(args); j++ {
+				switch args[j] {
+				case "--keep":
+					keep = true
+				case "--only":
+					if j+1 < len(args) {
+						j++
+						only = args[j]
+					}
+				}
+			}
+			os.Exit(SelfTestAppliances(only, keep,
+				func(l string) { fmt.Fprintln(os.Stderr, l) }))
 		case "--appliances":
 			PrintAppliances(os.Stdout)
 			return

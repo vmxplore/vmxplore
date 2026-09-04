@@ -674,7 +674,7 @@ var applianceCatalog = []Appliance{
 	// subject.
 	writeFreelyDesktop,
 	jellyfin, plex, seedbox, icecast, sdrStation, tvheadend,
-	gitea, adguardHome, syncthing,
+	adguardHome, syncthing,
 }
 
 // ─── WriteFreely ─────────────────────────────────────────────────────

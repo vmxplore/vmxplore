@@ -450,10 +450,16 @@ func (a Appliance) Availability(h HostCaps) Availability {
 		return Availability{"unavailable", "no KVM on this host"}
 	}
 	if a.Needs == NeedsZFS && !h.ZFS {
+		// Since the substrate learned to install ZFS inside the guest, a
+		// pool-less HOST no longer costs the recipe its datasets — the guest
+		// builds its own pool on the data disk either way. What a bare KVM
+		// host loses is the host-side story: qcow2 instead of zvols (no
+		// instant clones, no whole-VM snapshots) and no estate to enroll in.
 		return Availability{"degraded",
-			"no ZFS pool on the host — the appliance still installs, but its " +
-				"datasets become plain directories: no per-workload recordsize, " +
-				"no cache quota, no snapshot to roll back to"}
+			"no ZFS on the host — the appliance and its tuned datasets still " +
+				"build (the guest carries its own pool), but the VM sits on " +
+				"qcow2: no instant clones, no whole-VM snapshots, no estate " +
+				"enrollment"}
 	}
 	return Availability{"recommended", ""}
 }

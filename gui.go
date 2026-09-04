@@ -391,6 +391,7 @@ func (r *vmRow) MouseUp(*desktop.MouseEvent) {}
 const (
 	applianceBranchUID = "appliances"
 	applianceUIDPrefix = "app/"
+	selfTestUID        = "app-selftest"
 )
 
 func newVMRow() *vmRow {
@@ -817,6 +818,7 @@ func runGUI(rs *Ruleset) {
 	// openAppliance is wired once the dialog exists, further down. The tree
 	// is built before it, so the catalog branch reaches it through this.
 	var openAppliance func(name string)
+	var openSelfTest func()
 	childUIDs := func(uid string) []string {
 		if uid == "" {
 			out := make([]string, 0, len(viewGroups)+1)
@@ -829,7 +831,8 @@ func runGUI(rs *Ruleset) {
 			return append(out, applianceBranchUID)
 		}
 		if uid == applianceBranchUID {
-			out := make([]string, 0, len(Appliances()))
+			out := make([]string, 0, len(Appliances())+1)
+			out = append(out, selfTestUID)
 			for _, n := range ApplianceNames() {
 				out = append(out, applianceUIDPrefix+n)
 			}
@@ -886,6 +889,24 @@ func runGUI(rs *Ruleset) {
 			// Every callback is reassigned because Fyne recycles leaf
 			// widgets — a stale closure here would aim a VM verb at an
 			// appliance.
+			if uid == selfTestUID {
+				row := o.(*vmRow)
+				row.title.Text = "▶ Self-test"
+				row.title.Color = acBrand.at()
+				row.detail.Text = "build and audit every tile — the proof, not the promise"
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() {
+					if openSelfTest != nil {
+						openSelfTest()
+					}
+				}
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.title.Refresh()
+				row.detail.Refresh()
+				return
+			}
 			if name, ok := strings.CutPrefix(uid, applianceUIDPrefix); ok {
 				a, found := ApplianceByName(name)
 				if !found {
@@ -2249,6 +2270,40 @@ func runGUI(rs *Ruleset) {
 	}
 	// close the forward reference the catalog branch in the tree holds
 	openAppliance = applianceDialog
+	// The self-test window: a live log of the engine building and auditing
+	// every tile, exactly what `vmx --selftest` prints. Sequential and slow
+	// by nature — the point is proof, and the window says so.
+	openSelfTest = func() {
+		stw := fyne.CurrentApp().NewWindow("Appliance self-test")
+		out := widget.NewLabel("Builds every catalog tile as a real VM, audits the outcome\n" +
+			"(recipe verdict, pool, port, mesh, cert, inventory), tears down\n" +
+			"passes and keeps failures for diagnosis. Expect ~10-20 min per\n" +
+			"ZFS tile on first builds.\n")
+		out.Wrapping = fyne.TextWrapWord
+		out.TextStyle = fyne.TextStyle{Monospace: true}
+		sc := container.NewVScroll(out)
+		keep := widget.NewCheck("keep passing VMs too", nil)
+		var run *widget.Button
+		run = widget.NewButton("Build & audit every tile", func() {
+			run.Disable()
+			go func() {
+				n := SelfTestAppliances("", keep.Checked, func(l string) {
+					fyne.Do(func() {
+						out.SetText(out.Text + l + "\n")
+						sc.ScrollToBottom()
+					})
+				})
+				fyne.Do(func() {
+					out.SetText(out.Text + fmt.Sprintf("\ndone — %d tile(s) failed\n", n))
+					run.Enable()
+				})
+			}()
+		})
+		stw.SetContent(container.NewBorder(
+			container.NewHBox(run, keep), nil, nil, nil, sc))
+		stw.Resize(fyne.NewSize(720, 560))
+		stw.Show()
+	}
 
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
 	// proposition in a gesture ("give me 5 Fedora boxes").
