@@ -75,6 +75,18 @@ type Appliance struct {
 	Port    int    // primary service port, opened in the guest firewall
 	LandsOn string // human hint: where the service appears once booted
 
+	// Needs is the substrate this recipe was written for. Recipes target
+	// kldload (KVM + ZFS) by default; declaring NeedsZFS is what lets the
+	// picker say "degraded" on a pool-less host instead of installing
+	// something whose storage design silently did not happen.
+	Needs Substrate
+
+	// DataGB attaches a second, blank disk of this size. app_pool_init in
+	// the prologue turns it into the appliance's own pool, which is what
+	// makes a recipe's dataset properties real rather than decorative.
+	// Zero means no data disk.
+	DataGB int
+
 	Fields []ApplianceField
 
 	// Validate runs before Render on the fully-defaulted value set. It
@@ -185,6 +197,12 @@ func (a Appliance) Render(vals map[string]string) (string, error) {
 		fmt.Fprintf(&b, "%s=%s\n", f.Key, shellSingleQuote(resolved[f.Key]))
 	}
 	b.WriteString("\n")
+	// The substrate prologue goes between the fields and the recipe: it reads
+	// nothing from the operator, and every recipe below it depends on the
+	// helpers it defines. Injected here so twelve recipes cannot drift from
+	// twelve pasted copies of it.
+	b.WriteString(strings.TrimRight(appliancePrologue, "\n"))
+	b.WriteString("\n\n")
 	b.WriteString(strings.TrimRight(a.Script, "\n"))
 	b.WriteString("\n")
 	return b.String(), nil

@@ -112,11 +112,15 @@ func TestRenderKeepsHostileValuesInert(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Render(%q): %v", hostile, err)
 		}
-		// Keep only the preamble — the body would try to install a real
-		// service. The preamble is where injection would have to happen.
-		preamble, _, found := strings.Cut(script, "\nWF_VERSION=")
+		// Keep only the FIELD ASSIGNMENTS — that is where injection would
+		// have to happen, and it is all this test is about. Cut at the
+		// substrate prologue rather than at a recipe-specific variable: the
+		// prologue sets -euo pipefail and refuses to run as non-root, so
+		// including it made this test fail on the root check instead of on
+		// anything to do with hostile input (2026-09-03).
+		preamble, _, found := strings.Cut(script, applianceSubstrateMarker)
 		if !found {
-			t.Fatal("rendered script lost its body marker")
+			t.Fatal("rendered script lost its substrate marker")
 		}
 		probe := preamble + "\ntouch " + shellSingleQuote(marker) +
 			"_never\nprintf '%s' \"$WF_SITE_NAME\"\n"

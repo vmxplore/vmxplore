@@ -172,12 +172,18 @@ exit 1
 // one belongs in a given lab is not a call this catalog should make.
 
 var plex = Appliance{
-	Name:     "Plex Media Server",
-	Summary:  "Plex media server — the widest client support; free to run, proprietary",
+	Name:     "Plex on ZFS",
+	Summary:  "Plex media server on tuned ZFS datasets — per-title datasets, 8K-record library, throwaway transcodes",
 	Homepage: "https://www.plex.tv",
 	License:  "Proprietary (free tier; Plex Pass optional)",
 
-	Distro: "debian",
+	// kldload is the substrate this is written for. Without a pool the
+	// dataset layout below — which is the entire point of "Plex on ZFS" —
+	// collapses to plain directories, and the picker says so.
+	Needs:  NeedsZFS,
+	DataGB: 200,
+
+	Distro: "fedora",
 	VCPUs:  2,
 	RAMMB:  2048,
 	DiskGB: 20,
@@ -185,88 +191,243 @@ var plex = Appliance{
 	Port:    32400,
 	LandsOn: "http://<vm-ip>:32400/web  (claim it from a browser on this LAN)",
 
-	Notes: "Installed from Plex's own Debian repository, whose signing key is " +
-		"checked against a pinned fingerprint before it is trusted.\n\n" +
-		"CLAIMING: open http://<vm-ip>:32400/web from a browser on the SAME " +
-		"network as the VM and sign in. Plex treats same-subnet access as " +
-		"trusted; reaching it from elsewhere first shows a lock screen " +
-		"instead of the setup wizard. That is Plex's behaviour, not a fault " +
-		"in the install.\n\n" +
-		"As with any media server, the 20 GB root disk is for the server and " +
-		"its metadata — mount the library separately rather than growing " +
-		"this VM.\n\n" +
-		"Proprietary software: it will phone home to plex.tv, and an account " +
-		"is required to use it. Jellyfin is the free-software option in this " +
-		"catalog if that matters to you.",
+	Notes: "Builds the dataset layout from the Plex on ZFS recipe rather than " +
+		"dropping everything in one directory:\n\n" +
+		"  media/movies, media/tv   containers — each TITLE gets its own\n" +
+		"                           dataset, compression=off recordsize=1M\n" +
+		"  media/music              lz4 — music compresses, video does not\n" +
+		"  media/photos             compression=off\n" +
+		"  plex/config              recordsize=8K — the library is SQLite\n" +
+		"  plex/transcode           auto-snapshot=false — regenerable\n\n" +
+		"The per-title model earns itself the first time you want to move, " +
+		"snapshot, send or quota one 60 GB film without touching the other " +
+		"four hundred. `add-movie \"The Matrix\" 1999` is installed for that.\n\n" +
+		"CLAIMING: open the web UI from a browser on the SAME subnet as the " +
+		"VM. Plex treats same-subnet access as trusted; from anywhere else " +
+		"you get a lock screen instead of the wizard. That is Plex, not this " +
+		"install.\n\n" +
+		"Proprietary: it phones home to plex.tv and needs an account. " +
+		"Jellyfin is the free-software option in this catalog.",
 
 	Fields: []ApplianceField{
-		{Key: "PLEX_MEDIA_DIR", Label: "media directory",
-			Placeholder: "where your library is mounted",
+		{Key: "PLEX_POOL", Label: "pool name",
+			Placeholder: "created on the appliance's data disk",
+			Default:     "tank", Required: true},
+		{Key: "PLEX_MEDIA_DIR", Label: "library mountpoint",
+			Placeholder: "where the media datasets mount",
 			Default:     "/srv/media", Required: true},
+		{Key: "PLEX_MOVIES_QUOTA", Label: "movies quota",
+			Placeholder: "e.g. 10T, or none",
+			Default:     "none"},
+		{Key: "PLEX_TV_QUOTA", Label: "tv quota",
+			Placeholder: "e.g. 5T, or none",
+			Default:     "none"},
+		{Key: "PLEX_ALLOW_CIDR", Label: "allowed source",
+			Placeholder: "who may reach :32400",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "PLEX_CLAIM", Label: "claim token (optional)",
+			Placeholder: "claim-xxxx from plex.tv/claim — 4 minute TTL"},
 	},
 
 	Validate: func(v map[string]string) error {
-		return checkAbsDir(v["PLEX_MEDIA_DIR"], "media directory")
+		if err := checkAbsDir(v["PLEX_MEDIA_DIR"], "library mountpoint"); err != nil {
+			return err
+		}
+		return checkPoolName(v["PLEX_POOL"])
 	},
 
 	Script: plexScript,
 }
 
-const plexScript = `PLEX_KEY_URL='https://downloads.plex.tv/plex-keys/PlexSign.key'
-PLEX_KEY_FPR='CD665CBA0E2F88B7373F7CB997203C7B3ADCA79D'
+const plexScript = `
+APP_TAG=plex
+APP_POOL="$PLEX_POOL"
 
-export DEBIAN_FRONTEND=noninteractive
+app_pool_init
 
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl gnupg
+# ─── datasets, per the Plex on ZFS recipe ───────────────────────────────────
+# Containers first: canmount=off means "this is a namespace, not a filesystem".
+# movies/ and tv/ hold one dataset PER TITLE, which is why they are containers
+# rather than plain datasets with files in them.
+app_dataset media          none                      canmount=off
+app_dataset media/movies   "$PLEX_MEDIA_DIR/movies"  canmount=off
+app_dataset media/tv       "$PLEX_MEDIA_DIR/tv"      canmount=off
 
-# ─── Trust, but verify ───────────────────────────────────────────────
-install -d -m 0755 /etc/apt/keyrings
-tmpkey="$(mktemp)"
-trap 'rm -f "$tmpkey"' EXIT
-curl -fsSL "$PLEX_KEY_URL" -o "$tmpkey"
+# Music compresses; video does not. photos are already-compressed JPEG/HEIC.
+app_dataset media/music    "$PLEX_MEDIA_DIR/music"   compression=lz4
+app_dataset media/photos   "$PLEX_MEDIA_DIR/photos"  compression=off
 
-got_fpr="$(gpg --show-keys --with-colons --with-fingerprint "$tmpkey" |
-    awk -F: '$1 == "fpr" { print $10; exit }')"
-if [[ "$got_fpr" != "$PLEX_KEY_FPR" ]]; then
-    echo "FATAL: Plex signing key fingerprint mismatch" >&2
-    echo "  expected $PLEX_KEY_FPR" >&2
-    echo "  got      ${got_fpr:-<none>}" >&2
-    exit 1
+# The library is SQLite: small random IO, so small records.
+app_dataset plex           /var/lib/plexmediaserver
+app_dataset plex/config    /var/lib/plexmediaserver/Library  recordsize=8K
+
+# Transcodes are regenerable by definition — never snapshot them, and keep
+# them off any replication stream.
+app_dataset plex/transcode /var/tmp/plex-transcode \
+    compression=off com.sun:auto-snapshot=false
+
+if [ -n "${APP_POOL:-}" ]; then
+    [ "$PLEX_MOVIES_QUOTA" = none ] || zfs set quota="$PLEX_MOVIES_QUOTA" "$APP_POOL/media/movies"
+    [ "$PLEX_TV_QUOTA" = none ]     || zfs set quota="$PLEX_TV_QUOTA"     "$APP_POOL/media/tv"
 fi
-gpg --dearmor --yes -o /etc/apt/keyrings/plex.gpg "$tmpkey"
-chmod 0644 /etc/apt/keyrings/plex.gpg
+mkdir -p "$PLEX_MEDIA_DIR"/movies "$PLEX_MEDIA_DIR"/tv
 
-deb_arch="$(dpkg --print-architecture)"
-cat >/etc/apt/sources.list.d/plexmediaserver.list <<EOF
-deb [arch=${deb_arch} signed-by=/etc/apt/keyrings/plex.gpg] https://downloads.plex.tv/repo/deb public main
-EOF
+# ─── repo + install ─────────────────────────────────────────────────────────
+# The signing key is checked against a pinned fingerprint BEFORE rpm/apt is
+# told to trust it. Downloading a key and importing it unverified trusts
+# whoever answered the DNS query.
+PLEX_KEY_URL=https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+PLEX_KEY_FPR=6EFFEB478A6559D75C7C4FE706C521790B9CFFDE
 
-# ─── Install ─────────────────────────────────────────────────────────
-# WARN: the package ships its own apt source and will overwrite the file
-# written above on upgrade. That is upstream's design; the pinned keyring
-# stays in place either way.
-apt-get update
-apt-get install -y plexmediaserver
+app_pkg curl gnupg2 jq
+_key="$(mktemp)"; trap 'rm -f "$_key"' EXIT
+curl -fsSL --retry 5 --retry-delay 3 "$PLEX_KEY_URL" -o "$_key"
+gpg --show-keys --with-colons "$_key" | awk -F: '$1=="fpr"{print $10}' |
+    grep -qx "$PLEX_KEY_FPR" || app_die "PlexSign key fingerprint mismatch — refusing to import"
+app_log "plex signing key verified: $PLEX_KEY_FPR"
 
-install -d -m 0775 -o plex -g plex "$PLEX_MEDIA_DIR"
+if [ "$APP_FAMILY" = rpm ]; then
+    app_pkg policycoreutils-python-utils firewalld
+    rpm --import "$_key"
+    rm -f /etc/yum.repos.d/plexmediaserver.repo /etc/yum.repos.d/PlexRepo.repo
+    cat >/etc/yum.repos.d/plex.repo <<'REPO'
+[PlexTv]
+name=Plex.tv
+baseurl=https://repo.plex.tv/rpm/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://downloads.plex.tv/plex-keys/PlexSign.v2.key
+skip_if_unavailable=False
+REPO
+    chmod 0644 /etc/yum.repos.d/plex.repo
+    dnf -y makecache --refresh >/dev/null
+else
+    install -d -m 0755 /etc/apt/keyrings
+    gpg --dearmor <"$_key" >/etc/apt/keyrings/plex.gpg
+    chmod 0644 /etc/apt/keyrings/plex.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/plex.gpg] https://downloads.plex.tv/repo/deb public main" \
+        >/etc/apt/sources.list.d/plexmediaserver.list
+fi
+app_pkg plexmediaserver
+getent passwd plex >/dev/null || app_die "the plex user was not created by the package"
 
-systemctl enable --now plexmediaserver
+# ─── ownership, ACLs, SELinux ───────────────────────────────────────────────
+chown -R plex:plex /var/lib/plexmediaserver "$PLEX_MEDIA_DIR" /var/tmp/plex-transcode
+chmod 0750 /var/lib/plexmediaserver
+chmod -R 0755 "$PLEX_MEDIA_DIR"
+if command -v setfacl >/dev/null 2>&1; then
+    # Default ACL so anything a downloader drops in later stays readable.
+    setfacl -R -m u:plex:rX "$PLEX_MEDIA_DIR"
+    setfacl -R -d -m u:plex:rX "$PLEX_MEDIA_DIR"
+fi
+app_selinux mnt_t     "${PLEX_MEDIA_DIR}(/.*)?"
+app_selinux var_lib_t "/var/lib/plexmediaserver(/.*)?"
+app_relabel "$PLEX_MEDIA_DIR" /var/lib/plexmediaserver
 
-# ─── Prove it ────────────────────────────────────────────────────────
-# An unclaimed server answers /identity without authentication, which
-# makes it the honest readiness probe — /web would 401 and read as a
-# failure on a perfectly good install.
-for _ in $(seq 1 60); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" 2>/dev/null; then
-        echo "plex: responding on 32400 — claim it from a browser on this LAN"
-        exit 0
-    fi
-    sleep 5
-done
-echo "FATAL: plexmediaserver did not answer on 32400 after 5 minutes" >&2
-systemctl --no-pager --full status plexmediaserver >&2 || true
-exit 1
+# ─── systemd drop-in ────────────────────────────────────────────────────────
+# RequiresMountsFor is the load-bearing line: without it Plex can start before
+# the datasets mount, see an empty library, and helpfully mark everything
+# missing.
+install -d -m 0755 /etc/systemd/system/plexmediaserver.service.d
+cat >/etc/systemd/system/plexmediaserver.service.d/10-kldload.conf <<CONF
+[Unit]
+After=zfs-mount.service network-online.target
+Wants=zfs-mount.service network-online.target
+RequiresMountsFor=/var/lib/plexmediaserver ${PLEX_MEDIA_DIR}
+
+[Service]
+Environment=PLEX_MEDIA_SERVER_MAX_PLUGIN_PROCS=6
+Environment=TMPDIR=/var/tmp/plex-transcode
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=no
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+RestrictSUIDSGID=yes
+CONF
+
+if [ -n "${PLEX_CLAIM:-}" ]; then
+    cat >/etc/systemd/system/plexmediaserver.service.d/20-claim.conf <<CONF
+[Service]
+Environment=PLEX_CLAIM=${PLEX_CLAIM}
+CONF
+fi
+
+# ─── large libraries outgrow the inotify defaults ───────────────────────────
+cat >/etc/sysctl.d/90-plex.conf <<'SYSCTL'
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+SYSCTL
+sysctl -q --system
+
+# ─── add-movie: the per-title dataset helper ────────────────────────────────
+cat >/usr/local/bin/add-movie <<'ADDMOVIE'
+#!/usr/bin/env bash
+# add-movie "The Matrix" 1999 — one dataset per film.
+#
+# A 4K rip is 50-80GB. As its own dataset it can be snapshotted, sent,
+# quota'd, or moved to another pool on its own. As a file in a shared
+# dataset it can only be copied.
+set -Eeuo pipefail
+TITLE="${1:-}"; YEAR="${2:-}"
+[ -n "$TITLE" ] && [ -n "$YEAR" ] || { echo 'usage: add-movie "Movie Title" YEAR' >&2; exit 2; }
+SLUG=$(printf '%s-%s' "$TITLE" "$YEAR" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
+[ -n "$SLUG" ] || { echo "title produced an empty slug" >&2; exit 2; }
+DATASET="__POOL__/media/movies/${SLUG}"
+MOUNT="__MEDIA__/movies/${SLUG}"
+if zfs list "$DATASET" >/dev/null 2>&1; then echo "already exists: $DATASET"; exit 0; fi
+zfs create -o mountpoint="$MOUNT" -o compression=off -o recordsize=1M "$DATASET"
+chown plex:plex "$MOUNT"; chmod 0755 "$MOUNT"
+echo "created $DATASET -> $MOUNT"
+ADDMOVIE
+sed -i "s|__POOL__|${APP_POOL:-tank}|g; s|__MEDIA__|${PLEX_MEDIA_DIR}|g" /usr/local/bin/add-movie
+chmod 0755 /usr/local/bin/add-movie
+
+# ─── firewall, service, verify ──────────────────────────────────────────────
+# 32400 web/API, 3005 companion, 8324 Roku, 32469 DLNA; 1900+32410-14 discovery.
+app_firewall plex "$PLEX_ALLOW_CIDR" \
+    32400/tcp 3005/tcp 8324/tcp 32469/tcp \
+    1900/udp 5353/udp 32410/udp 32412/udp 32413/udp 32414/udp
+
+systemctl daemon-reload
+app_enable plexmediaserver
+
+app_log "waiting for Plex on :32400"
+app_wait_http http://127.0.0.1:32400/identity 90 ||
+    app_warn "not answering yet — journalctl -u plexmediaserver -n 100"
+
+# The claim token is single-use and short-lived. Do not leave it on disk.
+if [ -f /etc/systemd/system/plexmediaserver.service.d/20-claim.conf ]; then
+    rm -f /etc/systemd/system/plexmediaserver.service.d/20-claim.conf
+    systemctl daemon-reload
+fi
+
+echo
+app_check "plex answers on :32400"   curl -fsS --max-time 5 http://127.0.0.1:32400/identity
+app_check "plexmediaserver enabled"  systemctl is-enabled plexmediaserver
+app_check "plexmediaserver active"   systemctl is-active plexmediaserver
+app_check "library mountpoint"       test -d "$PLEX_MEDIA_DIR/movies"
+app_check "add-movie installed"      test -x /usr/local/bin/add-movie
+if [ -n "${APP_POOL:-}" ]; then
+    app_check "config recordsize 8K"  bash -c '[ "$(zfs get -H -o value recordsize '"$APP_POOL"'/plex/config)" = 8K ]'
+    app_check "transcode not snapshotted" bash -c '[ "$(zfs get -H -o value com.sun:auto-snapshot '"$APP_POOL"'/plex/transcode)" = false ]'
+    app_snapshot postinstall-plex
+fi
+
+cat <<EOM
+
+  Plex on ZFS
+
+  Web UI      http://$(hostname -I 2>/dev/null | awk '{print $1}'):32400/web
+  Library     ${PLEX_MEDIA_DIR}      pool: ${APP_POOL:-<none — plain dirs>}
+  Add a film  add-movie "The Matrix" 1999
+  Firewall    zone 'plex', source ${PLEX_ALLOW_CIDR}
+
+EOM
+app_summary
 `
 
 // ─── Git: Gitea ──────────────────────────────────────────────────────
