@@ -111,7 +111,9 @@ teardown() { # <vm> — reverse order of creation; every step tolerant of absenc
     local ds
     while read -r ds; do
         [[ -n "$ds" ]] && sudo -n zfs destroy -r "$ds" >/dev/null 2>&1 || true
-    done < <(sudo -n zfs list -H -o name 2>/dev/null | grep -E "/${vm}(-data)?$")
+        # || true: a clean host has nothing matching, grep exits 1, and the ERR
+        # trap narrates a non-event into the log. Empty is the desired state.
+    done < <(sudo -n zfs list -H -o name 2>/dev/null | grep -E "/${vm}(-data)?$" || true)
     sudo -n rm -f "/var/lib/libvirt/images/${vm}.qcow2" \
         "/var/lib/libvirt/images/${vm}-data.qcow2" \
         "/var/lib/libvirt/images/${vm}-seed.iso"
