@@ -218,9 +218,18 @@ app_pool_init() {
         return 0
     fi
 
-    local _root_disk _cand="" _d _pk
-    _root_disk="$(lsblk -no PKNAME "$(findmnt -no SOURCE / 2>/dev/null)" 2>/dev/null | head -1)"
-    [ -n "$_root_disk" ] || _root_disk="$(findmnt -no SOURCE / | sed 's|/dev/||; s|[0-9]*$||')"
+    local _root_src _root_disk _cand="" _d _pk
+    # btrfs reports the root source as /dev/vda5[/root] — the [subvol] suffix
+    # is not a block device, lsblk chokes on it, and under set -e the failing
+    # pipeline killed the whole recipe. It fired the FIRST time this line ever
+    # ran, because every earlier run died before ZFS was installed (smk-web,
+    # 2026-09-04, minutes after the dkms chain finally succeeded).
+    _root_src="$(findmnt -no SOURCE / 2>/dev/null | sed 's/\[.*$//')"
+    # || true: an unparseable source must degrade to "no exclusion", not kill
+    # the recipe — the blkid signature check below still refuses the root
+    # disk, because a disk carrying a filesystem is never a blank candidate.
+    _root_disk="$(lsblk -no PKNAME "$_root_src" 2>/dev/null | head -1 || true)"
+    [ -n "$_root_disk" ] || _root_disk="$(printf '%s' "${_root_src##*/}" | sed 's/p\?[0-9]*$//')"
 
     while read -r _d; do
         [ -n "$_d" ] || continue
