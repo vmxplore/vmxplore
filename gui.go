@@ -2213,6 +2213,9 @@ func runGUI(rs *Ruleset) {
 						fyne.Do(func() { status.SetText(line) })
 					})
 					if err == nil {
+						AttachUSBDevices(spec.Name, a.USB, func(line string) {
+							fyne.Do(func() { status.SetText(line) })
+						})
 						// Substrate enrollment: mesh, estate cert, inventory.
 						// Narrates in the same status line as the build.
 						EnrollAppliance(spec.Name, applianceSlug(a.Name),

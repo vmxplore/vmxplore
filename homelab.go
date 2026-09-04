@@ -1561,3 +1561,330 @@ cat <<EOM
 EOM
 app_summary
 `
+
+// ─── SDR Station ─────────────────────────────────────────────────────────
+//
+// A proper SDR receiver as an appliance: OpenWebRX+ (web SDR on :8073, any
+// browser becomes a spectrum display), SoapySDR with a SoapyRemote server so
+// desktop clients (SDR++, GQRX) can use this box's radios over the network,
+// and the raw hackrf/rtl-sdr tooling for captures. IQ recordings land on
+// their own dataset — high-entropy data, so compression stays off and a
+// quota keeps a runaway capture from eating the pool.
+var sdrStation = Appliance{
+	Name:     "SDR Station",
+	Summary:  "OpenWebRX + SoapyRemote around a HackRF/RTL-SDR — the estate's antenna socket",
+	Homepage: "https://www.openwebrx.de",
+	License:  "AGPL-3.0 (OpenWebRX), GPL-2.0 (hackrf, rtl-sdr)",
+
+	Needs:  NeedsZFS,
+	DataGB: 200,
+
+	Distro: "debian",
+	VCPUs:  2,
+	RAMMB:  2048,
+	DiskGB: 15,
+
+	Port:    8073,
+	LandsOn: "http://<vm-ip>:8073/  (waterfall in the browser; SoapyRemote for SDR++/GQRX on :55132)",
+
+	// The radios ride USB passthrough: attached live after the build, so the
+	// recipe's own hardware checks can already see them, and persistent so a
+	// reboot keeps them.
+	USB: []string{
+		"1d50:6089", // HackRF One
+		"1d50:604b", // HackRF Jawbreaker
+		"0bda:2838", // RTL-SDR (RTL2838)
+		"0bda:2832", // RTL-SDR (RTL2832)
+		"1d50:60a1", // Airspy
+	},
+
+	Notes: "The radio must be plugged into THIS host when the tile builds — " +
+		"absent devices are skipped with a warning naming the manual attach. " +
+		"Plug in later with: virsh attach-device <vm> <hostdev.xml> " +
+		"--persistent.\n\n" +
+		"IQ captures are enormous (20 Msps complex = ~80 MB/s) and do not " +
+		"compress; /srv/captures gets compression=off, 1M records and a " +
+		"quota. hackrf_transfer and rtl_sdr write there.\n\n" +
+		"OpenWebRX+ comes from its maintainer's repository over HTTPS; the " +
+		"project publishes no key fingerprint to pin, which is noted at the " +
+		"install site rather than hidden.",
+
+	Fields: []ApplianceField{
+		{Key: "SDR_POOL", Label: "pool name",
+			Default: "tank", Required: true},
+		{Key: "SDR_ALLOW_CIDR", Label: "allowed source",
+			Placeholder: "who may reach the waterfall",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "SDR_CAPTURE_QUOTA", Label: "captures quota",
+			Placeholder: "e.g. 150G",
+			Default:     "150G", Required: true},
+		{Key: "SDR_ADMIN_PASS", Label: "openwebrx admin password",
+			Placeholder: "blank = generate one", Secret: true,
+			Generate: true, Required: true},
+	},
+
+	Validate: func(v map[string]string) error {
+		return checkPoolName(v["SDR_POOL"])
+	},
+
+	Script: sdrStationScript,
+}
+
+const sdrStationScript = `
+APP_TAG=sdr
+APP_POOL="$SDR_POOL"
+
+app_pool_init
+
+# IQ is high-entropy: compression would burn CPU to save nothing. The quota is
+# what stands between one forgotten hackrf_transfer and a full pool.
+app_dataset captures /srv/captures recordsize=1M compression=off \
+    quota="$SDR_CAPTURE_QUOTA" com.sun:auto-snapshot=false
+# settings/bookmarks are tiny and precious — snapshot-worthy.
+app_dataset sdr-config /var/lib/openwebrx recordsize=16K
+
+# ─── radio tooling ──────────────────────────────────────────────────────────
+app_pkg curl usbutils
+if [ "$APP_FAMILY" = rpm ]; then
+    app_pkg hackrf rtl-sdr soapy-utils soapy-hackrf soapy-rtlsdr
+    app_warn "OpenWebRX has no Fedora packaging — Soapy/hackrf tools only on this family"
+else
+    app_pkg hackrf rtl-sdr soapysdr-tools soapysdr-module-hackrf soapysdr-module-rtlsdr
+fi
+
+# SoapyRemote: the estate-facing SDR server. Any SDR++/GQRX on the LAN can
+# open this box's radio as if it were local.
+if [ "$APP_FAMILY" = rpm ]; then app_pkg_optional soapy-remote; else app_pkg_optional soapyremote-server; fi
+cat >/etc/systemd/system/soapyremote.service <<UNIT
+[Unit]
+Description=SoapySDR network server
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/SoapySDRServer --bind
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# ─── OpenWebRX+ (Debian family) ─────────────────────────────────────────────
+if [ "$APP_FAMILY" = deb ]; then
+    # SECURITY NOTE, stated rather than hidden: the OpenWebRX+ project
+    # publishes its repo key over HTTPS at a pinned URL but no fingerprint to
+    # verify against. HTTPS-from-the-vendor is the trust anchor here; if that
+    # is not acceptable on your network, skip the web half — SoapyRemote and
+    # the capture tools above carry no such caveat.
+    install -d -m 0755 /etc/apt/keyrings
+    if curl -fsSL https://luarvique.github.io/ppa/openwebrx-plus.gpg \
+        -o /etc/apt/keyrings/openwebrx-plus.gpg; then
+        . /etc/os-release
+        echo "deb [signed-by=/etc/apt/keyrings/openwebrx-plus.gpg] https://luarvique.github.io/ppa/debian ./" \
+            >/etc/apt/sources.list.d/openwebrx-plus.list
+        apt-get update -qq >/dev/null 2>&1 || true
+        if apt-get install -y -qq openwebrx >/var/log/appliance-openwebrx.log 2>&1; then
+            app_log "openwebrx installed"
+            if [ -n "${SDR_ADMIN_PASS:-}" ]; then
+                OWRX_PASSWORD="$SDR_ADMIN_PASS" openwebrx admin --noninteractive adduser admin \
+                    >/dev/null 2>&1 || app_warn "could not create the openwebrx admin user"
+            fi
+            app_enable openwebrx
+        else
+            app_warn "openwebrx did not install — tail of /var/log/appliance-openwebrx.log:"
+            tail -3 /var/log/appliance-openwebrx.log >&2
+        fi
+    else
+        app_warn "openwebrx repo key unreachable — web SDR skipped, Soapy tools remain"
+    fi
+fi
+
+app_enable soapyremote
+
+# ─── firewall, verify ───────────────────────────────────────────────────────
+# 8073 web, 55132 SoapyRemote RPC (it negotiates data streams above it).
+app_firewall sdr "$SDR_ALLOW_CIDR" 8073/tcp 55132/tcp
+
+echo
+app_check "SoapySDR sees its modules"  bash -c 'SoapySDRUtil --info 2>/dev/null | grep -qi module'
+app_check "soapyremote enabled"        systemctl is-enabled soapyremote
+if lsusb -d 1d50:6089 >/dev/null 2>&1 || lsusb -d 1d50:604b >/dev/null 2>&1; then
+    app_check "HackRF answers"         bash -c 'hackrf_info 2>/dev/null | grep -qi "serial number"'
+elif lsusb -d 0bda:2838 >/dev/null 2>&1 || lsusb -d 0bda:2832 >/dev/null 2>&1; then
+    app_check "RTL-SDR answers"        bash -c 'rtl_test -t 2>&1 | grep -qi "found"'
+else
+    app_warn "no SDR device visible in the guest — passthrough missed or nothing plugged in"
+fi
+if [ "$APP_FAMILY" = deb ] && command -v openwebrx >/dev/null 2>&1; then
+    app_check "openwebrx answers on :8073" app_wait_http http://127.0.0.1:8073/ 60
+fi
+app_check "captures dataset mounted"   mountpoint -q /srv/captures
+[ -n "${APP_POOL:-}" ] && app_snapshot postinstall-sdr
+
+cat <<EOM
+
+  SDR Station
+
+  Waterfall   http://$(hostname -I 2>/dev/null | awk '{print $1}'):8073/
+  SoapyRemote <vm-ip>:55132   (SDR++/GQRX: driver=remote)
+  Captures    /srv/captures (quota ${SDR_CAPTURE_QUOTA}, compression off)
+  Try         hackrf_transfer -r /srv/captures/fm.iq -f 99500000 -s 10000000
+
+EOM
+app_summary
+`
+
+// ─── Tvheadend DVR ───────────────────────────────────────────────────────
+//
+// Live TV and satellite in one tile: Tvheadend speaks ATSC/DVB-T over-the-air
+// AND DVB-S/S2 dishes, records to its own tuned dataset, and serves every TV
+// in the house over HTTP. USB tuners ride the same passthrough as the SDR
+// tile; a PCI capture card stays host-side vfio work and the Notes say so.
+var tvheadend = Appliance{
+	Name:     "Tvheadend DVR",
+	Summary:  "Over-the-air + satellite DVR — tuners in, recordings on a tuned dataset, streams out",
+	Homepage: "https://tvheadend.org",
+	License:  "GPL-3.0",
+
+	Needs:  NeedsZFS,
+	DataGB: 500,
+
+	Distro: "debian",
+	VCPUs:  2,
+	RAMMB:  2048,
+	DiskGB: 15,
+
+	Port:    9981,
+	LandsOn: "http://<vm-ip>:9981/  (setup wizard: tuners → mux scan → channels)",
+
+	USB: []string{
+		"2040:0265", // Hauppauge WinTV-dualHD (ATSC)
+		"2040:826d", // Hauppauge WinTV-HVR-950Q
+		"0bda:2838", // RTL2838 (DVB-T mode)
+	},
+
+	Notes: "Recordings are big sequential video: compression=off, 1M records, " +
+		"and a quota so a season pass cannot eat the pool. Timeshift is " +
+		"regenerable by definition — sync=disabled, never snapshotted.\n\n" +
+		"A USB tuner plugged into this host attaches automatically. A PCI " +
+		"capture card needs host-side vfio passthrough first (IOMMU on, " +
+		"device bound to vfio-pci) — deliberate host configuration, not " +
+		"something a tile springs on a machine. Once bound: " +
+		"virsh attach-device with a pci hostdev.\n\n" +
+		"Satellite: a DVB-S2 USB box appears the same way; point a mux scan " +
+		"at your bird and Tvheadend does the rest.",
+
+	Fields: []ApplianceField{
+		{Key: "TVH_POOL", Label: "pool name",
+			Default: "tank", Required: true},
+		{Key: "TVH_ALLOW_CIDR", Label: "allowed source",
+			Placeholder: "who may watch",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "TVH_REC_QUOTA", Label: "recordings quota",
+			Placeholder: "e.g. 400G",
+			Default:     "400G", Required: true},
+	},
+
+	Validate: func(v map[string]string) error {
+		return checkPoolName(v["TVH_POOL"])
+	},
+
+	Script: tvheadendScript,
+}
+
+const tvheadendScript = `
+APP_TAG=tvheadend
+APP_POOL="$TVH_POOL"
+
+app_pool_init
+
+app_dataset recordings /srv/recordings recordsize=1M compression=off \
+    quota="$TVH_REC_QUOTA"
+app_dataset timeshift /srv/timeshift recordsize=1M compression=off \
+    sync=disabled quota=50G com.sun:auto-snapshot=false
+app_dataset tvh-config /var/lib/tvheadend recordsize=16K
+
+app_pkg curl usbutils
+if [ "$APP_FAMILY" = rpm ]; then
+    app_die "tvheadend has no usable Fedora packaging — build this tile on the Debian image"
+fi
+
+# non-free-firmware carries most tuner firmware blobs; trixie cloud images
+# already list the component, so this is usually a no-op.
+sed -i '/^Components:/ { /non-free-firmware/! s/$/ non-free-firmware/ }' \
+    /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+# Tvheadend's own repo (cloudsmith). Key over HTTPS from the project's
+# documented URL; like the SDR tile, the caveat is stated: no published
+# fingerprint exists to pin against.
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL "https://dl.cloudsmith.io/public/tvheadend/tvheadend/gpg.key" \
+    -o /tmp/tvh.key 2>/dev/null || true
+if [ -s /tmp/tvh.key ]; then
+    gpg --dearmor </tmp/tvh.key >/etc/apt/keyrings/tvheadend.gpg 2>/dev/null || true
+fi
+. /etc/os-release
+if [ -s /etc/apt/keyrings/tvheadend.gpg ]; then
+    echo "deb [signed-by=/etc/apt/keyrings/tvheadend.gpg] https://dl.cloudsmith.io/public/tvheadend/tvheadend/deb/${ID} ${VERSION_CODENAME} main" \
+        >/etc/apt/sources.list.d/tvheadend.list
+    apt-get update -qq >/dev/null 2>&1 || true
+fi
+rm -f /tmp/tvh.key
+
+export DEBIAN_FRONTEND=noninteractive
+if ! apt-get install -y -qq tvheadend >/var/log/appliance-tvheadend.log 2>&1; then
+    app_warn "tvheadend repo install failed — trying the distro archive"
+    apt-get install -y -qq tvheadend >>/var/log/appliance-tvheadend.log 2>&1 ||
+        app_die "tvheadend did not install from any source — see /var/log/appliance-tvheadend.log"
+fi
+dpkg -s tvheadend >/dev/null 2>&1 || app_die "apt returned 0 but tvheadend is not installed"
+
+getent passwd hts >/dev/null || app_die "the hts user was not created by the package"
+chown -R hts:hts /srv/recordings /srv/timeshift /var/lib/tvheadend
+usermod -aG video hts 2>/dev/null || true
+
+install -d -m 0755 /etc/systemd/system/tvheadend.service.d
+cat >/etc/systemd/system/tvheadend.service.d/10-kldload.conf <<CONF
+[Unit]
+After=zfs-mount.service
+RequiresMountsFor=/srv/recordings /var/lib/tvheadend
+
+[Service]
+Restart=on-failure
+RestartSec=5
+CONF
+
+systemctl daemon-reload
+app_firewall tvheadend "$TVH_ALLOW_CIDR" 9981/tcp 9982/tcp
+app_enable tvheadend
+
+app_log "waiting for tvheadend on :9981"
+app_wait_http http://127.0.0.1:9981/ 90 ||
+    app_warn "not answering — journalctl -u tvheadend -n 50"
+
+echo
+app_check "tvheadend answers on :9981"  app_wait_http http://127.0.0.1:9981/ 15
+app_check "tvheadend enabled"           systemctl is-enabled tvheadend
+app_check "recordings dataset mounted"  mountpoint -q /srv/recordings
+_tuners=0
+for _a in /dev/dvb/adapter*; do [ -e "$_a" ] && _tuners=$((_tuners + 1)); done
+if [ "${_tuners:-0}" -ge 1 ]; then
+    app_check "tuner(s) visible (${_tuners})" true
+else
+    app_warn "no /dev/dvb adapters in the guest — tuner passthrough missed or nothing plugged in"
+fi
+[ -n "${APP_POOL:-}" ] && app_snapshot postinstall-tvheadend
+
+cat <<EOM
+
+  Tvheadend DVR
+
+  Web UI      http://$(hostname -I 2>/dev/null | awk '{print $1}'):9981/
+  Tuners      /dev/dvb: ${_tuners:-0} adapter(s)
+  Recordings  /srv/recordings (quota ${TVH_REC_QUOTA})
+  Streams     http://<vm-ip>:9981/playlist  (open in VLC)
+
+EOM
+app_summary
+`

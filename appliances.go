@@ -81,6 +81,13 @@ type Appliance struct {
 	// something whose storage design silently did not happen.
 	Needs Substrate
 
+	// USB lists host USB devices (vendor:product, hex) to pass through to
+	// the guest, attached live+persistent right after the build. An SDR or
+	// TV tile is decorative without its radio. IDs absent from the host are
+	// skipped with a warning — the appliance still builds, and plugging the
+	// device in later plus `virsh attach-device` is the documented recovery.
+	USB []string
+
 	// DataGB attaches a second, blank disk of this size. app_pool_init in
 	// the prologue turns it into the appliance's own pool, which is what
 	// makes a recipe's dataset properties real rather than decorative.
@@ -482,6 +489,9 @@ func RunApplianceBuild(name string, args []string) int {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 1
 	}
+	// Radios and tuners attach the moment the guest exists, so the recipe
+	// running in cloud-init already sees them.
+	AttachUSBDevices(spec.Name, a.USB, log)
 	if f.noWait {
 		fmt.Fprintf(os.Stderr, "\n%s is building %s — it will serve on %s\n",
 			spec.Name, a.Name, a.LandsOn)
@@ -663,7 +673,8 @@ var applianceCatalog = []Appliance{
 	// recipe text remains live code and the hostile-values test keeps its
 	// subject.
 	writeFreelyDesktop,
-	jellyfin, plex, seedbox, icecast, gitea, adguardHome, syncthing,
+	jellyfin, plex, seedbox, icecast, sdrStation, tvheadend,
+	gitea, adguardHome, syncthing,
 }
 
 // ─── WriteFreely ─────────────────────────────────────────────────────

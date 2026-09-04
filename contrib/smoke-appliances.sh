@@ -63,6 +63,8 @@ APPS=(
     "smk-jelly|Jellyfin on ZFS|8096|/System/Info/Public|yes|yes"
     "smk-plex|Plex on ZFS|32400|/identity|yes|yes"
     "smk-seed|Seedbox|8080|/|yes|yes"
+    "smk-sdr|SDR Station|8073|/|yes|yes"
+    "smk-tvh|Tvheadend DVR|9981|/|yes|yes"
     "smk-gitea|Gitea|3000|/|yes|no"
     "smk-agh|AdGuard Home|3000|/|no|no"
     "smk-sync|Syncthing|8384|/|yes|no"
