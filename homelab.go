@@ -1283,6 +1283,11 @@ table inet killswitch {
         type filter hook output priority 0; policy drop;
         oifname "lo" accept
         oifname "wg0" accept
+        # ap-* is the kldload MANAGEMENT mesh (enrollment puts every appliance
+        # on one). It carries Ansible and operator ssh, never torrent traffic
+        # -- AllowedIPs on that plane are /32 mesh addresses only -- and a kill
+        # switch that severs management has failed the wrong way.
+        oifname "ap-*" accept
         ct state established,related accept
         ip daddr ${SB_ALLOW_CIDR} accept
         udp dport { 53, 67, 68 } accept
