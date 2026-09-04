@@ -161,12 +161,16 @@ type NewVMSpec struct {
 	User      string // cloud mode only
 	Password  string // cloud mode only
 	SSHKey    string // cloud mode only — one authorized_keys line
-	PostInst  string // cloud mode only — bash run as root on first boot
-	Desktop   string // cloud mode only — "", "none", "gnome", "kde", "xfce"
-	Sound     bool   // wire the guest's card to the host's audio session
-	UEFI      bool   // boot via OVMF instead of SeaBIOS
-	TPM       bool   // emulated TPM 2.0 (swtpm) — Windows 11 requires one
-	DriverISO string // second CD-ROM, e.g. virtio-win for Windows installs
+	// RootSSHKeys authorizes root directly — set only by the kldload
+	// enrollment path, which needs root in the guest for kvm-mesh and the
+	// cert push. Ordinary VMs never get one.
+	RootSSHKeys []string
+	PostInst    string // cloud mode only — bash run as root on first boot
+	Desktop     string // cloud mode only — "", "none", "gnome", "kde", "xfce"
+	Sound       bool   // wire the guest's card to the host's audio session
+	UEFI        bool   // boot via OVMF instead of SeaBIOS
+	TPM         bool   // emulated TPM 2.0 (swtpm) — Windows 11 requires one
+	DriverISO   string // second CD-ROM, e.g. virtio-win for Windows installs
 
 	// RHEL entitlement. Red Hat's KVM guest images sit behind an
 	// authenticated CDN, so unlike every other preset the IMAGE cannot be
@@ -460,6 +464,11 @@ func userData(s NewVMSpec) string {
 	// what must not be cloned, and kldload-seal/virt-sysprep clear those when
 	// a golden is sealed. So installing it on the golden is safe: every clone
 	// inherits the package and mints its own identity on first boot.
+	if len(s.RootSSHKeys) > 0 {
+		// Cloud images ship root disabled; without this the seeded key gets
+		// a "command=disabled" prefix and the enrollment ssh never works.
+		b.WriteString("disable_root: false\n")
+	}
 	b.WriteString("packages:\n  - qemu-guest-agent\n")
 	b.WriteString("growpart:\n  mode: auto\n  devices: ['/']\n")
 	fmt.Fprintf(&b, "users:\n  - name: %s\n", yamlQuote(s.User))
@@ -469,6 +478,12 @@ func userData(s NewVMSpec) string {
 	if s.SSHKey != "" {
 		fmt.Fprintf(&b, "    ssh_authorized_keys:\n      - %s\n",
 			yamlQuote(strings.TrimSpace(s.SSHKey)))
+	}
+	if len(s.RootSSHKeys) > 0 {
+		b.WriteString("  - name: root\n    ssh_authorized_keys:\n")
+		for _, k := range s.RootSSHKeys {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(strings.TrimSpace(k)))
+		}
 	}
 	// A machine nobody can log into is a broken machine. cloud-init leaves
 	// an account with lock_passwd:false and no password unusable at the

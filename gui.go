@@ -2199,6 +2199,11 @@ func runGUI(rs *Ruleset) {
 				// rather than at the form they just submitted. That boot is
 				// the part worth watching and it is over before the build
 				// call returns.
+				if KldloadTier() == "kldload" {
+					if k := hostOpsPubkey(); k != "" {
+						spec.RootSSHKeys = append(spec.RootSSHKeys, k)
+					}
+				}
 				st.selName = spec.Name
 				if selectScreenTab != nil {
 					selectScreenTab()
@@ -2207,6 +2212,14 @@ func runGUI(rs *Ruleset) {
 					err := BuildNewVM(spec, parent, func(line string) {
 						fyne.Do(func() { status.SetText(line) })
 					})
+					if err == nil {
+						// Substrate enrollment: mesh, estate cert, inventory.
+						// Narrates in the same status line as the build.
+						EnrollAppliance(spec.Name, applianceSlug(a.Name),
+							func(line string) {
+								fyne.Do(func() { status.SetText(line) })
+							})
+					}
 					fyne.Do(func() {
 						if err != nil {
 							dialog.ShowError(err, w)

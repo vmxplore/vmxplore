@@ -459,6 +459,14 @@ func RunApplianceBuild(name string, args []string) int {
 		}
 	}
 
+	// On a kldload host the appliance is born enrolled: mesh, estate cert,
+	// inventory. Seeding the host ops key for root is what makes the guest
+	// reachable for that; on kvm/kvm+zfs tiers nothing is seeded.
+	if KldloadTier() == "kldload" {
+		if k := hostOpsPubkey(); k != "" {
+			spec.RootSSHKeys = append(spec.RootSSHKeys, k)
+		}
+	}
 	log := func(line string) { fmt.Fprintln(os.Stderr, line) }
 	if err := BuildNewVM(spec, parent, log); err != nil {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
@@ -467,6 +475,10 @@ func RunApplianceBuild(name string, args []string) int {
 	if f.noWait {
 		fmt.Fprintf(os.Stderr, "\n%s is building %s — it will serve on %s\n",
 			spec.Name, a.Name, a.LandsOn)
+		if KldloadTier() == "kldload" {
+			fmt.Fprintln(os.Stderr,
+				"substrate enrollment skipped under --no-wait — it needs the guest up")
+		}
 		return 0
 	}
 	url, err := WaitAppliance(spec.Name, a.Port, log)
@@ -474,6 +486,9 @@ func RunApplianceBuild(name string, args []string) int {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 1
 	}
+	// The service answers, so cloud-init has finished and root ssh is live —
+	// the cheapest moment to enroll.
+	EnrollAppliance(spec.Name, applianceSlug(a.Name), log)
 	fmt.Fprintf(os.Stderr, "\n%s is ready. Credentials are in "+
 		"/root/ inside the guest.\n", a.Name)
 	fmt.Println(url)
@@ -536,10 +551,16 @@ var applianceCatalog = []Appliance{
 		Homepage: "https://nginx.org",
 		License:  "BSD-2-Clause (nginx), PostgreSQL, BSD-3-Clause (Redis)",
 
-		Distro: "debian",
+		Distro: "fedora",
 		VCPUs:  2,
 		RAMMB:  2048,
 		DiskGB: 20,
+
+		// The database is the reason this wants a pool: an 8K-record dataset
+		// matching PostgreSQL's page size, snapshots before schema changes,
+		// and a rollback that is one command. Degrades to plain dirs.
+		Needs:  NeedsZFS,
+		DataGB: 50,
 
 		Port:    80,
 		LandsOn: "http://<vm-ip>/  (stack health at /healthz)",
@@ -562,6 +583,12 @@ var applianceCatalog = []Appliance{
 			"already resolve here from the public internet with 80/443 open.",
 
 		Fields: []ApplianceField{
+			{Key: "WS_POOL", Label: "pool name",
+				Placeholder: "created on the appliance's data disk",
+				Default:     "tank", Required: true},
+			{Key: "WS_ALLOW_CIDR", Label: "allowed source",
+				Placeholder: "who may reach http/https",
+				Default:     "192.168.0.0/16", Required: true},
 			{Key: "WS_DB_NAME", Label: "database name", Default: "appdb", Required: true},
 			{Key: "WS_DB_USER", Label: "database user", Default: "appuser", Required: true},
 			{Key: "WS_DB_PASS", Label: "database password",
@@ -591,6 +618,18 @@ var applianceCatalog = []Appliance{
 			if len(v["WS_REDIS_PASS"]) < 8 {
 				return fmt.Errorf("redis password must be at least 8 characters")
 			}
+			// Both passwords land in config files (pg_hba-adjacent SQL, a
+			// redis.conf line); a quote or whitespace would not escalate —
+			// psql gets them via :'var' binding — but it WOULD produce a
+			// server that silently rejects the credential it was built with.
+			for _, k := range []string{"WS_DB_PASS", "WS_REDIS_PASS"} {
+				if strings.ContainsAny(v[k], " \t\n'\"") {
+					return fmt.Errorf("%s must not contain spaces or quotes", k)
+				}
+			}
+			if err := checkPoolName(v["WS_POOL"]); err != nil {
+				return err
+			}
 			port, err := strconv.Atoi(v["WS_UPSTREAM_PORT"])
 			if err != nil || port < 1024 || port > 65535 {
 				return fmt.Errorf("upstream port %q must be a number between 1024 and 65535", v["WS_UPSTREAM_PORT"])
@@ -610,7 +649,7 @@ var applianceCatalog = []Appliance{
 		Script: webStackScript,
 	},
 	writeFreely, writeFreelyDesktop,
-	jellyfin, plex, gitea, adguardHome, syncthing,
+	jellyfin, plex, seedbox, icecast, gitea, adguardHome, syncthing,
 }
 
 // ─── WriteFreely ─────────────────────────────────────────────────────
@@ -1461,216 +1500,169 @@ var webStackIdentRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 // reboot. Each tier is asserted by OUTCOME at the end — pg_isready, a real
 // Redis AUTH+PING, nginx -t, and an HTTP fetch of /healthz — since apt
 // returning 0 says nothing about whether the thing runs.
-const webStackScript = `export DEBIAN_FRONTEND=noninteractive
+const webStackScript = `
+APP_TAG=webstack
+APP_POOL="$WS_POOL"
 
-# One transaction per tier. A single apt-get with everything in it is
-# all-or-nothing: one unavailable package takes the whole stack down, and the
-# operator gets a wall of dependency output instead of "redis is missing".
-apt-get update -y
+app_pool_init
 
-for _pkg in postgresql redis-server nginx; do
-    if ! apt-get install -y --no-install-recommends "$_pkg"; then
-        echo "FATAL: $_pkg did not install — the stack is incomplete" >&2
-        exit 1
-    fi
-done
-# curl is the health check's only dependency and is tiny; jq keeps /healthz
-# readable from a terminal.
-apt-get install -y --no-install-recommends curl jq ca-certificates || true
+# ─── datasets BEFORE packages, so initdb lands inside them ──────────────────
+# PostgreSQL writes 8K pages; a matching recordsize means one page per record
+# instead of read-modify-write cycles on 128K blocks. The families keep their
+# own data roots, so the mountpoint follows the family.
+if [ "$APP_FAMILY" = rpm ]; then _pgroot=/var/lib/pgsql; else _pgroot=/var/lib/postgresql; fi
+app_dataset pgdata "$_pgroot"        recordsize=8K
+app_dataset redis  /var/lib/redis    recordsize=16K
+app_dataset www    /var/www          compression=zstd
 
-# ── PostgreSQL ──────────────────────────────────────────────────────────────
-# shared_buffers at a quarter of RAM is the long-standing starting point; the
-# default 128MB is sized for a machine far smaller than any VM this builds.
-_ram_mb=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo)
-_shared_mb=$(( _ram_mb / 4 ))
-[ "$_shared_mb" -lt 128 ] && _shared_mb=128
-
-_pgdir=$(find /etc/postgresql -maxdepth 2 -name postgresql.conf -printf '%h\n' 2>/dev/null | sort -V | tail -1)
-if [ -z "$_pgdir" ]; then
-    echo "FATAL: no postgresql.conf found — cannot configure the database" >&2
-    exit 1
+# ─── one transaction per tier ───────────────────────────────────────────────
+# A single install with everything in it is all-or-nothing: one unavailable
+# name takes the whole stack down and the operator gets a wall of dependency
+# output instead of "redis is missing".
+if [ "$APP_FAMILY" = rpm ]; then
+    app_pkg nginx
+    app_pkg postgresql-server
+    app_pkg redis
+    _pgsvc=postgresql; _redsvc=redis
+    _redconfdir=/etc/redis; _redconf=/etc/redis/redis.conf
+else
+    app_pkg nginx
+    app_pkg postgresql
+    app_pkg redis-server
+    _pgsvc=postgresql; _redsvc=redis-server
+    _redconfdir=/etc/redis; _redconf=/etc/redis/redis.conf
 fi
 
-cat >"$_pgdir/conf.d/10-webstack.conf" <<PGCONF
-# Loopback only. nginx is the public surface; the database must never be.
-listen_addresses = 'localhost'
-password_encryption = 'scram-sha-256'
-shared_buffers = ${_shared_mb}MB
-PGCONF
-
-systemctl enable --now postgresql
-for _i in $(seq 1 30); do
-    su - postgres -c 'pg_isready -q' && break
+# ─── postgres ───────────────────────────────────────────────────────────────
+if [ "$APP_FAMILY" = rpm ] && [ ! -s /var/lib/pgsql/data/PG_VERSION ]; then
+    postgresql-setup --initdb >/dev/null 2>&1 || app_die "initdb failed"
+fi
+app_enable "$_pgsvc"
+_i=0
+until sudo -u postgres psql -tAc 'SELECT 1' >/dev/null 2>&1; do
+    _i=$((_i + 1)); [ "$_i" -lt 30 ] || app_die "postgres never accepted connections"
     sleep 1
 done
 
-# Role and database. Created idempotently so re-running the post-install on a
-# rebuilt VM is not an error.
-su - postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='$WS_DB_USER'\"" | grep -q 1 ||
-    su - postgres -c "psql -c \"CREATE ROLE $WS_DB_USER LOGIN PASSWORD '$WS_DB_PASS'\""
-su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='$WS_DB_NAME'\"" | grep -q 1 ||
-    su - postgres -c "createdb -O $WS_DB_USER $WS_DB_NAME"
+# On ZFS every write is copy-on-write and torn pages cannot happen, so
+# full_page_writes buys nothing and doubles WAL volume. Only when the data
+# actually sits on the pool.
+if [ -n "${APP_POOL:-}" ]; then
+    sudo -u postgres psql -c "ALTER SYSTEM SET full_page_writes = off" >/dev/null
+    sudo -u postgres psql -c "SELECT pg_reload_conf()" >/dev/null
+fi
 
-# ── Redis ───────────────────────────────────────────────────────────────────
-# Bound to loopback AND given a password. The bind alone would be enough today,
-# but it is one misconfigured proxy away from not being enough.
-_redis_mb=$(( _ram_mb / 8 ))
-[ "$_redis_mb" -lt 64 ] && _redis_mb=64
+# Role and database, idempotently, with psql's :'var' binding so the password
+# is quoted by psql itself rather than interpolated into SQL text.
+sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$WS_DB_USER'" | grep -q 1 ||
+    sudo -u postgres psql -v pw="$WS_DB_PASS" \
+        -c "CREATE ROLE $WS_DB_USER LOGIN PASSWORD :'pw'" >/dev/null
+sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$WS_DB_NAME'" | grep -q 1 ||
+    sudo -u postgres createdb -O "$WS_DB_USER" "$WS_DB_NAME"
 
-cat >/etc/redis/redis.conf.d-webstack.conf <<REDISCONF
+# RPM's default pg_hba has no password line for TCP localhost; Debian's does.
+_hba="$(sudo -u postgres psql -tAc 'SHOW hba_file' | tr -d ' ')"
+if ! grep -qE '^host\s+all\s+all\s+127.0.0.1/32\s+(scram-sha-256|md5)' "$_hba"; then
+    echo 'host all all 127.0.0.1/32 scram-sha-256' >>"$_hba"
+    systemctl reload "$_pgsvc" 2>/dev/null || systemctl restart "$_pgsvc"
+fi
+
+# ─── redis ──────────────────────────────────────────────────────────────────
+install -d -m 0755 "$_redconfdir"
+if [ -f "$_redconf" ] && ! grep -q '^# kldload appliance' "$_redconf"; then
+    cp -n "$_redconf" "$_redconf.dist"
+fi
+cat >"$_redconf" <<REDIS
+# kldload appliance — regenerated by the Web Stack recipe; original in redis.conf.dist
 bind 127.0.0.1 -::1
-protected-mode yes
+port 6379
 requirepass $WS_REDIS_PASS
-maxmemory ${_redis_mb}mb
-maxmemory-policy allkeys-lru
-REDISCONF
-mkdir -p /etc/redis/conf.d
-mv /etc/redis/redis.conf.d-webstack.conf /etc/redis/conf.d/10-webstack.conf
-grep -q '^include /etc/redis/conf.d/' /etc/redis/redis.conf ||
-    echo 'include /etc/redis/conf.d/*.conf' >>/etc/redis/redis.conf
-systemctl enable --now redis-server
+appendonly yes
+dir /var/lib/redis
+REDIS
+chown redis:redis "$_redconf" 2>/dev/null || true
+chmod 0640 "$_redconf"
+chown -R redis:redis /var/lib/redis 2>/dev/null || true
+app_selinux redis_var_lib_t "/var/lib/redis(/.*)?"
+app_relabel /var/lib/redis
+app_enable "$_redsvc"
+systemctl restart "$_redsvc" 2>/dev/null || true
 
-# ── the health endpoint ─────────────────────────────────────────────────────
-# It QUERIES both databases. "systemctl is-active" would report a Redis that is
-# up and rejecting every AUTH, which is exactly the failure worth catching.
-install -d -m 0750 -o root -g www-data /etc/webstack
-umask 077
-cat >/etc/webstack/env <<ENVEOF
-PGPASSWORD=$WS_DB_PASS
-DB_NAME=$WS_DB_NAME
-DB_USER=$WS_DB_USER
-REDIS_PASS=$WS_REDIS_PASS
-ENVEOF
-chown root:www-data /etc/webstack/env
-chmod 0640 /etc/webstack/env
-umask 022
-
-cat >/usr/local/bin/webstack-health <<'HEALTHEOF'
-#!/usr/bin/env bash
-# Prints the stack's real state as JSON. Each tier is proven by a query, not
-# by asking systemd whether a unit is running.
-set -uo pipefail
-. /etc/webstack/env
-_pg=fail
-PGPASSWORD="$PGPASSWORD" psql -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null 2>&1 && _pg=ok
-_redis=fail
-[ "$(redis-cli -h 127.0.0.1 -a "$REDIS_PASS" --no-auth-warning PING 2>/dev/null)" = "PONG" ] && _redis=ok
-_nginx=fail
-systemctl is-active --quiet nginx && _nginx=ok
-_all=ok
-[ "$_pg" = ok ] && [ "$_redis" = ok ] && [ "$_nginx" = ok ] || _all=degraded
-printf '{"status":"%s","postgres":"%s","redis":"%s","nginx":"%s","host":"%s"}\n' \
-    "$_all" "$_pg" "$_redis" "$_nginx" "$(hostname)"
-HEALTHEOF
-chmod 0755 /usr/local/bin/webstack-health
-
-# Regenerated every 15s by a timer rather than run per-request: an HTTP
-# endpoint that shells out to two databases is a denial-of-service waiting to
-# be discovered.
-cat >/etc/systemd/system/webstack-health.service <<'HSVC'
-[Unit]
-Description=Write the web stack health document nginx serves
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c '/usr/local/bin/webstack-health > /var/www/html/healthz.tmp && mv /var/www/html/healthz.tmp /var/www/html/healthz'
-HSVC
-cat >/etc/systemd/system/webstack-health.timer <<'HTMR'
-[Unit]
-Description=Refresh the web stack health document
-[Timer]
-OnBootSec=10s
-OnUnitActiveSec=15s
-[Install]
-WantedBy=timers.target
-HTMR
-systemctl daemon-reload
-systemctl enable --now webstack-health.timer
-
-# ── nginx ───────────────────────────────────────────────────────────────────
-rm -f /etc/nginx/sites-enabled/default
-cat >/etc/nginx/sites-available/webstack <<NGINXEOF
+# ─── nginx reverse proxy ────────────────────────────────────────────────────
+install -d -m 0755 /etc/nginx/conf.d /var/www/app
+[ -f /var/www/app/index.html ] || cat >/var/www/app/index.html <<'HTML'
+<!doctype html><title>web stack</title><h1>web stack up</h1>
+HTML
+_server_name=_
+[ -n "${WS_DOMAIN:-}" ] && _server_name="$WS_DOMAIN"
+cat >/etc/nginx/conf.d/appstack.conf <<NGINX
 server {
     listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-
-    # Do not advertise the version to anyone probing.
-    server_tokens off;
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
-
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml;
-    gzip_min_length 512;
-
-    # Served from a file the timer refreshes, so hitting it hard costs nothing.
-    location = /healthz {
-        default_type application/json;
-        alias /var/www/html/healthz;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:$WS_UPSTREAM_PORT;
-        proxy_http_version 1.1;
+    server_name ${_server_name};
+    root /var/www/app;
+    location /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
+    location /app/ {
+        proxy_pass http://127.0.0.1:${WS_UPSTREAM_PORT}/;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 60s;
     }
+    location / { try_files \$uri \$uri/ =404; }
 }
-NGINXEOF
-ln -sf /etc/nginx/sites-available/webstack /etc/nginx/sites-enabled/webstack
+NGINX
+# Debian ships a default site that also claims :80 default_server.
+rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+# SELinux confines nginx; without this boolean the proxy_pass to the upstream
+# port is a 502 with a misleading log line.
+command -v setsebool >/dev/null 2>&1 && selinuxenabled 2>/dev/null &&
+    setsebool -P httpd_can_network_connect on 2>/dev/null || true
+nginx -t >/dev/null 2>&1 || { nginx -t; app_die "nginx config does not parse"; }
+app_enable nginx
+systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
-if ! nginx -t; then
-    echo "FATAL: nginx rejected the generated config" >&2
-    exit 1
-fi
-systemctl enable --now nginx
-systemctl reload nginx
-
-# ── TLS, only when a domain was given ───────────────────────────────────────
-if [ -n "${WS_DOMAIN:-}" ]; then
-    if apt-get install -y --no-install-recommends certbot python3-certbot-nginx; then
-        _mailarg="--register-unsafely-without-email"
-        [ -n "${WS_TLS_EMAIL:-}" ] && _mailarg="-m $WS_TLS_EMAIL"
-        # Non-fatal: a name that does not resolve yet is a DNS problem, not a
-        # reason to leave the operator with no stack at all. Plain HTTP still
-        # works and certbot can be re-run by hand.
-        certbot --nginx -n --agree-tos $_mailarg -d "$WS_DOMAIN" ||
-            echo "WARNING: certbot could not issue for $WS_DOMAIN — serving plain HTTP; re-run certbot once DNS resolves" >&2
-    else
-        echo "WARNING: certbot did not install — serving plain HTTP" >&2
+# HTTPS when a public name and contact are supplied. Best-effort: a LAN VM
+# with no public DNS cannot pass the ACME challenge, and that must not fail
+# the stack that works without it.
+if [ -n "${WS_DOMAIN:-}" ] && [ -n "${WS_TLS_EMAIL:-}" ]; then
+    if [ "$APP_FAMILY" = rpm ]; then app_pkg_optional certbot python3-certbot-nginx
+    else app_pkg_optional certbot python3-certbot-nginx; fi
+    if command -v certbot >/dev/null 2>&1; then
+        certbot --nginx -n --agree-tos -m "$WS_TLS_EMAIL" -d "$WS_DOMAIN" 2>/dev/null ||
+            app_warn "certbot could not issue for $WS_DOMAIN — HTTP stays up; re-run once DNS points here"
     fi
 fi
 
-# ── firewall ────────────────────────────────────────────────────────────────
-if command -v nft >/dev/null 2>&1; then
-    nft add table inet filter 2>/dev/null || true
-    nft add chain inet filter input '{ type filter hook input priority 0; policy accept; }' 2>/dev/null || true
-    nft add rule inet filter input tcp dport '{ 80, 443 }' accept 2>/dev/null || true
+# ─── firewall, verify ───────────────────────────────────────────────────────
+app_firewall webstack "$WS_ALLOW_CIDR" 80/tcp 443/tcp
+
+echo
+app_check "postgres accepts SQL"   sudo -u postgres psql -tAc "SELECT 1"
+app_check "database exists"        bash -c 'sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='"'"'$WS_DB_NAME'"'"'" | grep -q 1'
+app_check "app user can connect"   bash -c 'PGPASSWORD="$WS_DB_PASS" psql -h 127.0.0.1 -U "$WS_DB_USER" -d "$WS_DB_NAME" -tAc "SELECT 1" | grep -q 1'
+app_check "redis AUTH ping"        bash -c 'redis-cli -a "$WS_REDIS_PASS" ping 2>/dev/null | grep -q PONG'
+app_check "redis refuses no-auth"  bash -c '! redis-cli ping 2>/dev/null | grep -q PONG'
+app_check "nginx healthz"          bash -c 'curl -fsS http://127.0.0.1/healthz | grep -q ok'
+app_check "nginx serves index"     bash -c 'curl -fsS http://127.0.0.1/ | grep -q "web stack up"'
+app_check "postgres enabled"       systemctl is-enabled "$_pgsvc"
+app_check "redis enabled"          systemctl is-enabled "$_redsvc"
+app_check "nginx enabled"          systemctl is-enabled nginx
+if [ -n "${APP_POOL:-}" ]; then
+    app_check "pgdata recordsize 8K" bash -c '[ "$(zfs get -H -o value recordsize "$APP_POOL"/pgdata)" = 8K ]'
+    app_snapshot postinstall-webstack
 fi
 
-# ── outcome, not exit codes ─────────────────────────────────────────────────
-# Every tier above can return 0 and still not work. Ask each one directly.
-systemctl start webstack-health.service || true
-sleep 2
-_health=$(/usr/local/bin/webstack-health)
-echo "webstack: $_health"
+cat <<EOM
 
-_failed=0
-echo "$_health" | grep -q '"postgres":"ok"' || { echo "FATAL: PostgreSQL is not answering queries" >&2; _failed=1; }
-echo "$_health" | grep -q '"redis":"ok"'    || { echo "FATAL: Redis is not answering AUTH+PING" >&2; _failed=1; }
-echo "$_health" | grep -q '"nginx":"ok"'    || { echo "FATAL: nginx is not running" >&2; _failed=1; }
-if ! curl -fsS --max-time 10 http://127.0.0.1/healthz >/dev/null 2>&1; then
-    echo "FATAL: /healthz is not reachable through nginx" >&2
-    _failed=1
-fi
-[ "$_failed" -eq 0 ] || exit 1
+  Web Stack
 
-echo "webstack: nginx :80 -> 127.0.0.1:$WS_UPSTREAM_PORT | postgres $WS_DB_NAME as $WS_DB_USER | redis loopback+auth"
-echo "webstack: drop your application on port $WS_UPSTREAM_PORT and it is already fronted"
+  Site        http://$(hostname -I 2>/dev/null | awk '{print $1}')/
+  App proxy   /app/ -> 127.0.0.1:${WS_UPSTREAM_PORT}
+  Database    ${WS_DB_NAME} owner ${WS_DB_USER}  (127.0.0.1:5432, scram)
+  Redis       127.0.0.1:6379 AUTH required
+  Data        pool: ${APP_POOL:-<none — plain dirs>}
+  Firewall    zone 'webstack', source ${WS_ALLOW_CIDR}
+
+EOM
+app_summary
 `

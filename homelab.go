@@ -46,6 +46,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -58,110 +59,293 @@ import (
 // see Notes for where the media itself is meant to live.
 
 var jellyfin = Appliance{
-	Name:     "Jellyfin",
-	Summary:  "Free software media server — your films and shows, no account, no cloud",
+	Name:     "Jellyfin on ZFS",
+	Summary:  "Free-software media server on tuned datasets — per-title media, 16K library, throwaway cache",
 	Homepage: "https://jellyfin.org",
 	License:  "GPL-2.0",
 
-	Distro: "debian",
+	Needs:  NeedsZFS,
+	DataGB: 200,
+
+	Distro: "fedora",
 	VCPUs:  2,
 	RAMMB:  2048,
 	DiskGB: 20,
 
 	Port:    8096,
-	LandsOn: "http://<vm-ip>:8096/  (setup wizard on first visit)",
+	LandsOn: "http://<vm-ip>:8096/  (setup wizard on first visit, or headless if admin fields set)",
 
-	Notes: "Installed from Jellyfin's own Debian repository, whose signing " +
-		"key is checked against a pinned fingerprint before it is trusted.\n\n" +
-		"The media directory is created empty and handed to the jellyfin " +
-		"user. A 20 GB VM disk holds the server and its metadata, NOT a " +
-		"library — point the media directory at a mount you attach " +
-		"separately (a second disk, an NFS or SMB share) rather than growing " +
-		"this VM's root. Add it in the wizard as a library once it has " +
-		"content.\n\n" +
-		"Hardware transcoding needs a GPU passed through to the VM and is " +
-		"off by default; without it, transcoding is CPU-only and 4K will " +
-		"struggle. Direct play is unaffected.",
+	Notes: "Same dataset layout as the Plex tile, so the two media servers " +
+		"are interchangeable over one library model:\n\n" +
+		"  media/movies, media/tv   one dataset PER TITLE (add-movie, add-show)\n" +
+		"  media/music              lz4    media/photos  compression=off\n" +
+		"  jellyfin data            recordsize=16K — the library is SQLite\n" +
+		"  jellyfin cache           sync=disabled, 100G quota, never snapshotted\n\n" +
+		"On Fedora the package comes from RPM Fusion (upstream dropped its own " +
+		"RPMs at 10.9); on Debian from Jellyfin's repo, its signing key " +
+		"checked against a pinned fingerprint first.\n\n" +
+		"Set the admin fields and the setup wizard runs HEADLESSLY — the VM " +
+		"comes up already past first-run. Leave them empty for the browser " +
+		"wizard. The password is carried in the cloud-init seed; treat it as " +
+		"a bootstrap credential and rotate it in the UI.\n\n" +
+		"Hardware transcoding is wired up when the VM has /dev/dri (GPU " +
+		"passthrough); otherwise transcoding is CPU-only and direct play is " +
+		"unaffected.",
 
 	Fields: []ApplianceField{
-		{Key: "JF_MEDIA_DIR", Label: "media directory",
-			Placeholder: "where your library is mounted",
+		{Key: "JF_POOL", Label: "pool name",
+			Placeholder: "created on the appliance's data disk",
+			Default:     "tank", Required: true},
+		{Key: "JF_MEDIA_DIR", Label: "library mountpoint",
+			Placeholder: "where the media datasets mount",
 			Default:     "/srv/media", Required: true},
+		{Key: "JF_ALLOW_CIDR", Label: "allowed source",
+			Placeholder: "who may reach :8096",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "JF_ADMIN_USER", Label: "admin user (optional)",
+			Placeholder: "set with password for a headless setup"},
+		{Key: "JF_ADMIN_PASS", Label: "admin password (optional)",
+			Placeholder: "required when admin user is set"},
 	},
 
 	Validate: func(v map[string]string) error {
-		return checkAbsDir(v["JF_MEDIA_DIR"], "media directory")
+		if err := checkAbsDir(v["JF_MEDIA_DIR"], "library mountpoint"); err != nil {
+			return err
+		}
+		if v["JF_ADMIN_USER"] != "" && v["JF_ADMIN_PASS"] == "" {
+			return fmt.Errorf("admin user is set but the password is empty")
+		}
+		return checkPoolName(v["JF_POOL"])
 	},
 
 	Script: jellyfinScript,
 }
 
-const jellyfinScript = `JF_KEY_URL='https://repo.jellyfin.org/jellyfin_team.gpg.key'
-JF_KEY_FPR='4918AABC486CA052358D778D49023CD01DE21A7B'
-JF_SUITE='trixie'
+const jellyfinScript = `
+APP_TAG=jellyfin
+APP_POOL="$JF_POOL"
 
-export DEBIAN_FRONTEND=noninteractive
+app_pool_init
 
-# ─── Prerequisites ───────────────────────────────────────────────────
-# gnupg for --dearmor, ca-certificates so the key fetch can be trusted at
-# all. Both are absent from the Debian genericcloud image.
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl gnupg
+# ─── datasets ───────────────────────────────────────────────────────────────
+# Library DB + metadata: SQLite under WAL, small random IO. Snapshot-worthy.
+app_dataset jellyfin       /var/lib/jellyfin   recordsize=16K
+# Cache + transcodes: fully regenerable. sync=disabled is safe BECAUSE it is
+# regenerable, the quota stops a runaway transcode eating the pool, and
+# auto-snapshot=false keeps it out of every snapshot and replication stream.
+app_dataset jellyfin-cache /var/cache/jellyfin recordsize=128K compression=lz4 \
+    sync=disabled quota=100G com.sun:auto-snapshot=false
 
-# ─── Trust, but verify ───────────────────────────────────────────────
-# The fingerprint check is the entire point: without it this is "trust
-# whatever answered the request", forever, for every package the VM
-# installs from that repo.
-install -d -m 0755 /etc/apt/keyrings
-tmpkey="$(mktemp)"
-trap 'rm -f "$tmpkey"' EXIT
-curl -fsSL "$JF_KEY_URL" -o "$tmpkey"
+# Media: same shape as the Plex tile — movies/ and tv/ are canmount=off
+# containers holding one dataset per title.
+app_dataset media        none                      canmount=off
+app_dataset media/movies "$JF_MEDIA_DIR/movies"    canmount=off
+app_dataset media/tv     "$JF_MEDIA_DIR/tv"        canmount=off
+app_dataset media/music  "$JF_MEDIA_DIR/music"     compression=lz4
+app_dataset media/photos "$JF_MEDIA_DIR/photos"    compression=off
+mkdir -p "$JF_MEDIA_DIR"/movies "$JF_MEDIA_DIR"/tv /var/cache/jellyfin/transcodes
 
-got_fpr="$(gpg --show-keys --with-colons --with-fingerprint "$tmpkey" |
-    awk -F: '$1 == "fpr" { print $10; exit }')"
-if [[ "$got_fpr" != "$JF_KEY_FPR" ]]; then
-    echo "FATAL: Jellyfin signing key fingerprint mismatch" >&2
-    echo "  expected $JF_KEY_FPR" >&2
-    echo "  got      ${got_fpr:-<none>}" >&2
-    exit 1
-fi
-gpg --dearmor --yes -o /etc/apt/keyrings/jellyfin.gpg "$tmpkey"
-chmod 0644 /etc/apt/keyrings/jellyfin.gpg
-
-# arch= is pinned so apt does not ask the repo for indexes it has no
-# packages for, which shows up as a confusing 404 during every update.
-deb_arch="$(dpkg --print-architecture)"
-cat >/etc/apt/sources.list.d/jellyfin.list <<EOF
-deb [arch=${deb_arch} signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian ${JF_SUITE} main
-EOF
-
-# ─── Install ─────────────────────────────────────────────────────────
-apt-get update
-apt-get install -y jellyfin
-
-# ─── The library location ────────────────────────────────────────────
-# Created empty and owned by jellyfin so the wizard can actually add it.
-# If the operator later mounts a share here, the mount's own ownership
-# wins — this only guarantees the path exists and is usable today.
-install -d -m 0775 -o jellyfin -g jellyfin "$JF_MEDIA_DIR"
-
-systemctl enable --now jellyfin
-
-# ─── Prove it ────────────────────────────────────────────────────────
-# The service unit returning 0 says systemd started a process, not that
-# the server is serving. Poll the port so a broken install fails here,
-# where the log is being read, rather than at the operator's browser.
-for _ in $(seq 1 60); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:8096/System/Ping" 2>/dev/null ||
-        curl -fsS -o /dev/null "http://127.0.0.1:8096/" 2>/dev/null; then
-        echo "jellyfin: responding on 8096"
-        exit 0
+# ─── install ────────────────────────────────────────────────────────────────
+app_pkg curl jq
+if [ "$APP_FAMILY" = rpm ]; then
+    # Upstream dropped its own RPMs at 10.9 and points Fedora at RPM Fusion.
+    app_pkg policycoreutils-python-utils firewalld
+    _fedora_ver="$(rpm -E %fedora)"
+    rpm -q rpmfusion-free-release >/dev/null 2>&1 ||
+        app_pkg "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${_fedora_ver}.noarch.rpm"
+    rpm -q rpmfusion-nonfree-release >/dev/null 2>&1 ||
+        app_pkg_optional "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${_fedora_ver}.noarch.rpm"
+    # The NVIDIA cuda repo fights RPM Fusion over driver packages; keep it out
+    # of this one transaction rather than editing the operator's repo files.
+    _dnf_excl=""
+    if dnf repolist --enabled 2>/dev/null | grep -qi '^cuda'; then
+        app_warn "NVIDIA cuda repo detected — excluded from the jellyfin transaction"
+        _dnf_excl="--disablerepo=cuda*"
     fi
-    sleep 5
+    dnf -y $_dnf_excl install jellyfin >/dev/null
+    rpm -q jellyfin >/dev/null 2>&1 || app_die "dnf returned 0 but jellyfin is not installed"
+else
+    # Debian: upstream repo, key verified against a pinned fingerprint BEFORE
+    # apt is told to trust it.
+    JF_KEY_URL=https://repo.jellyfin.org/jellyfin_team.gpg.key
+    JF_KEY_FPR=4918AABC486CA052358D778D49023CD01DE21A7B
+    app_pkg gnupg2
+    _key="$(mktemp)"; trap 'rm -f "$_key"' EXIT
+    curl -fsSL --retry 5 --retry-delay 3 "$JF_KEY_URL" -o "$_key"
+    gpg --show-keys --with-colons "$_key" | awk -F: '$1=="fpr"{print $10}' |
+        grep -qx "$JF_KEY_FPR" || app_die "jellyfin key fingerprint mismatch — refusing to import"
+    app_log "jellyfin signing key verified: $JF_KEY_FPR"
+    install -d -m 0755 /etc/apt/keyrings
+    gpg --dearmor <"$_key" >/etc/apt/keyrings/jellyfin.gpg
+    chmod 0644 /etc/apt/keyrings/jellyfin.gpg
+    . /etc/os-release
+    echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/${ID} ${VERSION_CODENAME} main" \
+        >/etc/apt/sources.list.d/jellyfin.list
+    app_pkg jellyfin
+fi
+getent passwd jellyfin >/dev/null || app_die "the jellyfin user was not created by the package"
+
+# ─── ownership, ACLs, SELinux ───────────────────────────────────────────────
+chown -R jellyfin:jellyfin /var/lib/jellyfin /var/cache/jellyfin "$JF_MEDIA_DIR"
+chmod 0750 /var/lib/jellyfin /var/cache/jellyfin
+chmod -R 0755 "$JF_MEDIA_DIR"
+if command -v setfacl >/dev/null 2>&1; then
+    # Default ACL so files a downloader drops in later stay readable.
+    setfacl -R -m u:jellyfin:rX "$JF_MEDIA_DIR"
+    setfacl -R -d -m u:jellyfin:rX "$JF_MEDIA_DIR"
+fi
+app_selinux mnt_t     "${JF_MEDIA_DIR}(/.*)?"
+app_selinux var_lib_t "/var/lib/jellyfin(/.*)?"
+app_relabel "$JF_MEDIA_DIR" /var/lib/jellyfin /var/cache/jellyfin
+
+# ─── systemd drop-in ────────────────────────────────────────────────────────
+install -d -m 0755 /etc/systemd/system/jellyfin.service.d
+cat >/etc/systemd/system/jellyfin.service.d/10-kldload.conf <<CONF
+[Unit]
+After=zfs-mount.service network-online.target
+Wants=zfs-mount.service network-online.target
+RequiresMountsFor=/var/lib/jellyfin /var/cache/jellyfin ${JF_MEDIA_DIR}
+
+[Service]
+Restart=on-failure
+RestartSec=5
+# Server GC helps multi-stream libraries; the heap cap keeps .NET from
+# treating a 2G VM as a 2G heap budget.
+Environment=DOTNET_gcServer=1
+Environment=DOTNET_GCHeapHardLimitPercent=50
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+RestrictSUIDSGID=yes
+LimitNOFILE=65535
+CONF
+cat >/etc/tmpfiles.d/jellyfin.conf <<'CONF'
+d /var/cache/jellyfin/transcodes 0750 jellyfin jellyfin 1d
+CONF
+
+# ─── hardware transcoding, when the VM actually has a GPU ───────────────────
+if [ -d /dev/dri ]; then
+    app_log "GPU present — wiring VA-API transcode access"
+    for _g in video render; do
+        getent group "$_g" >/dev/null && usermod -aG "$_g" jellyfin
+    done
+    cat >/etc/udev/rules.d/99-jellyfin-dri.rules <<'RULES'
+KERNEL=="renderD*", GROUP="render", MODE="0660"
+KERNEL=="card*",    GROUP="video",  MODE="0660"
+RULES
+    udevadm control --reload-rules 2>/dev/null && udevadm trigger --subsystem-match=drm 2>/dev/null
+    if [ "$APP_FAMILY" = rpm ]; then
+        app_pkg_optional intel-media-driver libva-utils mesa-va-drivers
+    else
+        app_pkg_optional intel-media-va-driver vainfo mesa-va-drivers
+    fi
+    # Seed encoding.xml so first boot already has VAAPI on and transcodes on
+    # the cache dataset. Jellyfin fills missing elements with defaults, so a
+    # partial file is safe.
+    if [ ! -f /etc/jellyfin/encoding.xml ]; then
+        install -d -m 0755 /etc/jellyfin
+        cat >/etc/jellyfin/encoding.xml <<'ENC'
+<?xml version="1.0" encoding="utf-8"?>
+<EncodingOptions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <TranscodingTempPath>/var/cache/jellyfin/transcodes</TranscodingTempPath>
+  <HardwareAccelerationType>vaapi</HardwareAccelerationType>
+  <VaapiDevice>/dev/dri/renderD128</VaapiDevice>
+  <EnableHardwareEncoding>true</EnableHardwareEncoding>
+  <EnableTonemapping>true</EnableTonemapping>
+  <EnableThrottling>true</EnableThrottling>
+  <ThrottleDelaySeconds>180</ThrottleDelaySeconds>
+</EncodingOptions>
+ENC
+        chown jellyfin:jellyfin /etc/jellyfin/encoding.xml
+        chmod 0640 /etc/jellyfin/encoding.xml
+    fi
+fi
+
+# ─── large libraries outgrow the inotify defaults ───────────────────────────
+cat >/etc/sysctl.d/90-jellyfin.conf <<'SYSCTL'
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+SYSCTL
+sysctl -q --system
+
+# ─── per-title helpers, owner-aware ─────────────────────────────────────────
+for _kind in movie show; do
+    _sub=movies; [ "$_kind" = show ] && _sub=tv
+    cat >"/usr/local/bin/add-${_kind}" <<HELPER
+#!/usr/bin/env bash
+# add-${_kind} "Title" [year] — one dataset per title.
+set -Eeuo pipefail
+TITLE="\${1:-}"; YEAR="\${2:-}"
+[ -n "\$TITLE" ] || { echo 'usage: add-${_kind} "Title" [year]' >&2; exit 2; }
+SLUG=\$(printf '%s%s' "\$TITLE" "\${YEAR:+-\$YEAR}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
+[ -n "\$SLUG" ] || { echo "title produced an empty slug" >&2; exit 2; }
+DATASET="${APP_POOL:-tank}/media/${_sub}/\${SLUG}"
+MOUNT="${JF_MEDIA_DIR}/${_sub}/\${SLUG}"
+if zfs list "\$DATASET" >/dev/null 2>&1; then echo "already exists: \$DATASET"; exit 0; fi
+zfs create -o mountpoint="\$MOUNT" -o compression=off -o recordsize=1M "\$DATASET"
+chown jellyfin:jellyfin "\$MOUNT"; chmod 0755 "\$MOUNT"
+echo "created \$DATASET -> \$MOUNT"
+HELPER
+    chmod 0755 "/usr/local/bin/add-${_kind}"
 done
-echo "FATAL: jellyfin did not answer on 8096 after 5 minutes" >&2
-systemctl --no-pager --full status jellyfin >&2 || true
-exit 1
+
+# ─── firewall, service ──────────────────────────────────────────────────────
+# 8096 http, 8920 https, 1900/udp DLNA, 7359/udp client auto-discovery.
+app_firewall jellyfin "$JF_ALLOW_CIDR" 8096/tcp 8920/tcp 1900/udp 7359/udp
+
+systemctl daemon-reload
+app_enable jellyfin
+
+app_log "waiting for Jellyfin on :8096"
+app_wait_http http://127.0.0.1:8096/System/Info/Public 120 ||
+    app_warn "not answering yet — journalctl -u jellyfin -n 100"
+
+# ─── headless setup wizard ──────────────────────────────────────────────────
+if [ -n "${JF_ADMIN_USER:-}" ] &&
+    curl -fsS --max-time 5 http://127.0.0.1:8096/System/Info/Public 2>/dev/null |
+    jq -e '.StartupWizardCompleted == false' >/dev/null 2>&1; then
+    app_log "running the setup wizard headlessly"
+    _jf() { curl -fsS --max-time 15 -X POST "http://127.0.0.1:8096$1" \
+        -H 'Content-Type: application/json' -d "$2" >/dev/null; }
+    _jf /Startup/Configuration '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}'
+    # GET before POST: the wizard endpoint initialises server-side state on
+    # the read, and posting a user first is silently ignored.
+    curl -fsS --max-time 10 http://127.0.0.1:8096/Startup/User >/dev/null
+    _jf /Startup/User "$(jq -nc --arg n "$JF_ADMIN_USER" --arg p "$JF_ADMIN_PASS" '{Name:$n,Password:$p}')"
+    _jf /Startup/RemoteAccess '{"EnableRemoteAccess":false,"EnableAutomaticPortMapping":false}'
+    _jf /Startup/Complete '{}'
+    systemctl restart jellyfin.service
+    app_wait_http http://127.0.0.1:8096/System/Info/Public 60 || true
+    app_log "wizard complete — admin '$JF_ADMIN_USER' created"
+fi
+
+# ─── verify ─────────────────────────────────────────────────────────────────
+echo
+app_check "jellyfin answers on :8096"  curl -fsS --max-time 5 http://127.0.0.1:8096/System/Info/Public
+app_check "jellyfin enabled"           systemctl is-enabled jellyfin
+app_check "jellyfin active"            systemctl is-active jellyfin
+app_check "library mountpoint"         test -d "$JF_MEDIA_DIR/movies"
+app_check "add-movie installed"        test -x /usr/local/bin/add-movie
+app_check "add-show installed"         test -x /usr/local/bin/add-show
+if [ -n "${APP_POOL:-}" ]; then
+    app_check "library recordsize 16K" bash -c '[ "$(zfs get -H -o value recordsize "$APP_POOL"/jellyfin)" = 16K ]'
+    app_check "cache never snapshotted" bash -c '[ "$(zfs get -H -o value com.sun:auto-snapshot "$APP_POOL"/jellyfin-cache)" = false ]'
+    app_snapshot postinstall-jellyfin
+fi
+
+cat <<EOM
+
+  Jellyfin on ZFS
+
+  Web UI      http://$(hostname -I 2>/dev/null | awk '{print $1}'):8096/
+  Library     ${JF_MEDIA_DIR}      pool: ${APP_POOL:-<none — plain dirs>}
+  Add titles  add-movie "The Matrix" 1999   /   add-show "The Wire"
+  Firewall    zone 'jellyfin', source ${JF_ALLOW_CIDR}
+
+EOM
+app_summary
 `
 
 // ─── Media: Plex ─────────────────────────────────────────────────────
@@ -448,6 +632,9 @@ var gitea = Appliance{
 	RAMMB:  1024,
 	DiskGB: 20,
 
+	Needs:  NeedsZFS,
+	DataGB: 50,
+
 	Port:    3000,
 	LandsOn: "http://<vm-ip>:3000/  (git over ssh on port 2222)",
 
@@ -496,7 +683,15 @@ var gitea = Appliance{
 	Script: giteaScript,
 }
 
-const giteaScript = `GITEA_VERSION='1.27.2'
+const giteaScript = `
+APP_TAG=gitea
+# Repos are the state worth snapshotting: hundreds of small objects, and a
+# pre-upgrade rollback point is one zfs command. Fixed pool name — every tile
+# defaults to tank, and gitea predates the pool field.
+APP_POOL=tank
+app_pool_init
+app_dataset gitea /var/lib/gitea recordsize=16K
+GITEA_VERSION='1.27.2'
 GITEA_SHA256_amd64='aa4e624ca6aa58a824a75562caecc2d206fcab8c70bc8fab765b456f182844fd'
 GITEA_SHA256_arm64='a585d7ce94bacb81241ec39b0e3dc99b173c9d7dd41cd3e5c28445a30271c3ab'
 
@@ -659,6 +854,8 @@ var adguardHome = Appliance{
 	RAMMB:  1024,
 	DiskGB: 10,
 
+	Needs: NeedsKVM,
+
 	Port:    3000,
 	LandsOn: "http://<vm-ip>:3000/  (first-run wizard; DNS on port 53)",
 
@@ -778,6 +975,9 @@ var syncthing = Appliance{
 	RAMMB:  1024,
 	DiskGB: 40,
 
+	Needs:  NeedsZFS,
+	DataGB: 100,
+
 	Port:    8384,
 	LandsOn: "http://<vm-ip>:8384/  (set a GUI password immediately)",
 
@@ -807,7 +1007,14 @@ var syncthing = Appliance{
 	Script: syncthingScript,
 }
 
-const syncthingScript = `ST_KEY_URL='https://syncthing.net/release-key.gpg'
+const syncthingScript = `
+APP_TAG=syncthing
+# The sync tree is other machines' data — snapshots here are what turn an
+# accidental deletion propagated by sync into a non-event.
+APP_POOL=tank
+app_pool_init
+app_dataset syncthing /var/lib/syncthing
+ST_KEY_URL='https://syncthing.net/release-key.gpg'
 ST_KEY_FPR='FBA2E162F2F44657B38F0309E5665F9BD5970C47'
 
 export DEBIAN_FRONTEND=noninteractive
@@ -915,3 +1122,437 @@ func checkAbsDir(p, what string) error {
 	}
 	return nil
 }
+
+// ─── Seedbox ─────────────────────────────────────────────────────────────
+//
+// The site's Automated Seedbox recipe, as a tile: qBittorrent on the same
+// per-title dataset model as the media servers, a landing dataset for
+// in-flight downloads, and — when VPN details are supplied — a WireGuard
+// tunnel with an nftables KILL SWITCH so nothing leaks if the tunnel drops.
+// The recipe calls the kill switch non-negotiable, and it is right.
+var seedbox = Appliance{
+	Name:     "Seedbox",
+	Summary:  "qBittorrent on tuned datasets, with a VPN kill switch that fails closed",
+	Homepage: "https://www.qbittorrent.org",
+	License:  "GPL-2.0 (qBittorrent)",
+
+	Needs:  NeedsZFS,
+	DataGB: 500,
+
+	Distro: "fedora",
+	VCPUs:  2,
+	RAMMB:  2048,
+	DiskGB: 20,
+
+	Port:    8080,
+	LandsOn: "http://<vm-ip>:8080/  (qBittorrent web UI; password printed in the build log)",
+
+	Notes: "Downloads land on a landing dataset (lz4, 1M records) and get " +
+		"sorted into the same media/movies, media/tv per-title containers " +
+		"the Plex and Jellyfin tiles use — so a finished download is one " +
+		"zfs send away from the media server.\n\n" +
+		"THE KILL SWITCH: fill in the four VPN fields and ALL outbound " +
+		"traffic is forced through wg0 — if the tunnel drops, torrent " +
+		"traffic stops rather than leaking your address. The web UI stays " +
+		"reachable from your LAN CIDR. Leave the VPN fields empty and " +
+		"torrents go out directly, kill switch off.\n\n" +
+		"The VPN private key rides in the cloud-init seed; treat it as a " +
+		"bootstrap credential and rotate it with your provider if the seed " +
+		"ISO leaves the host.",
+
+	Fields: []ApplianceField{
+		{Key: "SB_POOL", Label: "pool name",
+			Default: "tank", Required: true},
+		{Key: "SB_ALLOW_CIDR", Label: "allowed source",
+			Placeholder: "who may reach the web UI",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "SB_VPN_ADDRESS", Label: "VPN address (optional)",
+			Placeholder: "e.g. 10.2.0.2/32 from your provider"},
+		{Key: "SB_VPN_PRIVKEY", Label: "VPN private key (optional)",
+			Placeholder: "wg private key from your provider"},
+		{Key: "SB_VPN_PEER_PUB", Label: "VPN peer public key (optional)",
+			Placeholder: "the provider endpoint's public key"},
+		{Key: "SB_VPN_ENDPOINT", Label: "VPN endpoint (optional)",
+			Placeholder: "host:port"},
+	},
+
+	Validate: func(v map[string]string) error {
+		if err := checkPoolName(v["SB_POOL"]); err != nil {
+			return err
+		}
+		vpn := 0
+		for _, k := range []string{"SB_VPN_ADDRESS", "SB_VPN_PRIVKEY", "SB_VPN_PEER_PUB", "SB_VPN_ENDPOINT"} {
+			if v[k] != "" {
+				vpn++
+			}
+		}
+		if vpn != 0 && vpn != 4 {
+			return fmt.Errorf("VPN needs all four fields (address, private key, peer public key, endpoint) — %d of 4 set", vpn)
+		}
+		return nil
+	},
+
+	Script: seedboxScript,
+}
+
+const seedboxScript = `
+APP_TAG=seedbox
+APP_POOL="$SB_POOL"
+
+app_pool_init
+
+# ─── datasets, per the seedbox recipe ───────────────────────────────────────
+# landing: in-flight downloads — big sequential writes, lz4 catches the
+# compressible stragglers, and it is never snapshotted: everything here is
+# either re-downloadable or about to be sorted into media/.
+app_dataset landing /srv/landing recordsize=1M compression=lz4 \
+    com.sun:auto-snapshot=false
+# media: identical shape to the media-server tiles, so a finished item is one
+# rename (same pool) or one zfs send (their pool) from the library.
+app_dataset media        none              canmount=off
+app_dataset media/movies /srv/media/movies canmount=off
+app_dataset media/tv     /srv/media/tv     canmount=off
+# session state: many small resume files, rewritten constantly.
+app_dataset apps         /opt/seedbox      compression=lz4
+app_dataset apps/session /opt/seedbox/session recordsize=16K
+mkdir -p /srv/media/movies /srv/media/tv
+
+# ─── qBittorrent ────────────────────────────────────────────────────────────
+if [ "$APP_FAMILY" = rpm ]; then app_pkg qbittorrent-nox; else app_pkg qbittorrent-nox; fi
+getent passwd seedbox >/dev/null || useradd -r -d /opt/seedbox -s /usr/sbin/nologin seedbox
+chown -R seedbox:seedbox /srv/landing /srv/media /opt/seedbox
+
+install -d -m 0750 -o seedbox -g seedbox /opt/seedbox/.config/qBittorrent
+cat >/opt/seedbox/.config/qBittorrent/qBittorrent.conf <<QBT
+[BitTorrent]
+Session\DefaultSavePath=/srv/landing
+Session\TempPath=/srv/landing/incomplete
+Session\Port=52630
+QBT
+chown -R seedbox:seedbox /opt/seedbox/.config
+
+cat >/etc/systemd/system/qbittorrent-nox.service <<UNIT
+[Unit]
+Description=qBittorrent (headless)
+After=network-online.target zfs-mount.service wg-quick@wg0.service
+Wants=network-online.target
+RequiresMountsFor=/srv/landing /opt/seedbox
+
+[Service]
+User=seedbox
+Group=seedbox
+Environment=HOME=/opt/seedbox
+ExecStart=/usr/bin/qbittorrent-nox --webui-port=8080 --profile=/opt/seedbox
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# ─── VPN + kill switch, only when the operator supplied a tunnel ────────────
+if [ -n "${SB_VPN_PRIVKEY:-}" ]; then
+    app_pkg wireguard-tools nftables
+    _ep_host="${SB_VPN_ENDPOINT%:*}"
+    _ep_port="${SB_VPN_ENDPOINT##*:}"
+    install -d -m 0700 /etc/wireguard
+    cat >/etc/wireguard/wg0.conf <<WG
+[Interface]
+PrivateKey = ${SB_VPN_PRIVKEY}
+Address = ${SB_VPN_ADDRESS}
+
+[Peer]
+PublicKey = ${SB_VPN_PEER_PUB}
+Endpoint = ${SB_VPN_ENDPOINT}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+WG
+    chmod 0600 /etc/wireguard/wg0.conf
+    app_enable wg-quick@wg0
+
+    # The kill switch: outbound is wg0, the LAN, DHCP/DNS bootstrap, and the
+    # tunnel handshake itself — nothing else. If wg0 drops, torrent traffic
+    # stops instead of leaking. Input stays open to the LAN so the web UI
+    # cannot lock you out.
+    cat >/etc/nftables-killswitch.conf <<NFT
+table inet killswitch {
+    chain output {
+        type filter hook output priority 0; policy drop;
+        oifname "lo" accept
+        oifname "wg0" accept
+        ct state established,related accept
+        ip daddr ${SB_ALLOW_CIDR} accept
+        udp dport { 53, 67, 68 } accept
+        ip daddr ${_ep_host} udp dport ${_ep_port} accept
+        log prefix "killswitch-blocked: " limit rate 1/minute
+    }
+}
+NFT
+    if [ "$APP_FAMILY" = rpm ]; then
+        _nftmain=/etc/sysconfig/nftables.conf
+    else
+        _nftmain=/etc/nftables.conf
+    fi
+    grep -q nftables-killswitch "$_nftmain" 2>/dev/null ||
+        echo 'include "/etc/nftables-killswitch.conf"' >>"$_nftmain"
+    nft -f /etc/nftables-killswitch.conf || app_die "kill switch rules did not load"
+    app_enable nftables
+    # Bind the session to wg0 so torrents cannot even try another interface.
+    printf 'Session\\Interface=wg0\nSession\\InterfaceName=wg0\n' \
+        >>/opt/seedbox/.config/qBittorrent/qBittorrent.conf
+    app_log "kill switch armed: outbound is wg0-or-nothing"
+else
+    app_warn "no VPN configured — torrents will use the VM's own address"
+fi
+
+# ─── firewall, service, verify ──────────────────────────────────────────────
+app_firewall seedbox "$SB_ALLOW_CIDR" 8080/tcp
+systemctl daemon-reload
+app_enable qbittorrent-nox
+
+app_log "waiting for the web UI on :8080"
+app_wait_http http://127.0.0.1:8080/ 90 ||
+    app_warn "web UI not answering — journalctl -u qbittorrent-nox -n 50"
+
+echo
+app_check "qbittorrent answers on :8080" curl -fsS --max-time 5 http://127.0.0.1:8080/
+app_check "qbittorrent enabled"          systemctl is-enabled qbittorrent-nox
+app_check "landing dataset mounted"      mountpoint -q /srv/landing
+app_check "media containers present"     test -d /srv/media/movies
+if [ -n "${SB_VPN_PRIVKEY:-}" ]; then
+    app_check "wg0 is up"                bash -c 'wg show wg0 2>/dev/null | grep -q .'
+    app_check "kill switch loaded"       bash -c 'nft list table inet killswitch >/dev/null'
+fi
+if [ -n "${APP_POOL:-}" ]; then
+    app_check "landing never snapshotted" bash -c '[ "$(zfs get -H -o value com.sun:auto-snapshot "$APP_POOL"/landing)" = false ]'
+    app_snapshot postinstall-seedbox
+fi
+
+_qbtpass="$(journalctl -u qbittorrent-nox 2>/dev/null | grep -oE 'temporary password.*: .*' | tail -1)"
+cat <<EOM
+
+  Seedbox
+
+  Web UI      http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080/
+              login: admin — ${_qbtpass:-password in journalctl -u qbittorrent-nox}
+  Landing     /srv/landing        Media  /srv/media/{movies,tv}
+  Kill switch $([ -n "${SB_VPN_PRIVKEY:-}" ] && echo "ARMED (wg0-or-nothing)" || echo "off — no VPN supplied")
+
+EOM
+app_summary
+`
+
+// ─── Icecast station rack ────────────────────────────────────────────────
+//
+// Written for abyss: the FreeBSD box that runs thirty music streams, on its
+// way to kldload. The model is one icecast INSTANCE per station — its own
+// unit, its own port, its own dataset — so one station's restart, quota or
+// migration never touches the other twenty-nine. add-station stamps out
+// number thirty-one.
+var icecast = Appliance{
+	Name:     "Icecast Stations",
+	Summary:  "A rack of independent Icecast servers — one unit, port and dataset per station",
+	Homepage: "https://icecast.org",
+	License:  "GPL-2.0",
+
+	Needs:  NeedsZFS,
+	DataGB: 100,
+
+	Distro: "fedora",
+	VCPUs:  2,
+	RAMMB:  1024,
+	DiskGB: 15,
+
+	Port:    8001,
+	LandsOn: "http://<vm-ip>:8001/  (station 1; station N is on 8000+N)",
+
+	Notes: "Each station is a separate icecast process: icecast@N.service " +
+		"listening on 8000+N, configured from /etc/icecast-stations/N.xml, " +
+		"with logs and state on its own dataset. Thirty stations means " +
+		"thirty units — systemctl restart icecast@7 touches ONE stream.\n\n" +
+		"add-station <name> creates the next one: dataset, config, unit, " +
+		"firewall. The source password is per-rack (one encoder fleet), the " +
+		"admin password likewise; both are in the fields.\n\n" +
+		"Stream sources (liquidsoap, ices, BUTT) point at " +
+		"<vm-ip>:800N with the source password.",
+
+	Fields: []ApplianceField{
+		{Key: "IC_POOL", Label: "pool name",
+			Default: "tank", Required: true},
+		{Key: "IC_STATIONS", Label: "stations to create now",
+			Placeholder: "1-64; add-station makes more later",
+			Default:     "4", Required: true},
+		{Key: "IC_ALLOW_CIDR", Label: "listener source",
+			Placeholder: "who may tune in",
+			Default:     "192.168.0.0/16", Required: true},
+		{Key: "IC_ADMIN_PASS", Label: "admin password",
+			Placeholder: "blank = generate one", Secret: true,
+			Generate: true, Required: true},
+		{Key: "IC_SOURCE_PASS", Label: "source (encoder) password",
+			Placeholder: "blank = generate one", Secret: true,
+			Generate: true, Required: true},
+	},
+
+	Validate: func(v map[string]string) error {
+		if err := checkPoolName(v["IC_POOL"]); err != nil {
+			return err
+		}
+		n, err := strconv.Atoi(v["IC_STATIONS"])
+		if err != nil || n < 1 || n > 64 {
+			return fmt.Errorf("stations must be a number from 1 to 64")
+		}
+		for _, k := range []string{"IC_ADMIN_PASS", "IC_SOURCE_PASS"} {
+			if len(v[k]) < 8 {
+				return fmt.Errorf("%s must be at least 8 characters", k)
+			}
+			if strings.ContainsAny(v[k], " \t\n'\"<>&") {
+				return fmt.Errorf("%s must avoid spaces, quotes and XML characters", k)
+			}
+		}
+		return nil
+	},
+
+	Script: icecastScript,
+}
+
+const icecastScript = `
+APP_TAG=icecast
+APP_POOL="$IC_POOL"
+
+app_pool_init
+
+# stations/ is a container; every station below it is its own dataset, so a
+# station moves between pools — or between MACHINES, via zfs send — alone.
+app_dataset stations /srv/stations canmount=off
+
+if [ "$APP_FAMILY" = rpm ]; then
+    app_pkg icecast
+    _icuser=icecast
+else
+    # icecast2 tries a debconf dialog; the noninteractive frontend from the
+    # substrate suppresses it, and the packaged single-instance service is
+    # disabled because the rack model replaces it.
+    app_pkg icecast2
+    _icuser=icecast2
+    systemctl disable --now icecast2 2>/dev/null || true
+fi
+
+install -d -m 0755 /etc/icecast-stations
+
+# The template unit: one icecast per station, numbered.
+cat >/etc/systemd/system/icecast@.service <<UNIT
+[Unit]
+Description=Icecast station %i
+After=network-online.target zfs-mount.service
+Wants=network-online.target
+RequiresMountsFor=/srv/stations/%i
+
+[Service]
+User=${_icuser}
+Group=${_icuser}
+ExecStart=/usr/bin/icecast -c /etc/icecast-stations/%i.xml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+[ -x /usr/bin/icecast ] || sed -i 's|/usr/bin/icecast |/usr/bin/icecast2 |' /etc/systemd/system/icecast@.service
+
+# ─── add-station: stamp out the next one ────────────────────────────────────
+cat >/usr/local/bin/add-station <<'ADDST'
+#!/usr/bin/env bash
+# add-station <n> [name] — dataset, config, unit and port 8000+n for one station.
+set -Eeuo pipefail
+N="${1:-}"; NAME="${2:-station-$N}"
+[ -n "$N" ] && [ "$N" -ge 1 ] 2>/dev/null || { echo "usage: add-station <n> [name]" >&2; exit 2; }
+PORT=$((8000 + N))
+DS="__POOL__/stations/$N"
+MNT="/srv/stations/$N"
+if ! zfs list "$DS" >/dev/null 2>&1 && command -v zfs >/dev/null 2>&1 && [ -n "__POOL__" ]; then
+    zfs create -o mountpoint="$MNT" -o compression=lz4 "$DS"
+fi
+mkdir -p "$MNT/log" "$MNT/web"
+cat >/etc/icecast-stations/$N.xml <<XML
+<icecast>
+  <hostname>$(hostname)</hostname>
+  <location>__NAME__ rack</location>
+  <limits><clients 	>100</clients><sources>4</sources></limits>
+  <authentication>
+    <source-password>__SRCPASS__</source-password>
+    <admin-user>admin</admin-user>
+    <admin-password>__ADMPASS__</admin-password>
+  </authentication>
+  <listen-socket><port>$PORT</port></listen-socket>
+  <paths>
+    <basedir>$MNT</basedir>
+    <logdir>$MNT/log</logdir>
+    <webroot>/usr/share/icecast/web</webroot>
+    <adminroot>/usr/share/icecast/admin</adminroot>
+    <alias source="/" destination="/status.xsl"/>
+  </paths>
+  <logging>
+    <accesslog>access.log</accesslog><errorlog>error.log</errorlog>
+    <loglevel>3</loglevel>
+  </logging>
+  <security><chroot>0</chroot></security>
+</icecast>
+XML
+# Debian keeps the web assets under icecast2.
+[ -d /usr/share/icecast2/web ] && sed -i 's|/usr/share/icecast/|/usr/share/icecast2/|g' /etc/icecast-stations/$N.xml
+chown -R __ICUSER__:__ICUSER__ "$MNT"
+chown __ICUSER__:__ICUSER__ /etc/icecast-stations/$N.xml
+chmod 0640 /etc/icecast-stations/$N.xml
+systemctl enable --now "icecast@$N.service"
+command -v firewall-cmd >/dev/null 2>&1 &&
+    firewall-cmd --permanent --zone=icecast --add-port=$PORT/tcp >/dev/null 2>&1 &&
+    firewall-cmd --reload >/dev/null 2>&1
+echo "station $N ($NAME) on :$PORT — source pw as configured, mount with any encoder"
+ADDST
+sed -i "s|__POOL__|${APP_POOL:-}|g; s|__ICUSER__|${_icuser}|g; s|__SRCPASS__|${IC_SOURCE_PASS}|g; s|__ADMPASS__|${IC_ADMIN_PASS}|g; s|__NAME__|$(hostname)|g" /usr/local/bin/add-station
+chmod 0750 /usr/local/bin/add-station
+
+# The odd-looking tab in "<clients 	>" above would be an icecast config
+# error; normalise it here rather than risk a template typo shipping.
+sed -i 's|<clients 	>|<clients>|' /usr/local/bin/add-station
+
+# ─── build the initial rack ─────────────────────────────────────────────────
+_ports=""
+_n=1
+while [ "$_n" -le "$IC_STATIONS" ]; do
+    /usr/local/bin/add-station "$_n" || app_warn "station $_n failed"
+    _ports="$_ports $((8000 + _n))/tcp"
+    _n=$((_n + 1))
+done
+# shellcheck disable=SC2086  # port list is built above, one word each
+app_firewall icecast "$IC_ALLOW_CIDR" $_ports
+
+echo
+_up=0; _n=1
+while [ "$_n" -le "$IC_STATIONS" ]; do
+    systemctl is-active "icecast@$_n" >/dev/null 2>&1 && _up=$((_up + 1))
+    _n=$((_n + 1))
+done
+app_check "all stations active ($_up/$IC_STATIONS)" [ "$_up" -eq "$IC_STATIONS" ]
+app_check "station 1 answers"  app_wait_http http://127.0.0.1:8001/status.xsl 30
+app_check "add-station installed" test -x /usr/local/bin/add-station
+[ -n "${APP_POOL:-}" ] && app_snapshot postinstall-icecast
+
+cat <<EOM
+
+  Icecast Stations
+
+  Stations    ${IC_STATIONS}, on ports 8001-$((8000 + IC_STATIONS))
+  Status      http://$(hostname -I 2>/dev/null | awk '{print $1}'):8001/
+  Add more    add-station $((IC_STATIONS + 1)) jazz-after-dark
+  Encoders    point at <vm-ip>:800N, source password as configured
+
+EOM
+app_summary
+`
