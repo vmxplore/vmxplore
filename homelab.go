@@ -215,6 +215,11 @@ Environment=DOTNET_gcServer=1
 Environment=DOTNET_GCHeapHardLimitPercent=50
 NoNewPrivileges=yes
 ProtectSystem=full
+# The Fedora package keeps its config under /etc/jellyfin and writes a
+# marker there on every start; with /etc read-only it aborted with
+# "Read-only file system: /etc/jellyfin/.jellyfin-config" and core-dumped
+# in a restart loop (onyx, 2026-09-04).
+ReadWritePaths=/etc/jellyfin
 ProtectHome=yes
 ProtectKernelTunables=yes
 RestrictSUIDSGID=yes
@@ -1273,6 +1278,15 @@ WantedBy=multi-user.target
 UNIT
 [ -x /usr/bin/icecast ] || sed -i 's|/usr/bin/icecast |/usr/bin/icecast2 |' /etc/systemd/system/icecast@.service
 
+# ─── SELinux: a station's dataset is born unlabeled_t ─────────────────────
+# A fresh ZFS dataset carries no label, and icecast (init_t under this unit)
+# was denied add_name on every station's log dir: "could not open access
+# logging: Permission denied", 6390 restarts on onyx, 2026-09-04. Register
+# the contexts once; add-station relabels each new tree. var_log_t for the
+# logs was tested in place — the station came up on the next restart.
+app_selinux var_t "/srv/stations(/.*)?"
+app_selinux var_log_t "/srv/stations/[0-9]+/log(/.*)?"
+
 # ─── add-station: stamp out the next one ────────────────────────────────────
 cat >/usr/local/bin/add-station <<'ADDST'
 #!/usr/bin/env bash
@@ -1287,6 +1301,8 @@ if ! zfs list "$DS" >/dev/null 2>&1 && command -v zfs >/dev/null 2>&1 && [ -n "_
     zfs create -o mountpoint="$MNT" -o compression=lz4 "$DS"
 fi
 mkdir -p "$MNT/log" "$MNT/web"
+# SELinux hosts: apply the contexts the recipe registered for /srv/stations.
+command -v restorecon >/dev/null 2>&1 && restorecon -R "$MNT" 2>/dev/null || true
 cat >/etc/icecast-stations/$N.xml <<XML
 <icecast>
   <hostname>$(hostname)</hostname>
@@ -1484,13 +1500,28 @@ if [ "$APP_FAMILY" = deb ]; then
     # is not acceptable on your network, skip the web half — SoapyRemote and
     # the capture tools above carry no such caveat.
     install -d -m 0755 /etc/apt/keyrings
+    # The project serves an ASCII-armored key under a .gpg name. apt only
+    # reads an armored signed-by file when it ends in .asc, so saved as
+    # .gpg it was silently unusable: "NO_PUBKEY B64EADD5CB69C981 … The
+    # repository is not signed", the update failure vanished under its
+    # 2>/dev/null, and every SDR build ended "Unable to locate package
+    # openwebrx" with a VERIFIED verdict on top (onyx, 2026-09-04). Same
+    # lesson as the tvheadend key: keep the armor, name it .asc.
+    # Per-codename directory, not the "debian" one: that directory is built
+    # for bullseye (python3-csdr wants python3 < 3.10, soapy-connector wants
+    # libsoapysdr0.7), so on bookworm it resolved and then failed "you have
+    # held broken packages". The bookworm, trixie and noble directories all
+    # exist and install cleanly (onyx, 2026-09-04, second SDR rebuild).
+    . /etc/os-release
     if curl -fsSL https://luarvique.github.io/ppa/openwebrx-plus.gpg \
-        -o /etc/apt/keyrings/openwebrx-plus.gpg; then
-        . /etc/os-release
-        echo "deb [signed-by=/etc/apt/keyrings/openwebrx-plus.gpg] https://luarvique.github.io/ppa/debian ./" \
+        -o /etc/apt/keyrings/openwebrx-plus.asc; then
+        echo "deb [signed-by=/etc/apt/keyrings/openwebrx-plus.asc] https://luarvique.github.io/ppa/${VERSION_CODENAME:-debian} ./" \
             >/etc/apt/sources.list.d/openwebrx-plus.list
-        apt-get update -qq >/dev/null 2>&1 || true
-        if apt-get install -y -qq openwebrx >/var/log/appliance-openwebrx.log 2>&1; then
+        if ! apt-get update -qq >/var/log/appliance-openwebrx.log 2>&1; then
+            app_warn "apt-get update failed after adding the openwebrx repo — tail of /var/log/appliance-openwebrx.log:"
+            tail -3 /var/log/appliance-openwebrx.log >&2
+        fi
+        if apt-get install -y -qq openwebrx >>/var/log/appliance-openwebrx.log 2>&1; then
             app_log "openwebrx installed"
             if [ -n "${SDR_ADMIN_PASS:-}" ]; then
                 OWRX_PASSWORD="$SDR_ADMIN_PASS" openwebrx admin --noninteractive adduser admin \
@@ -1522,7 +1553,10 @@ elif lsusb -d 0bda:2838 >/dev/null 2>&1 || lsusb -d 0bda:2832 >/dev/null 2>&1; t
 else
     app_warn "no SDR device visible in the guest — passthrough missed or nothing plugged in"
 fi
-if [ "$APP_FAMILY" = deb ] && command -v openwebrx >/dev/null 2>&1; then
+# Unconditional on deb: the tile's contract is a web SDR on :8073, and a
+# check that only runs when the install succeeded let a guest with no
+# openwebrx at all report 3/3 VERIFIED (onyx, 2026-09-04).
+if [ "$APP_FAMILY" = deb ]; then
     app_check "openwebrx answers on :8073" app_wait_http http://127.0.0.1:8073/ 60
 fi
 app_check "captures dataset mounted"   mountpoint -q /srv/captures
@@ -1625,13 +1659,19 @@ sed -i '/^Components:/ { /non-free-firmware/! s/$/ non-free-firmware/ }' \
 # documented URL; like the SDR tile, the caveat is stated: no published
 # fingerprint exists to pin against.
 install -d -m 0755 /etc/apt/keyrings
+# The key stays ASCII-armored as .asc: apt reads that form directly, and
+# gpg is NOT on the Debian cloud image — gpg --dearmor produced a 0-byte
+# keyring under 2>/dev/null, the repo was never written, and the install
+# died on "Unable to locate package tvheadend" (onyx, 2026-09-04). A key
+# that cannot be fetched is fatal here, not a fall-through to a repo that
+# has never carried the package.
 curl -fsSL "https://dl.cloudsmith.io/public/tvheadend/tvheadend/gpg.key" \
-    -o /tmp/tvh.key 2>/dev/null || true
-if [ -s /tmp/tvh.key ]; then
-    gpg --dearmor </tmp/tvh.key >/etc/apt/keyrings/tvheadend.gpg 2>/dev/null || true
-fi
+    -o /etc/apt/keyrings/tvheadend.asc ||
+    app_die "could not fetch the tvheadend signing key from cloudsmith"
+grep -q 'BEGIN PGP PUBLIC KEY BLOCK' /etc/apt/keyrings/tvheadend.asc ||
+    app_die "the tvheadend signing key is not an armored PGP key"
 . /etc/os-release
-if [ -s /etc/apt/keyrings/tvheadend.gpg ]; then
+if [ -s /etc/apt/keyrings/tvheadend.asc ]; then
     # cloudsmith serves the CURRENT codename (trixie: verified HTTP 200); if a
     # future codename is not yet published, fall back to the last LTS rather
     # than to the Debian archive, which has not carried tvheadend for years —
@@ -1643,11 +1683,11 @@ if [ -s /etc/apt/keyrings/tvheadend.gpg ]; then
         app_warn "tvheadend has no ${_tvh_code} repo yet — falling back to bookworm"
         _tvh_code=bookworm
     fi
-    echo "deb [signed-by=/etc/apt/keyrings/tvheadend.gpg] ${_tvh_base} ${_tvh_code} main" \
+    echo "deb [signed-by=/etc/apt/keyrings/tvheadend.asc] ${_tvh_base} ${_tvh_code} main" \
         >/etc/apt/sources.list.d/tvheadend.list
-    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get update -qq >/dev/null 2>&1 ||
+        app_die "apt-get update failed after adding the tvheadend repo"
 fi
-rm -f /tmp/tvh.key
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -qq tvheadend >/var/log/appliance-tvheadend.log 2>&1 ||

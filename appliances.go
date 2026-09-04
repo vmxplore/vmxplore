@@ -370,6 +370,7 @@ type applianceFlags struct {
 	password string
 	sshKey   string
 	noWait   bool
+	golden   bool // seal as a clone template instead of enrolling
 	rest     []string
 }
 
@@ -400,6 +401,8 @@ func parseApplianceFlags(args []string) (applianceFlags, error) {
 			f.password, err = need(i, "--password")
 		case "--no-wait":
 			f.noWait = true
+		case "--golden":
+			f.golden = true
 		case "--ssh-key":
 			i++
 			var p string
@@ -510,6 +513,19 @@ func RunApplianceBuild(name string, args []string) int {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 1
 	}
+	if f.golden {
+		// A template, not a member: no mesh key, no cert, no inventory row
+		// — every one of those is an identity, and a clone must mint its
+		// own. The port wait above is the proof the recipe finished.
+		if err := SealApplianceGolden(spec.Name, log); err != nil {
+			fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "\n%s is a golden — right-click → Clone in the GUI, "+
+			"or clone from %s@golden, stamps out ready copies.\n", a.Name, spec.Name)
+		fmt.Println(spec.Name + "@golden")
+		return 0
+	}
 	// The service answers, so cloud-init has finished and root ssh is live —
 	// the cheapest moment to enroll.
 	EnrollAppliance(spec.Name, applianceSlug(a.Name), log)
@@ -517,6 +533,21 @@ func RunApplianceBuild(name string, args []string) int {
 		"/root/ inside the guest.\n", a.Name)
 	fmt.Println(url)
 	return 0
+}
+
+// SealApplianceGolden turns a finished appliance build into a clone
+// template: the domain's estate row (root zvol and, through MakeGolden, its
+// -data disk) is shut down, sealed and snapshotted @golden. Needs ZFS —
+// there is no qcow2 golden — and reports that plainly.
+//
+// This is the demo: build a database stack with one button in a few
+// minutes, then turn around and stamp out a cluster of them in a second.
+func SealApplianceGolden(vm string, log func(string)) error {
+	r, ok := rowForDomain(vm)
+	if !ok {
+		return fmt.Errorf("%s: built, but libvirt does not list it — cannot seal", vm)
+	}
+	return MakeGolden(r, log)
 }
 
 // RunApplianceScript renders one catalog entry to stdout. Returns a

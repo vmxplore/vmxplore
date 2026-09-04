@@ -111,6 +111,11 @@ app_pkg_optional() {
 
 # ─── storage ────────────────────────────────────────────────────────────────
 APP_POOL="${APP_POOL:-tank}"
+# EXPORTED: the checks at the end of every recipe run under bash -c, a new
+# process that sees only the environment. Unexported, "$APP_POOL"/pgdata was
+# ""/pgdata in there, and four datasets that were tuned exactly right were
+# reported FAIL (web stack, seedbox, jellyfin ×2 — onyx, 2026-09-04).
+export APP_POOL
 
 # app_pool_init — make APP_POOL out of this appliance's blank data disk.
 #
@@ -341,6 +346,14 @@ app_firewall() {
         systemctl enable --now firewalld >/dev/null 2>&1 || true
         firewall-cmd --permanent --new-zone="$_zone" >/dev/null 2>&1 || true
         firewall-cmd --permanent --zone="$_zone" --add-source="$_src" >/dev/null 2>&1 || true
+        # A source-bound zone captures EVERYTHING from that source, not just
+        # the ports listed — including ssh from the hypervisor, which sits
+        # inside the LAN CIDR. That is how jellyfin and plex rejected the
+        # enrollment key push and the operator's own ssh (onyx, 2026-09-04)
+        # while the nft tiles, whose chain policy is accept, never noticed.
+        # ssh stays key-only; the zone just has to let it through.
+        firewall-cmd --permanent --zone="$_zone" --add-service=ssh >/dev/null 2>&1 ||
+            app_warn "could not allow ssh in zone $_zone — enrollment will not reach this VM"
         local _p
         for _p in "$@"; do
             firewall-cmd --permanent --zone="$_zone" --add-port="$_p" >/dev/null 2>&1 ||
@@ -366,8 +379,14 @@ app_firewall() {
 
 # app_selinux <type> <path-regex> — no-op where SELinux is not enforcing.
 app_selinux() {
-    command -v semanage >/dev/null 2>&1 || return 0
     selinuxenabled 2>/dev/null || return 0
+    # semanage is not on the Fedora cloud image. Without it this was a silent
+    # no-op and every dataset a confined service wrote to stayed unlabeled_t.
+    if ! command -v semanage >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
+        dnf -y -q install policycoreutils-python-utils >/dev/null 2>&1 ||
+            app_warn "policycoreutils-python-utils did not install — cannot label $2 as $1"
+    fi
+    command -v semanage >/dev/null 2>&1 || return 0
     semanage fcontext -a -t "$1" "$2" 2>/dev/null ||
         semanage fcontext -m -t "$1" "$2" 2>/dev/null || true
 }
