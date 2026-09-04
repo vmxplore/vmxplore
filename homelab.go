@@ -1357,7 +1357,7 @@ var sdrStation = Appliance{
 	Needs:  NeedsZFS,
 	DataGB: 200,
 
-	Distro: "debian",
+	Distro: "debian-bookworm", // OpenWebRX+ pins python3<3.10; trixie ships 3.13
 	VCPUs:  2,
 	RAMMB:  2048,
 	DiskGB: 15,
@@ -1385,7 +1385,10 @@ var sdrStation = Appliance{
 		"quota. hackrf_transfer and rtl_sdr write there.\n\n" +
 		"OpenWebRX+ comes from its maintainer's repository over HTTPS; the " +
 		"project publishes no key fingerprint to pin, which is noted at the " +
-		"install site rather than hidden.",
+		"install site rather than hidden.\n\n" +
+		"This tile runs on Debian 12 (bookworm) on purpose: OpenWebRX+ pins " +
+		"python3<3.10 and trixie ships 3.13, so the web half will not resolve " +
+		"there. SoapyRemote and the capture tools are distro-agnostic.",
 
 	Fields: []ApplianceField{
 		{Key: "SDR_POOL", Label: "pool name",
@@ -1604,18 +1607,26 @@ if [ -s /tmp/tvh.key ]; then
 fi
 . /etc/os-release
 if [ -s /etc/apt/keyrings/tvheadend.gpg ]; then
-    echo "deb [signed-by=/etc/apt/keyrings/tvheadend.gpg] https://dl.cloudsmith.io/public/tvheadend/tvheadend/deb/${ID} ${VERSION_CODENAME} main" \
+    # cloudsmith serves the CURRENT codename (trixie: verified HTTP 200); if a
+    # future codename is not yet published, fall back to the last LTS rather
+    # than to the Debian archive, which has not carried tvheadend for years —
+    # "Unable to locate package tvheadend" from BOTH sources on smk-tv,
+    # 2026-09-04, was the archive fallback chasing a package that is not there.
+    _tvh_base="https://dl.cloudsmith.io/public/tvheadend/tvheadend/deb/${ID}"
+    _tvh_code="$VERSION_CODENAME"
+    if [ "$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${_tvh_base}/dists/${_tvh_code}/Release")" != 200 ]; then
+        app_warn "tvheadend has no ${_tvh_code} repo yet — falling back to bookworm"
+        _tvh_code=bookworm
+    fi
+    echo "deb [signed-by=/etc/apt/keyrings/tvheadend.gpg] ${_tvh_base} ${_tvh_code} main" \
         >/etc/apt/sources.list.d/tvheadend.list
     apt-get update -qq >/dev/null 2>&1 || true
 fi
 rm -f /tmp/tvh.key
 
 export DEBIAN_FRONTEND=noninteractive
-if ! apt-get install -y -qq tvheadend >/var/log/appliance-tvheadend.log 2>&1; then
-    app_warn "tvheadend repo install failed — trying the distro archive"
-    apt-get install -y -qq tvheadend >>/var/log/appliance-tvheadend.log 2>&1 ||
-        app_die "tvheadend did not install from any source — see /var/log/appliance-tvheadend.log"
-fi
+apt-get install -y -qq tvheadend >/var/log/appliance-tvheadend.log 2>&1 ||
+    app_die "tvheadend did not install from the project repo — see /var/log/appliance-tvheadend.log"
 dpkg -s tvheadend >/dev/null 2>&1 || app_die "apt returned 0 but tvheadend is not installed"
 
 getent passwd hts >/dev/null || app_die "the hts user was not created by the package"

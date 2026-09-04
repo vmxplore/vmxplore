@@ -69,6 +69,12 @@ var cloudImages = map[string]CloudImage{
 		"https://cloud.debian.org/images/cloud/trixie/daily/latest/SHA512SUMS",
 		"sha512",
 	},
+	"debian-bookworm": {
+		"https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+		"debian11",
+		"https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+		"sha512",
+	},
 	"ubuntu": {
 		"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
 		"ubuntu24.04",
@@ -140,7 +146,7 @@ var cloudImages = map[string]CloudImage{
 
 // CloudDistros lists the presets in menu order.
 func CloudDistros() []string {
-	return []string{"fedora", "debian", "ubuntu", "centos", "rocky", "alma", "amazon", "opensuse", "arch"}
+	return []string{"fedora", "debian", "debian-bookworm", "ubuntu", "centos", "rocky", "alma", "amazon", "opensuse", "arch"}
 }
 
 // NewVMSpec is everything the dialog collects. Two build modes:
