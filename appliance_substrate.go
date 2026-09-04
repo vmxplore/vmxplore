@@ -162,7 +162,28 @@ app_install_zfs() {
             return 1
         fi
         dnf -y install "$_got" >/dev/null 2>&1 || return 1
-        dnf -y install zfs >/dev/null 2>&1 || return 1
+        # The fcNN bridge ships its signing keys NAMED PER RELEASE, and the
+        # repo file it installs says gpgkey=...-openzfs-fedora-$releasever.
+        # On a newer Fedora that exact file does not exist, and the install
+        # dies at signature check: "cannot open file ...-fedora-44" (smk-web,
+        # 2026-09-04, after 232 packages downloaded clean). Same key, wrong
+        # name — give dnf the shipped key under the name it insists on, which
+        # keeps gpgcheck ON rather than switching it off.
+        local _want="/etc/pki/rpm-gpg/RPM-GPG-KEY-openzfs-fedora-${_cur}" _have
+        if [ ! -f "$_want" ]; then
+            _have="$(ls -1 /etc/pki/rpm-gpg/RPM-GPG-KEY-openzfs-fedora-* 2>/dev/null | sort -V | tail -1)"
+            if [ -n "$_have" ]; then
+                cp "$_have" "$_want"
+                app_log "gpg key bridged: $(basename "$_have") -> $(basename "$_want")"
+            fi
+        fi
+        # Evidence, not /dev/null: the first live failure was invisible for
+        # exactly that reason.
+        dnf -y install zfs >/var/log/appliance-zfs-install.log 2>&1 || {
+            app_warn "dnf install zfs failed — tail of /var/log/appliance-zfs-install.log:"
+            tail -5 /var/log/appliance-zfs-install.log >&2
+            return 1
+        }
     else
         # zfs-dkms sits in contrib; cloud images enable main only.
         if [ -d /etc/apt/sources.list.d ]; then
@@ -172,7 +193,11 @@ app_install_zfs() {
         apt-get update -qq >/dev/null 2>&1 || true
         apt-get install -y -qq "linux-headers-$(uname -r)" >/dev/null 2>&1 ||
             apt-get install -y -qq linux-headers-amd64 >/dev/null 2>&1 || true
-        apt-get install -y -qq zfsutils-linux zfs-dkms >/dev/null 2>&1 || return 1
+        apt-get install -y -qq zfsutils-linux zfs-dkms >/var/log/appliance-zfs-install.log 2>&1 || {
+            app_warn "apt install zfs failed — tail of /var/log/appliance-zfs-install.log:"
+            tail -5 /var/log/appliance-zfs-install.log >&2
+            return 1
+        }
     fi
     modprobe zfs 2>/dev/null || true
     command -v zpool >/dev/null 2>&1

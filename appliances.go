@@ -1595,9 +1595,15 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$WS_DB_USER'" 
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$WS_DB_NAME'" | grep -q 1 ||
     sudo -u postgres createdb -O "$WS_DB_USER" "$WS_DB_NAME"
 
-# RPM's default pg_hba has no password line for TCP localhost; Debian's does.
+# REPLACE the localhost auth method, never append. pg_hba is first-match-
+# wins: Fedora ships "host all all 127.0.0.1/32 ident" and a scram line
+# appended below it is dead text — the app user failed ident auth on
+# smk-web while the "fixed" hba looked complete at the bottom of the file.
 _hba="$(sudo -u postgres psql -tAc 'SHOW hba_file' | tr -d ' ')"
-if ! grep -qE '^host\s+all\s+all\s+127.0.0.1/32\s+(scram-sha-256|md5)' "$_hba"; then
+if grep -qE '^host\s+all\s+all\s+(127\.0\.0\.1/32|::1/128)\s+ident' "$_hba"; then
+    sed -i -E 's#^(host\s+all\s+all\s+(127\.0\.0\.1/32|::1/128)\s+)ident#\1scram-sha-256#' "$_hba"
+    systemctl reload "$_pgsvc" 2>/dev/null || systemctl restart "$_pgsvc"
+elif ! grep -qE '^host\s+all\s+all\s+127\.0\.0\.1/32\s+(scram-sha-256|md5)' "$_hba"; then
     echo 'host all all 127.0.0.1/32 scram-sha-256' >>"$_hba"
     systemctl reload "$_pgsvc" 2>/dev/null || systemctl restart "$_pgsvc"
 fi
