@@ -353,7 +353,7 @@ consequences worth knowing:
   bash reading named variables; only shell-quoted assignments are prepended. A
   site name containing a quote, a `$(…)` or a backtick is inert data.
 
-Twelve entries ship today. Each is a real upstream project with its own
+Thirteen entries ship today. Each is a real upstream project with its own
 docs and community; vmxplore packages it as a first boot that ends in a
 verified, enrolled service, and the closing report says where it is and
 how to log in:
@@ -361,6 +361,7 @@ how to log in:
 | | |
 |---|---|
 | **[Web Stack](https://nginx.org)** | 2 vCPU / 2 GB. nginx + PHP-FPM in front of PostgreSQL and Valkey on their own pool, with a live example page |
+| **[LAMP Stack](https://httpd.apache.org)** | 2 vCPU / 2 GB. Apache, MariaDB and PHP — the classic, on its own pool, with a live example page |
 | **[WriteFreely](https://writefreely.org)** | 2 vCPU / 3 GB. A writing machine: the blog plus a full-screen editor, booting straight into it |
 | **[Jellyfin on ZFS](https://jellyfin.org)** | 2 vCPU / 2 GB. Free-software media server on tuned datasets — per-title media, 16K library, throwaway cache |
 | **[Plex on ZFS](https://www.plex.tv)** | 2 vCPU / 2 GB. Plex media server on tuned ZFS datasets — per-title datasets, 8K-record library, throwaway transcodes |

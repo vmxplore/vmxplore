@@ -876,6 +876,12 @@ so they are never SQL text, and \(em with a public name and email \(em an
 automatic HTTPS certificate.
 .Dl vmx --appliance \(dqWeb Stack\(dq --vm app \(rs
 .Dl "    --set WS_DB_NAME=appdb --set WS_DB_USER=appuser"
+.It Sy LAMP Stack Pq :80
+Linux, Apache, MariaDB, PHP \(em the classic by the letters: Apache serving
+PHP (php-fpm behind httpd on Fedora, mod_php on Debian), MariaDB on
+loopback on a 16K-record dataset matching InnoDB's page, and an example
+page that opens the database on every load.
+.Dl vmx --appliance \(dqLAMP Stack\(dq --vm lamp
 .It Sy AdGuard Home Pq :3000
 Network-wide DNS filtering; point your router's DNS at the VM.
 The only tile that needs no pool, so it is
