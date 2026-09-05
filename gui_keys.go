@@ -115,17 +115,6 @@ func parseChord(s string) (*desktop.CustomShortcut, error) {
 	return sc, nil
 }
 
-// onWayland reports whether this process is talking to a Wayland compositor.
-// Read from the environment rather than the toolkit because Fyne's own
-// build.IsWayland is internal and not exported.
-func onWayland() bool {
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		return true
-	}
-	return strings.EqualFold(
-		strings.TrimSpace(os.Getenv("XDG_SESSION_TYPE")), "wayland")
-}
-
 // driveWindowFullScreen reports whether the fullscreen toggle should also put
 // the window itself fullscreen, or only strip the panes and leave the frame
 // to the compositor.
