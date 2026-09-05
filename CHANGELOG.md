@@ -29,6 +29,19 @@ from clean builds on Fedora and Debian.
   failed is a failed build, listed with the checks that failed and left
   running for inspection, instead of "ready" because its port answered.
 
+### Every guest on the substrate
+
+- **Clones are enrolled.** A Clone / Fleet run that starts its clones puts
+  each one on the substrate the way a built appliance is: its own
+  WireGuard mesh, a leaf from the estate CA in the guest, its inventory
+  row kept as a clone. wgx lists them; the estate's TLS trusts them.
+- **Enroll on the substrate**, on every running guest's menu, for a VM
+  made by hand, an import, or a microVM; and `vmx --enroll NAME --ip IP`
+  for a guest with no libvirt domain, which is what kfire calls.
+- **Firecracker microVMs are enrolled on clone** and metered on the VM
+  dashboard: kldload's exporter publishes the same series the libvirt
+  exporter does, so a microVM is one more domain in every panel.
+
 ### Firecracker microVMs
 
 - **Jailed.** kfire runs each microVM under Firecracker's jailer as an

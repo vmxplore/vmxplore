@@ -112,8 +112,22 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 			started++
 		}
 	}
-	progress(fmt.Sprintf("fleet ready: %s (golden) + %d clones, %d running",
-		spec.Name, count, started))
+	// Every clone that started goes on the substrate like a built appliance:
+	// its own mesh, the estate cert, its inventory row kept as a clone.
+	// Serial and after the whole batch, so the clones boot together and the
+	// enrollments (each a wait for ssh) do not stretch the run.
+	enrolled := 0
+	for i := 1; i <= count; i++ {
+		cn := fmt.Sprintf("%s-%d", spec.Name, i)
+		if _, err := sudoRun("virsh", "domstate", cn); err != nil {
+			continue
+		}
+		if EnrollDomain(cn, "", progress) == nil {
+			enrolled++
+		}
+	}
+	progress(fmt.Sprintf("fleet ready: %s (golden) + %d clones, %d running, %d enrolled",
+		spec.Name, count, started, enrolled))
 	return nil
 }
 

@@ -187,12 +187,23 @@ func allocMeshSubnet(mesh string) (string, error) {
 // step degrades to a logged warning, because a half-enrolled appliance that
 // WORKS beats a destroyed build. appSlug tags the inventory role.
 func EnrollAppliance(vmName, appSlug string, log func(string)) {
+	_ = EnrollDomain(vmName, "appliance-"+appSlug, log)
+}
+
+// EnrollDomain enrolls a libvirt domain by name: the address through
+// libvirt's leases, then EnrollGuestAt. role "" keeps whatever role the
+// inventory already has for it — a clone stays a clone. Used for the
+// clones a Clone / Fleet run starts and for the "Enroll on the substrate"
+// verb; before this only a built appliance was ever enrolled, and a clone
+// of one was on the estate without a mesh or a cert ("i want the full
+// meal deal", operator, 2026-09-05).
+func EnrollDomain(vmName, role string, log func(string)) error {
 	if KldloadTier() != "kldload" {
-		return
+		return nil
 	}
 	if !enrollNameRE.MatchString(vmName) {
 		log("enroll: VM name " + vmName + " fails the safety pattern — skipped")
-		return
+		return fmt.Errorf("enroll: unsafe name %q", vmName)
 	}
 
 	// ── wait for an address, then for root SSH (cloud-init must land the
@@ -201,7 +212,7 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	lv, err := ConnectSystem()
 	if err != nil {
 		log("enroll: no libvirt connection — skipped")
-		return
+		return err
 	}
 	defer lv.Close()
 	deadline := time.Now().Add(4 * time.Minute)
@@ -214,9 +225,9 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	}
 	if ip == "" {
 		log("enroll: " + vmName + " took no address in 4m — run enrollment later by hand")
-		return
+		return fmt.Errorf("enroll: %s took no address", vmName)
 	}
-	_ = EnrollGuestAt(vmName, ip, "appliance-"+appSlug, log)
+	return EnrollGuestAt(vmName, ip, role, log)
 }
 
 // EnrollGuestAt is enrollment from the address on: root ssh, the recipe's
@@ -334,8 +345,13 @@ func EnrollGuestAt(vmName, ip, role string, log func(string)) error {
 
 	// ── inventory ──
 	if haveHostCmd("kldload-db") {
-		if _, err := sudoRun("kldload-db", "vm-register",
-			"--name", vmName, "--role", role, "--status", "running"); err != nil {
+		args := []string{"kldload-db", "vm-register", "--name", vmName, "--status", "running"}
+		if role != "" {
+			args = append(args, "--role", role)
+		} else {
+			role = "its existing role"
+		}
+		if _, err := sudoRun(args...); err != nil {
 			log("enroll: kldload-db vm-register failed — the VM will not appear in Ansible")
 		} else {
 			log("enroll: registered in the estate inventory as " + role)

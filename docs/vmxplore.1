@@ -607,6 +607,13 @@ with the root and cloned alongside it, so a clone comes up with its pool.
 Re-sealing is refused while clones still depend on the existing golden,
 and the dependants are named.
 .Ss Clone
+Every clone a run starts is enrolled on the substrate afterwards, one at a
+time, the way a built appliance is: a WireGuard mesh of its own from
+.Xr kvm-mesh 8 ,
+a leaf from the estate CA pushed into the guest, its inventory row kept as
+a clone.
+.Sy Enroll on the substrate
+on a running guest's menu does the same for a machine made by hand.
 A zero-copy ZFS clone: snapshot the source volume, clone the snapshot, and
 register the new domain with
 .Xr virt-clone 1

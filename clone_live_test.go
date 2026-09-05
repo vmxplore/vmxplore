@@ -147,6 +147,26 @@ func TestGoldenCloneE2E(t *testing.T) {
 	}
 
 	// And delete must take both zvols with the domain.
+	// The clone goes on the substrate the way the Clone dialog now does it:
+	// mesh, estate cert, inventory row kept. Then delete must take the mesh
+	// with it (planDelete's meshTeardownPost).
+	if KldloadTier() == "kldload" {
+		if err := EnrollDomain(name, "", func(l string) { t.Log(l) }); err != nil {
+			t.Errorf("enroll: %v", err)
+		}
+		mesh := enrollMeshName(name)
+		if _, err := os.Stat("/var/lib/kldload/mesh/" + mesh + ".members"); err != nil {
+			t.Errorf("no members file for %s after enrollment", mesh)
+		}
+		if out, _ := enrollGuestSSH(ip, "test -s /etc/kldload/tls/server.crt && echo cert"); strings.TrimSpace(out) != "cert" {
+			t.Errorf("estate cert not in the clone: %q", out)
+		}
+		defer func() {
+			if _, err := os.Stat("/var/lib/kldload/mesh/" + mesh + ".members"); err == nil {
+				t.Errorf("members file for %s survived delete", mesh)
+			}
+		}()
+	}
 	doms, _ = lv.Estate()
 	dss, _ = ListDatasets()
 	var crow Row

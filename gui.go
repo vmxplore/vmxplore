@@ -3088,6 +3088,41 @@ func runGUI(rs *Ruleset) {
 		d.Show()
 	}
 
+	// Enroll on the substrate: the enrollment a built appliance gets —
+	// mesh, estate cert, inventory row — for any running guest: a clone
+	// made by hand, an imported VM, a microVM. Progress in the status line.
+	enrollAct := func() {
+		r, ok := st.selected()
+		if !ok {
+			return
+		}
+		if r.D.State != "running" {
+			dialog.ShowError(fmt.Errorf("%s is not running — enrollment needs the guest up", r.D.Name), w)
+			return
+		}
+		auditLog("gui: enroll "+r.D.Name, 0)
+		go func() {
+			var err error
+			log := func(l string) {
+				if guiStatus != nil {
+					guiStatus("· " + l)
+				}
+			}
+			if r.FC != nil {
+				err = EnrollGuestAt(r.D.Name, r.FC.IP, "firecracker-"+r.FC.Golden, log)
+			} else {
+				err = EnrollDomain(r.D.Name, "", log)
+			}
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, w)
+				}
+				fcInvalidate()
+				refreshNow()
+			})
+		}()
+	}
+
 	// Make Golden: shutdown → seal → @golden snapshot (golden.go). Then
 	// clones boot as fresh machines.
 	goldenAct := func() {
@@ -3538,6 +3573,7 @@ func runGUI(rs *Ruleset) {
 						return
 					}
 					made, failed, started := 0, 0, 0
+					var startedNames []string
 					for _, nm := range names {
 						p, err := plan(row, nm)
 						if err == nil {
@@ -3601,6 +3637,7 @@ func runGUI(rs *Ruleset) {
 								})
 							} else {
 								started++
+								startedNames = append(startedNames, nm)
 							}
 						}
 						done := made
@@ -3618,14 +3655,28 @@ func runGUI(rs *Ruleset) {
 							refreshNow()
 						})
 					}
-					okCount, badCount, upCount := made, failed, started
+					// The clones that started go on the substrate — mesh, estate
+					// cert, inventory row kept as a clone — the way a built
+					// appliance does. After the batch, serially: each is a wait
+					// for the guest's ssh, and the clones boot side by side.
+					enrolled := 0
+					for _, nm := range startedNames {
+						if EnrollDomain(nm, "", func(l string) {
+							if guiStatus != nil {
+								guiStatus("· " + l)
+							}
+						}) == nil {
+							enrolled++
+						}
+					}
+					okCount, badCount, upCount, enrCount := made, failed, started, enrolled
 					fyne.Do(func() {
 						refreshNow()
 						if guiStatus != nil {
 							msg := fmt.Sprintf("· %d clone(s) of %s ready", okCount, row.D.Name)
 							if powerOn {
-								msg = fmt.Sprintf("· %d clone(s) of %s, %d running",
-									okCount, row.D.Name, upCount)
+								msg = fmt.Sprintf("· %d clone(s) of %s, %d running, %d enrolled",
+									okCount, row.D.Name, upCount, enrCount)
 							}
 							if badCount > 0 {
 								msg += fmt.Sprintf(", %d failed", badCount)
@@ -3676,6 +3727,7 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("Clone…", cloneAny),
 			fyne.NewMenuItem("Make Golden…", goldenAct),
 			fyne.NewMenuItem("Firecracker golden", verb(planFCGolden)),
+			fyne.NewMenuItem("Enroll on the substrate", enrollAct),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
 			fyne.NewMenuItem("Resize disk…", resizeDialog),
