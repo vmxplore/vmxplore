@@ -3861,8 +3861,8 @@ func runGUI(rs *Ruleset) {
 			st.cpu = cpuPercent(st.prevCPU, cpuRaw, at.Sub(st.prevAt), doms)
 		}
 		st.prevCPU, st.prevAt = cpuRaw, at
-		st.groups = BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann)
 		fcRowsNow = fcRowsCached()
+		st.groups = withoutFCGhosts(BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann), fcRowsNow)
 		rebuildView()
 		tree.Refresh()
 		if !didFold && len(viewGroups) > 0 {

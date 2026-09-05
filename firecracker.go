@@ -211,7 +211,7 @@ func fcGroupCached() (GroupRows, bool) {
 // call the GUI and the TUI make after BuildEstate.
 func withFirecracker(groups []GroupRows) []GroupRows {
 	if g, ok := fcGroupCached(); ok {
-		groups = append(groups, g)
+		groups = append(withoutFCGhosts(groups, g.Rows), g)
 	}
 	return groups
 }
@@ -343,4 +343,44 @@ func fcTouched(p verbPlan) bool {
 		}
 	}
 	return false
+}
+
+// withoutFCGhosts drops the "unreconciled" rows that are really a microVM:
+// its state.db row ("in state.db, not in libvirt") and its zvol clones
+// ("zvol without a domain") are exactly what BuildEstate is built to
+// flag, and exactly what a Firecracker instance looks like from libvirt's
+// side. Four stamped instances showed eight yellow ghosts beside their
+// real rows ("they are all unreconciled and don't show IPs", onyx,
+// 2026-09-05). Matched by name and by dataset, so a stale ghost is still
+// a ghost once its instance is gone.
+func withoutFCGhosts(groups []GroupRows, fc []Row) []GroupRows {
+	if len(fc) == 0 {
+		return groups
+	}
+	own := map[string]bool{}
+	for _, r := range fc {
+		own[r.D.Name] = true
+		if r.FC != nil {
+			own[r.FC.RootZvol] = true
+			own[r.FC.DataZvol] = true
+		}
+	}
+	out := make([]GroupRows, 0, len(groups)) // a copy: the caller's slice stays whole
+	for _, g := range groups {
+		if g.Label != groupUnreconciled {
+			out = append(out, g)
+			continue
+		}
+		var keep []Row
+		for _, r := range g.Rows {
+			if own[r.D.Name] || own[r.Backing] {
+				continue
+			}
+			keep = append(keep, r)
+		}
+		if len(keep) > 0 {
+			out = append(out, GroupRows{Label: g.Label, Rows: keep})
+		}
+	}
+	return out
 }

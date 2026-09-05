@@ -118,3 +118,25 @@ func rows1(state string) Row {
 		RootZvol: "rpool/vms/web-stack-1", DataZvol: "rpool/vms/web-stack-1-data"}
 	return fcRows([]FCInstance{in})[0]
 }
+
+// The estate's own drift detector sees a microVM as a state.db ghost and
+// two orphan zvols; those rows are the microVM, not drift.
+func TestFCGhostsAreFiltered(t *testing.T) {
+	fc := fcRows([]FCInstance{{Name: "web-stack-1", RootZvol: "rpool/vms/web-stack-1", DataZvol: "rpool/vms/web-stack-1-data", State: "running"}})
+	groups := []GroupRows{
+		{Label: "apps", Rows: []Row{{D: Dom{Name: "app-web-stack"}}}},
+		{Label: groupUnreconciled, Rows: []Row{
+			{D: Dom{Name: "web-stack-1", State: "absent"}, Synthetic: true, Notes: []string{"in state.db, not in libvirt"}},
+			{D: Dom{Name: "web-stack-1", State: "no domain"}, Synthetic: true, Backing: "rpool/vms/web-stack-1"},
+			{D: Dom{Name: "web-stack-1-data", State: "no domain"}, Synthetic: true, Backing: "rpool/vms/web-stack-1-data"},
+			{D: Dom{Name: "leftover", State: "absent"}, Synthetic: true},
+		}},
+	}
+	out := withoutFCGhosts(groups, fc)
+	if len(out) != 2 || out[1].Label != groupUnreconciled || len(out[1].Rows) != 1 || out[1].Rows[0].D.Name != "leftover" {
+		t.Errorf("filtered = %+v", out)
+	}
+	if got := withoutFCGhosts(groups, nil); len(got[1].Rows) != 4 {
+		t.Error("with no instances nothing is filtered")
+	}
+}
