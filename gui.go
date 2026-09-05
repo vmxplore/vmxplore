@@ -2436,8 +2436,15 @@ func runGUI(rs *Ruleset) {
 				"A ZFS tile takes ~10-20 min, so expect the whole run to take\n"+
 				"about as long as its slowest tile.\n",
 			"Build all", true, func(log func(string)) string {
-				built, failed := BuildAllAppliances("", log)
-				return fmt.Sprintf("done — %d built, %d failed", built, failed)
+				built, failed, access := BuildAllAppliances("", log)
+				// The very last thing in the window: where each tile is
+				// and how to get in, in one place, after the noise.
+				sum := fmt.Sprintf("done — %d built, %d failed", built, failed)
+				if len(access) > 0 {
+					sum += "\n\n── where they are, and how to log in ──\n" +
+						strings.Join(access, "\n")
+				}
+				return sum
 			})
 	}
 	// Destroy-all confirms with the exact list it will act on — the same
@@ -3548,9 +3555,21 @@ func runGUI(rs *Ruleset) {
 		})
 	estateHead := container.NewBorder(nil, nil,
 		heading("ESTATE", acBrand), connectBtn)
+	// The dossier lives under the tree, in the estate card, not in a third
+	// pane of its own. Until 2026-09-04 it shared a bottom-right pane with
+	// the verb row, which took a fifth of the console's height for text
+	// that belongs beside the selection it describes; the operator asked
+	// for two panes — the estate with its details, the screen with its
+	// verbs — and that is the whole layout now. The split is draggable
+	// because a dossier is four lines for a fresh clone and twenty for an
+	// appliance with three disks and a mesh.
+	details := container.NewBorder(heading("DETAILS", acBlue), nil, nil, nil,
+		container.NewScroll(dossier))
+	estateBody := container.NewVSplit(tree, details)
+	estateBody.SetOffset(0.62)
 	left := gap(card(container.NewBorder(
 		container.NewVBox(estateHead, search, batchBar), nil, nil, nil,
-		tree)))
+		estateBody)))
 	// The console card carries two tabs: Screen, then Serial — the two ways
 	// to look at the machine you have, the one that lands first in front.
 	// Screen leads because it is where the work happens (it shows the same
@@ -3605,11 +3624,10 @@ func runGUI(rs *Ruleset) {
 	// difference between reading the screen and squinting at it, and every
 	// pixel of it shows controls nobody is using mid-console.
 	//
-	// On X11 the window goes fullscreen from the same toggle, so one key does
-	// the whole job. On Wayland it deliberately does not — see
-	// driveWindowFullScreen for why the toolkit cannot pick the right monitor
-	// there, and why the compositor's own fullscreen key is the correct tool
-	// for the frame. The two compose to the same result either way.
+	// The window goes fullscreen from the same toggle, so one key does the
+	// whole job — on Wayland too, since 2026-09-04, on the monitor the
+	// window is on; see driveWindowFullScreen for the GLFW patch that makes
+	// that true and VMX_FULLSCREEN_WINDOW=never for the panes-only form.
 	//
 	// HISTORY: two designs sat here before this one and both failed the same
 	// way — by trying to own the window as well as its contents. The second
@@ -3620,7 +3638,7 @@ func runGUI(rs *Ruleset) {
 	// callback anywhere writing it. FullScreen() reports what WE last asked
 	// for, never what the compositor did, so the WM's own fullscreen key left
 	// the flag false, the poller saw no edge, and the operator got a
-	// fullscreen window still showing three panes — "fullscreen in a 3rd
+	// fullscreen window still showing both panes — "fullscreen in a 3rd
 	// window instead of fullscreen in 1 window". The poller could only ever
 	// echo our own call back at us.
 	//
@@ -3646,7 +3664,7 @@ func runGUI(rs *Ruleset) {
 	})
 	restoreBtn.Importance = widget.LowImportance
 	// consoleOnly is the whole mechanism: swap the window's content between
-	// the three-pane view and the selected tab standing alone, and — where
+	// the two-pane view and the selected tab standing alone, and — where
 	// the toolkit can be trusted to do it on the right monitor — put the
 	// window itself fullscreen too.
 	//
@@ -3743,30 +3761,42 @@ func runGUI(rs *Ruleset) {
 	// here. Rendered as disabled body text so it reads as a caption rather
 	// than a control: it is the header row, not guest pixels, so it costs
 	// nothing to leave up for the whole session.
+	// Ordinary importance, bold: it was drawn as disabled text and read as
+	// greyed-out chrome rather than as the one key worth knowing ("alt +
+	// insert should be brighter", operator, 2026-09-04).
 	fsHint := widget.NewLabel("⛶ " + fullScreenKeyLabel)
-	fsHint.Importance = widget.LowImportance
+	fsHint.TextStyle = fyne.TextStyle{Bold: true}
+	// sysdiag beside Manual: the requirements screen is the answer to "why
+	// is this tile grey" and to "what does this host need", which is asked
+	// from the console, not from inside the manual where the button used
+	// to be alone (operator, 2026-09-04). The manual keeps its own copy.
+	sysdiagHeadBtn := widget.NewButtonWithIcon("sysdiag", theme.InfoIcon(),
+		func() { showSysdiag(st.visibleRows()) })
+	// The verb row sits in the console's header, between the heading and
+	// the manual button: the verbs act on the machine whose screen is
+	// below them, and a row that used to close the window from underneath
+	// now costs the console nothing. Fullscreen is unaffected — it borrows
+	// the tab's content, not this header (setConsoleOnly).
 	consoleHead := container.NewBorder(nil, nil,
 		heading("CONSOLE", acGold),
-		container.NewHBox(fsHint, manualBtn))
+		container.NewHBox(fsHint, sysdiagHeadBtn, manualBtn),
+		buttons)
 	consolePane := gap(container.NewBorder(consoleHead, nil, nil, nil,
 		consoleCard))
-	rightBottom := gap(card(container.NewBorder(
-		heading("DETAILS & ACTIONS", acBlue), buttons, nil, nil,
-		container.NewScroll(dossier))))
 	// Defaults measured from the operator's own layout (2026-08-13), not
 	// guessed: the estate tree needs about a fifth of the width to show a
 	// name, a state and a resource line without truncating, and everything
 	// past that is width the console could have used. 0.38 gave the tree
 	// nearly half again more than it uses, so every session began by
-	// dragging the same splitter to the same place.
+	// dragging the same splitter to the same place. 0.24 rather than 0.21
+	// since the dossier moved in beside the tree: its longest line is a
+	// disk path, and at a fifth of a 2560-wide window that line wrapped.
 	//
-	// Both are starting positions, not constraints — Fyne remembers neither,
-	// so these are what every launch looks like until the operator drags.
-	// The console dominates because the screen is the point.
-	right := container.NewVSplit(consolePane, rightBottom)
-	right.SetOffset(0.82)
-	body := container.NewHSplit(left, right)
-	body.SetOffset(0.21)
+	// Starting positions, not constraints — Fyne remembers neither, so this
+	// is what every launch looks like until the operator drags. The console
+	// dominates because the screen is the point.
+	body := container.NewHSplit(left, consolePane)
+	body.SetOffset(0.24)
 	mainContent = container.NewBorder(nil, status, nil, nil, gap(body))
 
 	// The manual page lives in manual_ui.go: ~100 lines that need a window
