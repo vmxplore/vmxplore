@@ -24,6 +24,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -321,16 +322,19 @@ func applianceOverrides(a Appliance, vals map[string]string,
 // timed out — the two phases fail for entirely different reasons (no DHCP
 // lease vs. an installer that died), so they are reported separately.
 func WaitAppliance(name string, port int, progress func(string)) (string, error) {
-	return waitAppliance(name, port, false, progress)
+	return waitAppliance(context.Background(), name, port, false, progress)
 }
 
 // WaitApplianceTCP is WaitAppliance for a port that does not speak HTTP:
 // ready means the guest accepts a TCP connection on it.
 func WaitApplianceTCP(name string, port int, progress func(string)) (string, error) {
-	return waitAppliance(name, port, true, progress)
+	return waitAppliance(context.Background(), name, port, true, progress)
 }
 
-func waitAppliance(name string, port int, tcp bool, progress func(string)) (string, error) {
+// waitAppliance returns early with ctx's error when the caller cancels —
+// this is the long pole of a build (a first boot is minutes), so it is the
+// wait a Cancel button or a Ctrl-C actually interrupts.
+func waitAppliance(ctx context.Context, name string, port int, tcp bool, progress func(string)) (string, error) {
 	const (
 		leaseTimeout = 3 * time.Minute
 		// 25m, not 10: a NeedsZFS recipe on a stock cloud image now
@@ -353,7 +357,11 @@ func waitAppliance(name string, port int, tcp bool, progress func(string)) (stri
 			ip = ips[0]
 			break
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%s: %w", name, ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
 	}
 	if ip == "" {
 		return "", fmt.Errorf("%s got no DHCP lease within %s — is its "+
@@ -384,7 +392,11 @@ func waitAppliance(name string, port int, tcp bool, progress func(string)) (stri
 			resp.Body.Close()
 			return url, nil
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return url, fmt.Errorf("%s: %w", name, ctx.Err())
+		case <-time.After(3 * time.Second):
+		}
 	}
 	return url, fmt.Errorf("%s never answered on %s within %s — check "+
 		"`journalctl -u cloud-final` in the guest", name, url, bootTimeout)
@@ -537,7 +549,7 @@ func RunApplianceBuild(name string, args []string) int {
 		}
 		return 0
 	}
-	url, err := waitAppliance(spec.Name, a.Port, a.ProbeTCP, log)
+	url, err := waitAppliance(context.Background(), spec.Name, a.Port, a.ProbeTCP, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 1

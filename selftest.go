@@ -26,6 +26,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -171,7 +173,7 @@ func selfTestOne(a Appliance, keep bool, log func(string)) selfTestResult {
 	buildErr := BuildNewVM(spec, parent, blogLine)
 	if buildErr == nil {
 		AttachUSBDevices(vm, a.USB, blogLine)
-		_, buildErr = waitAppliance(vm, a.Port, a.ProbeTCP, blogLine)
+		_, buildErr = waitAppliance(context.Background(), vm, a.Port, a.ProbeTCP, blogLine)
 	}
 	if buildErr == nil {
 		EnrollAppliance(vm, applianceSlug(a.Name), blogLine)
@@ -487,20 +489,34 @@ func memAvailableMB() int {
 // By default every finished tile is shut off (powerOff) and urls is empty;
 // the report still carries the addresses. The CLI prints the report and
 // opens nothing: a terminal may be an ssh session.
-func BuildAllAppliances(only string, log func(string)) (built, failed int, access, urls []string) {
+//
+// ctx cancels the run: tiles not yet started are not started, and the tile
+// in flight is removed so the next run rebuilds it rather than skipping a
+// half-configured VM as "already exists". The GUI's Cancel button and the
+// CLI's Ctrl-C are the two callers; before this there was no way to stop a
+// twelve-tile run short of killing the program ("there's no cancel button",
+// operator, 2026-09-04).
+func BuildAllAppliances(ctx context.Context, only string, log func(string)) (built, failed int, access, urls []string) {
 	want := map[string]bool{}
 	for _, o := range strings.Split(only, ",") {
 		if o = strings.TrimSpace(strings.ToLower(o)); o != "" {
 			want[o] = true
 		}
 	}
+	// Say something before doing anything. The first line used to come
+	// after twelve `sudo virsh domstate` calls, one per tile, and for those
+	// seconds the window showed the intro and a greyed button: "I press
+	// Build all and nothing happens" (operator, 2026-09-04). One
+	// `virsh list --all --name` answers for every tile at once.
+	log("build-all: started — checking which tiles already exist")
+	have := domainNames()
 	var todo []Appliance
 	for _, a := range Appliances() {
 		vm := applianceVMName(a.Name)
 		if len(want) > 0 && !want[strings.ToLower(a.Name)] && !want[vm] {
 			continue
 		}
-		if domainExists(vm) {
+		if have[vm] {
 			log(vm + " already exists — skipped")
 			continue
 		}
@@ -527,6 +543,7 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 	sem := make(chan struct{}, jobs)
 	blocks := make([][]string, len(todo)) // catalog order, not finish order
 	landing := make([]string, len(todo))
+	cancelled := 0
 	for i, a := range todo {
 		wg.Add(1)
 		go func(i int, a Appliance) {
@@ -540,21 +557,34 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 				}
 				log("[" + vm + "] " + l)
 			}
-			ok, lines, url := buildOneAppliance(a, vm, jobs, tlog)
+			if ctx.Err() != nil {
+				mu.Lock()
+				cancelled++
+				mu.Unlock()
+				return
+			}
+			res, lines, url := buildOneAppliance(ctx, a, vm, jobs, tlog)
 			mu.Lock()
-			if ok {
+			switch res {
+			case tileBuilt:
 				built++
 				blocks[i] = lines
 				landing[i] = url
-			} else {
+			case tileFailed:
 				failed++
+			case tileCancelled:
+				cancelled++
 			}
 			mu.Unlock()
 		}(i, a)
 	}
 	wg.Wait()
 	log("")
-	log(fmt.Sprintf("build-all: %d built, %d failed", built, failed))
+	sum := fmt.Sprintf("build-all: %d built, %d failed", built, failed)
+	if cancelled > 0 {
+		sum += fmt.Sprintf(", %d cancelled", cancelled)
+	}
+	log(sum)
 	for i, b := range blocks {
 		if len(b) > 0 {
 			access = append(access, b...)
@@ -580,13 +610,26 @@ func landingURL(a Appliance, probe string) string {
 
 var landingURLRe = regexp.MustCompile(`(?:https?|rdp)://[^\s()·]+`)
 
+// tileResult is what one tile of build-all came to.
+type tileResult int
+
+const (
+	tileBuilt     tileResult = iota
+	tileFailed               // logged why
+	tileCancelled            // the operator stopped the run; the VM is gone
+)
+
 // buildOneAppliance is one tile of build-all: spec, build at buildSize, USB,
-// wait for the port, enroll, trim to catalog size. Returns ok=false on any
-// failure, having logged why, and on success the tile's access block for
-// the closing report. jobs is what BuildAllAppliances runs; the boost is
+// wait for the port, enroll, trim to catalog size, power off. Returns the
+// result, having logged any failure, and on success the tile's access block
+// for the closing report. jobs is what BuildAllAppliances runs; the boost is
 // only for a serial run and only on the local host, where the core count
 // and MemAvailable read here are the building host's.
-func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool, []string, string) {
+//
+// A cancel that lands during the wait removes the VM: BuildNewVM has
+// finished by then, so the domain exists, and a later run would skip it as
+// built while its first boot never completed.
+func buildOneAppliance(ctx context.Context, a Appliance, vm string, jobs int, log func(string)) (tileResult, []string, string) {
 	log("building " + a.Name)
 	// Resolved here, not inside Spec, so the generated secrets are known to
 	// this side and can be reported at the end; Render resolves again and
@@ -594,12 +637,12 @@ func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool
 	vals, err := a.resolve(a.Defaults())
 	if err != nil {
 		log("  spec: " + err.Error())
-		return false, nil, ""
+		return tileFailed, nil, ""
 	}
 	spec, err := a.Spec(vm, "admin", "", "", vals)
 	if err != nil {
 		log("  spec: " + err.Error())
-		return false, nil, ""
+		return tileFailed, nil, ""
 	}
 	builtCPUs, builtMB := a.VCPUs, a.RAMMB
 	if target.SSHHost == "" {
@@ -618,13 +661,18 @@ func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool
 	parent := zfsParentForBuild()
 	if err := BuildNewVM(spec, parent, log); err != nil {
 		log("  build FAILED: " + err.Error())
-		return false, nil, ""
+		return tileFailed, nil, ""
 	}
 	AttachUSBDevices(vm, a.USB, log)
-	url, err := waitAppliance(vm, a.Port, a.ProbeTCP, log)
+	url, err := waitAppliance(ctx, vm, a.Port, a.ProbeTCP, log)
+	if errors.Is(err, context.Canceled) {
+		log("  cancelled — removing " + vm + " so the next run rebuilds it")
+		destroyApplianceVM(vm)
+		return tileCancelled, nil, ""
+	}
 	if err != nil {
 		log("  came up but did not answer: " + err.Error())
-		return false, nil, ""
+		return tileFailed, nil, ""
 	}
 	EnrollAppliance(vm, applianceSlug(a.Name), log)
 	shrinkToCatalog(vm, a, builtCPUs, builtMB, log)
@@ -634,11 +682,11 @@ func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool
 	log("  " + a.Name + " ready on " + url)
 	access := applianceAccess(a, spec, vals, url)
 	if keepRunning() {
-		return true, access, landingURL(a, url)
+		return tileBuilt, access, landingURL(a, url)
 	}
 	powerOff(vm, log)
 	access = append(access, "  state: shut off — start it from the estate when wanted")
-	return true, access, "" // nothing to open: the page is not being served
+	return tileBuilt, access, "" // nothing to open: the page is not being served
 }
 
 // keepRunning is VMX_BUILD_KEEP_RUNNING=1: leave every built tile up and
@@ -778,6 +826,20 @@ func DestroyAllAppliances(log func(string)) int {
 
 // domainExists is true when libvirt knows a domain by this name, running or
 // not — the guard both build-all (skip) and destroy-all (act) turn on.
+// domainNames is every domain libvirt knows, running or not, in one call —
+// what a loop over the catalog asks instead of twelve domainExists.
+func domainNames() map[string]bool {
+	out, err := sudoRun("virsh", "list", "--all", "--name")
+	have := map[string]bool{}
+	if err != nil {
+		return have
+	}
+	for _, n := range strings.Fields(out) {
+		have[n] = true
+	}
+	return have
+}
+
 func domainExists(vm string) bool {
 	out, err := sudoRun("virsh", "domstate", vm)
 	return err == nil && strings.TrimSpace(out) != ""

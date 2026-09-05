@@ -16,6 +16,11 @@
   catalog size once it answers: memory live via the balloon, vCPUs live
   where the guest allows and at the next boot otherwise. The log says what
   it borrowed and when it gave it back.
+- **Build all can be cancelled.** A Cancel button on the window, Ctrl-C on
+  the CLI: nothing more starts and the tile in flight is removed, so the
+  next run rebuilds it instead of skipping a VM whose first boot never
+  finished. Before this the only way to stop a twelve-tile run was to close
+  the program.
 - **Finished tiles are shut off.** A build-all leaves VMs to start when
   wanted, not twelve services running at once on a host that may not have
   the memory for them. The report still carries every address and login;

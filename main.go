@@ -23,9 +23,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 
 	"golang.org/x/term"
@@ -112,7 +114,9 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           leaves them up; VMX_BUILD_JOBS=N builds N at once
                           at catalog size). Ends by printing every tile's
                           URL and logins on stdout. Exit status is the
-                          number of failed tiles.
+                          number of failed tiles. Ctrl-C starts nothing
+                          more and removes the tile in flight, so the next
+                          run rebuilds it.
                             --only A,B    only these tiles (names or app-
                                           VM names, comma-separated)
   --destroy-all           remove every VM this tool built — the app-* builds
@@ -210,8 +214,13 @@ func main() {
 					only = args[j]
 				}
 			}
-			_, failed, access, _ := BuildAllAppliances(only,
+			// Ctrl-C cancels the run the way the GUI's button does: nothing
+			// more starts and the tile in flight is removed. A second
+			// Ctrl-C, after stop() restores the default, kills the process.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			_, failed, access, _ := BuildAllAppliances(ctx, only,
 				func(l string) { fmt.Fprintln(os.Stderr, l) })
+			stop()
 			// stdout is the report, stderr was the progress: the URLs and
 			// logins are what the operator keeps, so they are what a
 			// redirect captures.

@@ -26,6 +26,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -2388,18 +2389,29 @@ func runGUI(rs *Ruleset) {
 	// self-test window minus its checkbox. job returns the line to append
 	// when it is done; auto presses the button on open, for a verb that was
 	// already confirmed in a dialog and should not ask twice.
+	//
+	// Cancel cancels the job's context. A twelve-tile build had no way to
+	// stop short of closing the program ("there's no cancel button",
+	// operator, 2026-09-04); the job decides what a cancel means — build-all
+	// finishes nothing more and removes the tile in flight. The button is
+	// live only while a job runs, and a job that ignores ctx (destroy-all,
+	// seconds long) simply runs to its end.
 	batchLogWindow := func(title, intro, button string, auto bool,
-		job func(log func(string)) string) {
+		job func(ctx context.Context, log func(string)) string) {
 		bw := fyne.CurrentApp().NewWindow(title)
 		out := widget.NewLabel(intro)
 		out.Wrapping = fyne.TextWrapWord
 		out.TextStyle = fyne.TextStyle{Monospace: true}
 		sc := container.NewVScroll(out)
-		var run *widget.Button
+		var run, cancel *widget.Button
+		var stop context.CancelFunc
 		run = widget.NewButton(button, func() {
 			run.Disable()
+			cancel.Enable()
+			var ctx context.Context
+			ctx, stop = context.WithCancel(context.Background())
 			go func() {
-				sum := job(func(l string) {
+				sum := job(ctx, func(l string) {
 					fyne.Do(func() {
 						out.SetText(out.Text + l + "\n")
 						sc.ScrollToBottom()
@@ -2408,10 +2420,19 @@ func runGUI(rs *Ruleset) {
 				fyne.Do(func() {
 					out.SetText(out.Text + "\n" + sum + "\n")
 					run.Enable()
+					cancel.Disable()
+					stop()
 				})
 			}()
 		})
-		bw.SetContent(container.NewBorder(container.NewHBox(run), nil, nil, nil, sc))
+		cancel = widget.NewButton("Cancel", func() {
+			cancel.Disable()
+			if stop != nil {
+				stop()
+			}
+		})
+		cancel.Disable()
+		bw.SetContent(container.NewBorder(container.NewHBox(run, cancel), nil, nil, nil, sc))
 		bw.Resize(fyne.NewSize(720, 560))
 		bw.Show()
 		if auto {
@@ -2435,9 +2456,11 @@ func runGUI(rs *Ruleset) {
 				"of this host's cores and spare RAM while it installs, then trimmed\n"+
 				"to its catalog size once it answers, verified, then shut off.\n"+
 				"Expect a few minutes per tile; the report at the end says where\n"+
-				"each one is and how to log in, and the estate starts it.\n",
-			"Build all", true, func(log func(string)) string {
-				built, failed, access, urls := BuildAllAppliances("", log)
+				"each one is and how to log in, and the estate starts it.\n"+
+				"Cancel starts nothing more and removes the tile in flight, so\n"+
+				"the next run rebuilds it.\n",
+			"Build all", true, func(ctx context.Context, log func(string)) string {
+				built, failed, access, urls := BuildAllAppliances(ctx, "", log)
 				// One button, then the login pages: every tile that came up
 				// opens in its own browser tab, the RDP one in Remmina via
 				// its rdp:// handler. Spaced so the browser keeps them in
@@ -2480,7 +2503,7 @@ func runGUI(rs *Ruleset) {
 					return
 				}
 				batchLogWindow("Destroy every appliance", "", "Destroy all", true,
-					func(log func(string)) string {
+					func(_ context.Context, log func(string)) string {
 						return fmt.Sprintf("done — %d removed", DestroyAllAppliances(log))
 					})
 			}, w)

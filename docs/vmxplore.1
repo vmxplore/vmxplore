@@ -166,6 +166,9 @@ not twelve services running at once on a host that may not have the memory
 for them.
 .Ev VMX_BUILD_KEEP_RUNNING
 leaves them up, and in the GUI opens each one's page at the end.
+Ctrl-C (the GUI's Cancel button) stops the run: nothing more starts, and
+the tile in flight is removed so the next run rebuilds it rather than
+skipping a VM whose first boot never finished.
 .Fl -only
 restricts the run to a comma-separated list of tile names or
 .Ql app-
