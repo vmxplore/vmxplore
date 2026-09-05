@@ -3820,6 +3820,14 @@ func runGUI(rs *Ruleset) {
 				tree.OpenBranch(uid)
 			}
 			tree.Unselect(uid)
+			// Unselect leaves the tree's keyboard-focus mark on the header,
+			// and Fyne paints the focused item like a hovered one whenever
+			// the tree has focus — so "Apps" lit up every time a window
+			// closed and focus came back ("it keeps selecting the apps
+			// tab", operator, 2026-09-05, right after the batch windows
+			// began closing themselves). Dropping focus clears it; the
+			// next click on a row takes focus back as before.
+			w.Canvas().Unfocus()
 			return
 		}
 		// A catalog leaf is an action, not a selection: opening the build
@@ -3829,6 +3837,7 @@ func runGUI(rs *Ruleset) {
 		// path keyboard navigation takes.)
 		if name, ok := strings.CutPrefix(uid, applianceUIDPrefix); ok {
 			tree.Unselect(uid)
+			w.Canvas().Unfocus()
 			if openAppliance != nil {
 				openAppliance(name)
 			}
