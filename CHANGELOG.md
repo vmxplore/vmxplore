@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 5 September 2026
+
+104 commits since 0.4.0: 38 features, 49 fixes, 219 files changed.
+
+---
+
+This release is about the second half of "one of everything": once a tile
+is built, it should cost nothing to have ten of it. Firecracker does that —
+a Web Stack takes four minutes to build once and a quarter of a second to
+clone, serving seven seconds later on a few hundred megabytes — and the
+estate treats those clones like anything else it manages. Around it, Build
+all became something you can leave running: one tile at a time with the
+host's spare cores, a progress bar, a Cancel button, tiles powered off when
+done, and a recipe's own verdict deciding whether a build succeeded. The Web
+Stack tile itself grew a page that proves the stack on every load, verified
+from clean builds on Fedora and Debian.
 
 ### The Web Stack is a LAMP page, not a placeholder
 

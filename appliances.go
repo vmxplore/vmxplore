@@ -1885,7 +1885,7 @@ main{max-width:860px;margin:0 auto;padding:2.5rem 1.5rem}h1{font-size:1.6rem;mar
 footer{margin-top:2rem;color:#8a94a3;font-size:.85rem}footer a{color:#8fb4ff}code{color:#c9d3e0}
 </style></head><body><main>
 <h1>Web Stack <small><?= $h($host) ?></small></h1>
-<p class="sub">nginx → PHP-FPM → PostgreSQL + Valkey, on its own ZFS pool. Every visit writes a row and bumps a counter — reload to watch.</p>
+<p class="sub">nginx → PHP-FPM → PostgreSQL + Valkey (Redis on Debian), on its own ZFS pool. Every visit writes a row and bumps a counter — reload to watch.</p>
 <div class="grid">
 <div class="card"><h2>this instance</h2>
 <div class="kv"><b>host</b><span><?= $h($host) ?></span><b>address</b><span><?= $h($ip) ?></span><b>uptime</b><span><?= $uptime ?></span>
@@ -1894,7 +1894,7 @@ footer{margin-top:2rem;color:#8a94a3;font-size:.85rem}footer a{color:#8fb4ff}cod
 <div class="card"><h2><?= $mark($pg['ok']) ?> PostgreSQL</h2>
 <?php if ($pg['ok']): ?><div class="big"><?= $pg['visits'] ?></div><div class="kv"><b>visits</b><span>rows in <code>visits</code></span><b>last</b><span><?= $h($pg['last']) ?></span><b>server</b><span><?= $h($pg['version']) ?></span><b>round trip</b><span><?= $pg['ms'] ?> ms</span></div>
 <?php else: ?><p class="err"><?= $h($pg['error']) ?></p><?php endif ?></div>
-<div class="card"><h2><?= $mark($ca['ok']) ?> Valkey</h2>
+<div class="card"><h2><?= $mark($ca['ok']) ?> Valkey / Redis</h2>
 <?php if ($ca['ok']): ?><div class="big"><?= $ca['hits'] ?></div><div class="kv"><b>hits</b><span><code>INCR hits:<?= $h($host) ?></code></span><b>auth</b><span>required, loopback only</span><b>round trip</b><span><?= $ca['ms'] ?> ms</span></div>
 <?php else: ?><p class="err"><?= $h($ca['error']) ?></p><?php endif ?></div>
 </div>
