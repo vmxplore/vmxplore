@@ -219,7 +219,12 @@ func main() {
 			// Ctrl-C, after stop() restores the default, kills the process.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			_, failed, access, _ := BuildAllAppliances(ctx, only,
-				func(l string) { fmt.Fprintln(os.Stderr, l) })
+				func(l string) { fmt.Fprintln(os.Stderr, l) },
+				func(done, total int, tile string) {
+					if tile != "" {
+						fmt.Fprintf(os.Stderr, "build-all: tile %d of %d — %s\n", done+1, total, tile)
+					}
+				})
 			stop()
 			// stdout is the report, stderr was the progress: the URLs and
 			// logins are what the operator keeps, so they are what a

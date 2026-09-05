@@ -38,6 +38,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -2396,13 +2397,26 @@ func runGUI(rs *Ruleset) {
 	// finishes nothing more and removes the tile in flight. The button is
 	// live only while a job runs, and a job that ignores ctx (destroy-all,
 	// seconds long) simply runs to its end.
+	//
+	// Progress: a bar and one status line above the log — "tile 5 of 12 ·
+	// SDR Station · waiting for the first boot · 3m12s". The counts come
+	// from the job through prog; the step is the last log line of the tile
+	// in flight; the clock ticks once a second while a job runs. Before
+	// this the window was a scrolling log and nothing said how far along a
+	// forty-minute run was ("no real indicator or progress indicator",
+	// operator, 2026-09-04). A job that never calls prog (destroy-all)
+	// shows the clock and the step alone.
 	batchLogWindow := func(title, intro, button string, auto bool,
-		job func(ctx context.Context, log func(string)) string) {
+		job func(ctx context.Context, log func(string), prog func(done, total int, tile string)) string) {
 		bw := fyne.CurrentApp().NewWindow(title)
 		out := widget.NewLabel(intro)
 		out.Wrapping = fyne.TextWrapWord
 		out.TextStyle = fyne.TextStyle{Monospace: true}
 		sc := container.NewVScroll(out)
+		bar := widget.NewProgressBar()
+		bar.Hide()
+		status := widget.NewLabel("")
+		status.TextStyle = fyne.TextStyle{Bold: true}
 		var run, cancel *widget.Button
 		var stop context.CancelFunc
 		run = widget.NewButton(button, func() {
@@ -2410,14 +2424,77 @@ func runGUI(rs *Ruleset) {
 			cancel.Enable()
 			var ctx context.Context
 			ctx, stop = context.WithCancel(context.Background())
+			var (
+				pmu           sync.Mutex
+				pdone, ptotal int
+				ptile, pstep  string
+				started       = time.Now()
+				running       = true
+			)
+			render := func() {
+				pmu.Lock()
+				defer pmu.Unlock()
+				var parts []string
+				if ptotal > 0 {
+					n := pdone
+					if ptile != "" && n < ptotal {
+						n++
+					}
+					parts = append(parts, fmt.Sprintf("tile %d of %d", n, ptotal))
+				}
+				if ptile != "" {
+					parts = append(parts, ptile)
+				}
+				if pstep != "" {
+					parts = append(parts, pstep)
+				}
+				if running {
+					parts = append(parts, time.Since(started).Round(time.Second).String())
+				} else {
+					parts = append(parts, "finished in "+time.Since(started).Round(time.Second).String())
+				}
+				status.SetText(strings.Join(parts, " · "))
+				if ptotal > 0 {
+					bar.Max = float64(ptotal)
+					bar.SetValue(float64(pdone))
+					bar.Show()
+				}
+			}
+			tick := time.NewTicker(time.Second)
+			go func() {
+				for range tick.C {
+					fyne.Do(render)
+				}
+			}()
 			go func() {
 				sum := job(ctx, func(l string) {
+					pmu.Lock()
+					// the step is the tile's own line, without its "[vm] " tag
+					if i := strings.Index(l, "] "); strings.HasPrefix(l, "[") && i > 0 {
+						pstep = strings.TrimSpace(l[i+2:])
+					}
+					pmu.Unlock()
 					fyne.Do(func() {
 						out.SetText(out.Text + l + "\n")
 						sc.ScrollToBottom()
+						render()
 					})
+				}, func(done, total int, tile string) {
+					pmu.Lock()
+					pdone, ptotal, ptile = done, total, tile
+					if tile != "" {
+						pstep = "starting"
+					}
+					pmu.Unlock()
+					fyne.Do(render)
 				})
+				tick.Stop()
 				fyne.Do(func() {
+					pmu.Lock()
+					running = false
+					ptile, pstep = "", ""
+					pmu.Unlock()
+					render()
 					out.SetText(out.Text + "\n" + sum + "\n")
 					run.Enable()
 					cancel.Disable()
@@ -2432,7 +2509,8 @@ func runGUI(rs *Ruleset) {
 			}
 		})
 		cancel.Disable()
-		bw.SetContent(container.NewBorder(container.NewHBox(run, cancel), nil, nil, nil, sc))
+		bw.SetContent(container.NewBorder(
+			container.NewVBox(container.NewHBox(run, cancel), status, bar), nil, nil, nil, sc))
 		bw.Resize(fyne.NewSize(720, 560))
 		bw.Show()
 		if auto {
@@ -2459,8 +2537,8 @@ func runGUI(rs *Ruleset) {
 				"each one is and how to log in, and the estate starts it.\n"+
 				"Cancel starts nothing more and removes the tile in flight, so\n"+
 				"the next run rebuilds it.\n",
-			"Build all", true, func(ctx context.Context, log func(string)) string {
-				built, failed, access, urls := BuildAllAppliances(ctx, "", log)
+			"Build all", true, func(ctx context.Context, log func(string), prog func(int, int, string)) string {
+				built, failed, access, urls := BuildAllAppliances(ctx, "", log, prog)
 				// One button, then the login pages: every tile that came up
 				// opens in its own browser tab, the RDP one in Remmina via
 				// its rdp:// handler. Spaced so the browser keeps them in
@@ -2503,7 +2581,7 @@ func runGUI(rs *Ruleset) {
 					return
 				}
 				batchLogWindow("Destroy every appliance", "", "Destroy all", true,
-					func(_ context.Context, log func(string)) string {
+					func(_ context.Context, log func(string), _ func(int, int, string)) string {
 						return fmt.Sprintf("done — %d removed", DestroyAllAppliances(log))
 					})
 			}, w)

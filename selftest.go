@@ -496,7 +496,18 @@ func memAvailableMB() int {
 // CLI's Ctrl-C are the two callers; before this there was no way to stop a
 // twelve-tile run short of killing the program ("there's no cancel button",
 // operator, 2026-09-04).
-func BuildAllAppliances(ctx context.Context, only string, log func(string)) (built, failed int, access, urls []string) {
+//
+// prog, when not nil, is called with the count of tiles finished, the
+// total, and the tile in flight ("" between tiles and at the end) — what a
+// progress bar needs and a log stream cannot give without parsing it. The
+// window had no indicator at all: a twelve-tile run showed a scrolling log
+// and nothing that said how far along it was ("there's no real indicator
+// or progress indicator for the build process", operator, 2026-09-04).
+func BuildAllAppliances(ctx context.Context, only string, log func(string),
+	prog func(done, total int, tile string)) (built, failed int, access, urls []string) {
+	if prog == nil {
+		prog = func(int, int, string) {}
+	}
 	want := map[string]bool{}
 	for _, o := range strings.Split(only, ",") {
 		if o = strings.TrimSpace(strings.ToLower(o)); o != "" {
@@ -537,6 +548,8 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string)) (bui
 	}
 	log(head)
 	auditLog(head, 0) // a build-all starting is a fact the audit log should carry
+	prog(0, len(todo), "")
+	finished := 0
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -563,8 +576,13 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string)) (bui
 				mu.Unlock()
 				return
 			}
+			mu.Lock()
+			prog(finished, len(todo), a.Name)
+			mu.Unlock()
 			res, lines, url := buildOneAppliance(ctx, a, vm, jobs, tlog)
 			mu.Lock()
+			finished++
+			prog(finished, len(todo), "")
 			switch res {
 			case tileBuilt:
 				built++

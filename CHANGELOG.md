@@ -16,6 +16,9 @@
   catalog size once it answers: memory live via the balloon, vCPUs live
   where the guest allows and at the next boot otherwise. The log says what
   it borrowed and when it gave it back.
+- **Build all shows its progress.** A bar and a status line above the log:
+  tile N of M, the tile's name, its current step and the elapsed time. The
+  CLI prints a tile-N-of-M line as each one starts.
 - **Build all can be cancelled.** A Cancel button on the window, Ctrl-C on
   the CLI: nothing more starts and the tile in flight is removed, so the
   next run rebuilds it instead of skipping a VM whose first boot never
