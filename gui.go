@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -398,6 +399,7 @@ const (
 	selfTestUID        = "app-selftest"
 	buildAllUID        = "app-build-all"
 	destroyAllUID      = "app-destroy-all"
+	stampUID           = "app-stamp" // Firecracker: clone a golden N times
 	// The kldload tool launcher, also a tree branch: one sub-branch per
 	// tool group, one row per tool. On a host without the toolset the branch
 	// holds a single row that says where to get it.
@@ -640,7 +642,20 @@ func (g *guiState) dossierSegs(r Row) []widget.RichTextSegment {
 		stateSty = good
 	}
 	add("state", stateSty, r.D.State)
-	if !r.Synthetic {
+	if r.FC != nil {
+		add("runtime", mono, "Firecracker microVM · golden "+r.FC.Golden)
+		add("vcpu/mem", mono, fmt.Sprintf("%d / %d MB ceiling", r.FC.VCPUs, r.FC.RAMMB))
+		add("disk", mono, "vda → /dev/zvol/"+r.FC.RootZvol)
+		if r.FC.DataZvol != "" {
+			add("disk", mono, "vdb → /dev/zvol/"+r.FC.DataZvol)
+		}
+		add("net", mono, r.FC.Tap+" on "+r.FC.Bridge+" · "+r.FC.MAC)
+		if r.FC.IP != "" {
+			add("ip", mono, r.FC.IP+fmt.Sprintf("  (http://%s:%d/)", r.FC.IP, r.FC.Port))
+		}
+		add("unit", mono, "kfire-"+r.FC.Name+" · kfire console "+r.FC.Name)
+	}
+	if !r.Synthetic && r.FC == nil {
 		add("uuid", mono, r.D.UUID)
 		add("vcpu/mem", mono, fmt.Sprintf("%d / %s", r.D.VCPUs, memCell(r)))
 		auto := "no"
@@ -840,6 +855,7 @@ func runGUI(rs *Ruleset) {
 	// (onyx, 2026-09-04); the row the operator is looking at now changes.
 	var buildAllStatus string
 	var openDestroyAll func()
+	var openStamp func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
 	// each probe is a LookPath per tool.
@@ -889,7 +905,7 @@ func runGUI(rs *Ruleset) {
 		}
 		if uid == applianceBranchUID {
 			out := make([]string, 0, len(Appliances())+3)
-			out = append(out, selfTestUID, buildAllUID, destroyAllUID)
+			out = append(out, selfTestUID, buildAllUID, destroyAllUID, stampUID)
 			for _, n := range ApplianceNames() {
 				out = append(out, applianceUIDPrefix+n)
 			}
@@ -965,7 +981,7 @@ func runGUI(rs *Ruleset) {
 			// Every callback is reassigned because Fyne recycles leaf
 			// widgets — a stale closure here would aim a VM verb at an
 			// appliance.
-			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID {
+			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == stampUID {
 				// The three catalog-wide verbs. `open` is a pointer because
 				// the window closures are assigned after the tree exists.
 				row := o.(*vmRow)
@@ -984,6 +1000,11 @@ func runGUI(rs *Ruleset) {
 						row.detail.Text = buildAllStatus
 					}
 					open = &openBuildAll
+				case stampUID:
+					row.title.Text = "⚡ Stamp microVMs"
+					row.title.Color = acBrand.at()
+					row.detail.Text = "Firecracker clones of a golden — 250 ms each, serving in seconds; they appear under \"firecracker\""
+					open = &openStamp
 				default:
 					row.title.Text = "✕ Destroy all"
 					row.title.Color = acGold.at()
@@ -2635,6 +2656,77 @@ func runGUI(rs *Ruleset) {
 			}, w)
 	}
 
+	// Stamp: a golden, a count, a size → kfire stamp --wait in the batch
+	// window, one line per instance as it answers. Cancel kills the stamp
+	// mid-loop; whatever was stamped stays listed and can be deleted.
+	openStamp = func() {
+		auditLog("gui: Stamp microVMs tile pressed", 0)
+		if !kfireAvailable() {
+			dialog.ShowInformation("Stamp microVMs",
+				"kfire is not on this host. It ships with kldload's KVM host;\n"+
+					"Firecracker itself is installed at firstboot.", w)
+			return
+		}
+		goldens, err := fcGoldens()
+		if err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
+		if len(goldens) == 0 {
+			dialog.ShowInformation("Stamp microVMs",
+				"No Firecracker golden yet.\n\nShut an appliance VM down, then right-click it\n"+
+					"→ Firecracker golden. Stamping clones that.", w)
+			return
+		}
+		names := make([]string, len(goldens))
+		for i, g := range goldens {
+			names[i] = g.Name
+		}
+		sel := widget.NewSelect(names, nil)
+		sel.SetSelected(names[0])
+		count := widget.NewEntry()
+		count.SetText("1")
+		cpu := widget.NewEntry()
+		cpu.SetPlaceHolder("the golden's")
+		ram := widget.NewEntry()
+		ram.SetPlaceHolder("the golden's, in MB")
+		form := widget.NewForm(
+			widget.NewFormItem("Golden", sel),
+			widget.NewFormItem("How many", count),
+			widget.NewFormItem("vCPU", cpu),
+			widget.NewFormItem("RAM", ram))
+		dialog.ShowCustomConfirm("Stamp Firecracker microVMs", "Stamp", "Cancel", form, func(ok bool) {
+			if !ok {
+				return
+			}
+			n, err := strconv.Atoi(strings.TrimSpace(count.Text))
+			if err != nil || n < 1 {
+				dialog.ShowError(fmt.Errorf("how many: a positive number"), w)
+				return
+			}
+			args := []string{"stamp", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
+			if c := strings.TrimSpace(cpu.Text); c != "" {
+				args = append(args, "--cpu", c)
+			}
+			if m := strings.TrimSpace(ram.Text); m != "" {
+				args = append(args, "--ram", m)
+			}
+			batchLogWindow("Stamp Firecracker microVMs",
+				fmt.Sprintf("Stamping %d microVM(s) from %s. Each is a ZFS clone of the\n"+
+					"golden's zvols and a Firecracker process; the line for each one\n"+
+					"prints when it answers on its port. They appear in the estate\n"+
+					"under \"firecracker\" and are removed with Delete.\n", n, sel.Selected),
+				"Stamp", true, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+					err := streamCmd(ctx, log, kfireArgv(args...)...)
+					fcInvalidate()
+					if err != nil {
+						return "stamp FAILED — " + err.Error()
+					}
+					return "done — the instances are under \"firecracker\" in the estate"
+				})
+		}, w)
+	}
+
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
 	// proposition in a gesture ("give me 5 Fedora boxes").
 	// Declared before assignment so the dialog can re-open ITSELF on
@@ -3406,6 +3498,7 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("Rollback…", rollbackDialog),
 			fyne.NewMenuItem("Clone…", cloneAny),
 			fyne.NewMenuItem("Make Golden…", goldenAct),
+			fyne.NewMenuItem("Firecracker golden", verb(planFCGolden)),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
 			fyne.NewMenuItem("Resize disk…", resizeDialog),
@@ -3601,7 +3694,7 @@ func runGUI(rs *Ruleset) {
 			st.cpu = cpuPercent(st.prevCPU, cpuRaw, at.Sub(st.prevAt), doms)
 		}
 		st.prevCPU, st.prevAt = cpuRaw, at
-		st.groups = BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann)
+		st.groups = withFirecracker(BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann))
 		rebuildView()
 		tree.Refresh()
 		if !didFold && len(viewGroups) > 0 {

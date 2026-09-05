@@ -392,6 +392,34 @@ stdout. `WF_ADMIN_PASS` is left out above on purpose: password fields left blank
 are generated from `crypto/rand` and written to `/root/` inside the guest, so
 the happy path needs no typing and no reused password.
 
+### Firecracker — a golden stamped in milliseconds
+
+A built appliance can be stamped as Firecracker microVMs. The golden is
+built once, the slow way, by the pipeline above; each copy is a ZFS clone of
+its zvols plus a Firecracker process. Measured on a 24-core desktop:
+
+| | libvirt build | Firecracker stamp |
+|---|---|---|
+| One Web Stack | ~4 min | 195 ms, serving HTTP 7 s later |
+| Ten Web Stacks | ~40 min | 5 s, all serving at 33 s |
+| Host memory, idle instance | 2 GB reserved | ~300 MB |
+
+Shut an appliance VM down, right-click it → **Firecracker golden**, then
+**Apps → Stamp microVMs**. The instances appear in the estate under
+`firecracker` with their addresses; Start, Shut down, Force off and Delete
+work on them, and the rest is `kfire(8)` on the host:
+
+```bash
+sudo kfire golden app-web-stack
+sudo kfire stamp app-web-stack -n 10 --wait
+sudo kfire ssh web-stack-3 'systemctl is-active nginx postgresql valkey'
+sudo kfire destroy --all
+```
+
+Firecracker has no PCI passthrough, GPU, display or USB, so the radio, tuner
+and desktop tiles stay on libvirt; the Web Stack, AdGuard Home, Syncthing
+and Icecast tiles are the natural microVMs.
+
 ## Limitations
 
 A tool that builds machines has to be careful about what it leaves behind.

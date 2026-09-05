@@ -932,6 +932,52 @@ verb, also takes down its management mesh and drops its inventory row.
 It did not always: a mass delete of test appliances left every one of
 their meshes behind as an inactive member in
 .Xr wgx 1 .
+.Ss Firecracker microVMs
+A built appliance can be stamped as Firecracker microVMs: a ZFS clone of its
+zvols plus a Firecracker process, which is a few hundred milliseconds of
+work and a few hundred megabytes of host memory per copy, against minutes
+and gigabytes for a libvirt build.
+The golden is built once, the slow way, by the pipeline above; the copies
+are microVMs.
+.Xr kfire 8
+owns them and this console shows them.
+.Pp
+Right-click a shut-off appliance VM
+.Pq Sy Firecracker golden
+to snapshot its zvols
+.Ql @kfire
+and pull its kernel out; the VM itself is untouched.
+The
+.Sy Stamp microVMs
+row in the Apps branch asks for a golden, a count and a size, runs
+.Ql kfire stamp --wait
+in a log window with a line per instance as it answers, and the instances
+appear in the estate under a
+.Ql firecracker
+group with the address each one serves on.
+.Pp
+On those rows
+.Sy Start ,
+.Sy Shut down ,
+.Sy Force off
+and
+.Sy Delete
+route to
+.Xr kfire 8 :
+shut down is Ctrl-Alt-Del over the microVM's API socket, delete removes
+the zvol clones, tap, seed, unit and estate row.
+Snapshots, clones, rollback, suspend and autostart are refused by name on a
+microVM; they belong to the golden.
+A microVM has no libvirt domain, so the Screen and Serial tabs do not apply;
+.Ql kfire console
+and
+.Ql kfire ssh
+do.
+.Pp
+Firecracker offers no PCI passthrough, GPU, display or USB, so the tiles
+that need a radio, a tuner, a desktop or sound stay on libvirt.
+The Web Stack, AdGuard Home, Syncthing and Icecast tiles are the natural
+microVMs.
 .Sh REMOTE
 .Fl -connect
 points the whole tool at another hypervisor.
@@ -1379,6 +1425,33 @@ golden until it diverges.
 .Pp
 .Cm EZ Fleet
 does all five in one dialog when you already trust the script.
+.Ss Firecracker
+Build the Web Stack once, shut it down, make it a golden, stamp ten:
+.Bd -literal -offset indent
+$ vmx --build-all --only "Web Stack"      # four minutes, once
+# kfire golden app-web-stack                # or right-click → Firecracker golden
+# kfire stamp app-web-stack -n 10 --wait    # or Apps → Stamp microVMs
+web-stack-1  stamped in 195 ms  (2 vCPU / 2048 MB, aa:fc:ac:a1:b7:20 on virbr0)
+\&...
+10 stamped in 5014 ms, 0 failed
+web-stack-1          192.168.122.33   http 200  answering at  13105 ms
+\&...
+all 10 answering · host: 8796 MB available
+.Ed
+.Pp
+They are estate rows now: the
+.Ql firecracker
+group in the tree and in
+.Ql vmx
+shows state and address, Delete on a row is
+.Ql kfire destroy ,
+and a batch delete over the checked set takes them all.
+.Pp
+Get into one, then take them all down:
+.Bd -literal -offset indent
+# kfire ssh web-stack-3 'systemctl is-active nginx postgresql valkey'
+# kfire destroy --all
+.Ed
 .Ss A rules file
 Copy the built-in profile and teach it your naming convention:
 .Bd -literal -offset indent

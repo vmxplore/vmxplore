@@ -229,7 +229,7 @@ func (m *ui) rebuild() {
 			selDom = m.groups[it.g].Rows[it.row].D.Name
 		}
 	}
-	m.groups = BuildEstate(m.doms, m.dss, m.snaps, m.rs, m.ann)
+	m.groups = withFirecracker(BuildEstate(m.doms, m.dss, m.snaps, m.rs, m.ann))
 	m.cursor = 0
 	items := m.navItems()
 	for i, it := range items {

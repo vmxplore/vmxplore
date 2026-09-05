@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Firecracker microVMs
+
+- **A `firecracker` group in the estate.** Instances stamped by `kfire(8)`
+  show beside the domains with state and address, in the GUI and the TUI;
+  Start, Shut down, Force off and Delete route to kfire, and the verbs that
+  belong to a golden refuse by name on a microVM.
+- **Firecracker golden** on a shut-off appliance's menu, and **Stamp
+  microVMs** in the Apps branch: a golden, a count, a size, then a log
+  window with a line per instance as it answers. The Web Stack: four
+  minutes to build once, 195 ms to stamp, serving seven seconds later.
+
 ### Build all: one at a time, built big
 
 - **Tiles build in series by default.** The memory-derived parallel count

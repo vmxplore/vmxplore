@@ -94,6 +94,9 @@ func (p verbPlan) cmdLines() string {
 // ─── plan builders (pure — tested) ──────────────────────────────────────────
 
 func planStart(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return planFCStart(r)
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -107,6 +110,9 @@ func planStart(r Row) (verbPlan, error) {
 }
 
 func planShutdown(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return planFCShutdown(r)
+	}
 	if r.Synthetic || r.D.State != "running" {
 		return verbPlan{}, fmt.Errorf("%s is not running", r.D.Name)
 	}
@@ -119,6 +125,9 @@ func planShutdown(r Row) (verbPlan, error) {
 // planForceOff is `virsh destroy` — the plug-pull. Refused for transient
 // domains, where destroy doesn't stop the VM, it ERASES it.
 func planForceOff(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return planFCForceOff(r)
+	}
 	if r.Synthetic || r.D.State == "shut off" {
 		return verbPlan{}, fmt.Errorf("%s is not up", r.D.Name)
 	}
@@ -137,6 +146,9 @@ func planForceOff(r Row) (verbPlan, error) {
 // snapshot-create (the webui shipped that wrong concept once). The manual-
 // prefix is what the kldload ruleset classes as operator-made.
 func planSnapshot(r Row, suffix string) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "snapshot")
+	}
 	if r.DS == nil {
 		return verbPlan{}, fmt.Errorf("no local dataset behind %s", r.D.Name)
 	}
@@ -168,6 +180,9 @@ func planSnapshot(r Row, suffix string) (verbPlan, error) {
 // planReboot / planSuspend / planResume — the light lifecycle verbs every
 // right-click menu is expected to carry.
 func planReboot(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "reboot")
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -181,6 +196,9 @@ func planReboot(r Row) (verbPlan, error) {
 }
 
 func planSuspend(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "suspend")
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -194,6 +212,9 @@ func planSuspend(r Row) (verbPlan, error) {
 }
 
 func planResume(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "resume")
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -217,6 +238,9 @@ func planResume(r Row) (verbPlan, error) {
 // command that a graceful shutdown would preserve. Clicking delete is the
 // confirmation; there is no second one.
 func planDelete(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return planFCDelete(r)
+	}
 	if r.Synthetic {
 		return planReconcile(r)
 	}
@@ -283,6 +307,9 @@ func planDelete(r Row) (verbPlan, error) {
 // manifest ghost has no register to forget; the plan still runs and the
 // note on the row says where it came from.
 func planReconcile(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "reconcile")
+	}
 	var cmds [][]string
 	warn := "forgets " + r.D.Name + " in the register — nothing in libvirt to remove"
 	needsRoot := false
@@ -357,6 +384,9 @@ func cloneDatasetName(rootDS, newDS, ds string) string {
 // any libvirt host whose guest sits on ZFS and has virt-clone installed;
 // the kldload golden-image workflow is exactly this shape.
 func planClone(r Row, newName string) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "clone")
+	}
 	return planCloneFrom(r, newName, false)
 }
 
@@ -542,6 +572,9 @@ func dbUnregisterVM(name string) [][]string {
 // newer than the target — the single most dangerous verb here, so it counts
 // the casualties into the warning it reports.
 func planRollback(r Row, snap string, newer int) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "rollback")
+	}
 	if r.DS == nil {
 		return verbPlan{}, fmt.Errorf("no local dataset behind this row")
 	}
@@ -561,6 +594,9 @@ func planRollback(r Row, snap string, newer int) (verbPlan, error) {
 // persistent definition and takes effect on the next start — safe for both
 // running and stopped domains, and the only variant that survives a reboot.
 func planSpecs(r Row, vcpus int, memGiB int) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "vCPU/memory")
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -585,6 +621,9 @@ func planSpecs(r Row, vcpus int, memGiB int) (verbPlan, error) {
 }
 
 func planAutostart(r Row) (verbPlan, error) {
+	if r.FC != nil {
+		return fcRefuse(r, "autostart")
+	}
 	if r.Synthetic {
 		return verbPlan{}, fmt.Errorf("no domain behind this row")
 	}
@@ -659,6 +698,9 @@ func domainGone(msg string) bool {
 // a NOPASSWD host works and a password host fails loudly instead of hanging
 // a TUI on a hidden prompt. Every command lands in the audit log either way.
 func runPlan(p verbPlan) error {
+	if fcTouched(p) {
+		defer fcInvalidate()
+	}
 	for i, argv := range p.cmds {
 		// Only the zfs mutation in a mixed plan needs root. Wrapping the
 		// whole plan — as this did — also ran virsh as root, which on a

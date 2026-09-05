@@ -32,6 +32,10 @@ type Row struct {
 	Group     string
 	Notes     []string
 	Synthetic bool // no libvirt domain behind this row
+	// FC is set when this row is a Firecracker microVM (firecracker.go):
+	// no libvirt domain, but a real machine with a real disk, so it is not
+	// Synthetic — the verbs route to kfire instead of virsh.
+	FC *FCInstance
 }
 
 // GroupRows is one estate group in render order.
