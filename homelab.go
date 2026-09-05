@@ -15,7 +15,7 @@
 //   "how to self-host X" blog post behind it, and every one of those posts is
 //   the same four moves — trust a repo key, install, write a unit, open a
 //   port. Encoding them once turns an evening into a button, and Make Golden →
-//   Clone turns the result into a template you can clone out.
+//   Clone turns the result into a template you can clone.
 //
 // WHY THE APT ENTRIES PIN A FINGERPRINT:
 //   Upstream's own instructions are, without exception, `curl … | gpg --dearmor`
@@ -1287,7 +1287,7 @@ UNIT
 app_selinux var_t "/srv/stations(/.*)?"
 app_selinux var_log_t "/srv/stations/[0-9]+/log(/.*)?"
 
-# ─── add-station: clone out the next one ────────────────────────────────────
+# ─── add-station: clone the next one ────────────────────────────────────
 cat >/usr/local/bin/add-station <<'ADDST'
 #!/usr/bin/env bash
 # add-station <n> [name] — dataset, config, unit and port 8000+n for one station.

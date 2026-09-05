@@ -16,6 +16,14 @@
 
 ### Firecracker microVMs
 
+- **Jailed.** kfire runs each microVM under Firecracker's jailer as an
+  unprivileged user in its own chroot, seccomp on; the estate is unchanged.
+- **The estate reads microVMs without shelling out.** Instance records under
+  `/var/lib/kfire` plus one systemctl call and one libvirt lease read, no
+  sudo, about ten milliseconds for the lot; `kfire list --json` only on a
+  remote target.
+- **`--appliance --distro D`** builds a tile on another cloud image, so a
+  recipe's other branch can be proven rather than assumed.
 - **A `firecracker` group in the estate.** Instances cloned by `kfire(8)`
   show beside the domains with state and address, in the GUI and the TUI;
   Start, Shut down, Force off and Delete route to kfire, and the verbs that

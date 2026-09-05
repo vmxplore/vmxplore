@@ -83,12 +83,88 @@ func kfireJSON(v any, args ...string) error {
 	return json.Unmarshal(out, v)
 }
 
+// fcInstances is the instance list. Read locally when it can be — the
+// instance records under /var/lib/kfire are world-readable, unit state is
+// one systemctl call, addresses are one libvirt lease read — and through
+// `kfire list --json` (a sudo, a shell, jq, virsh) only on a remote target
+// or when the directory is not there to read. The local path is what
+// makes a refresh cost the same at a hundred instances as at one.
 func fcInstances() ([]FCInstance, error) {
+	if target.SSHHost == "" {
+		if insts, err := fcInstancesLocal(fcInstanceDir); err == nil {
+			return insts, nil
+		}
+	}
 	var out []FCInstance
 	if err := kfireJSON(&out, "list", "--json"); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+const fcInstanceDir = "/var/lib/kfire/instances"
+
+// fcInstancesLocal reads every instance.json under dir and fills in state
+// and address: state from one `systemctl list-units` over the kfire-*
+// units, address from the libvirt network's leases by MAC. A directory
+// that does not exist is no instances, not an error; one that cannot be
+// read is the error, so the caller falls back to kfire itself.
+func fcInstancesLocal(dir string) ([]FCInstance, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var insts []FCInstance
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(dir + "/" + e.Name() + "/instance.json")
+		if err != nil {
+			return nil, err // unreadable record: let kfire answer instead
+		}
+		var in FCInstance
+		if err := json.Unmarshal(b, &in); err != nil {
+			return nil, err
+		}
+		insts = append(insts, in)
+	}
+	if len(insts) == 0 {
+		return nil, nil
+	}
+	active := fcActiveUnits()
+	leases := map[string]string{}
+	if lv, err := ConnectSystem(); err == nil {
+		leases, _ = lv.LeasesByMAC("default")
+		lv.Close()
+	}
+	for i := range insts {
+		insts[i].State = "shut off"
+		if active["kfire-"+insts[i].Name+".service"] {
+			insts[i].State = "running"
+			insts[i].IP = leases[strings.ToLower(insts[i].MAC)]
+		}
+	}
+	return insts, nil
+}
+
+// fcActiveUnits is the set of active kfire-* units, from one systemctl.
+func fcActiveUnits() map[string]bool {
+	out, err := exec.Command("systemctl", "list-units", "--plain", "--no-legend", "--all", "kfire-*").Output()
+	active := map[string]bool{}
+	if err != nil {
+		return active
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		f := strings.Fields(l)
+		if len(f) >= 3 && f[2] == "active" {
+			active[f[0]] = true
+		}
+	}
+	return active
 }
 
 // fcRows shapes instances as estate rows. State and address come from

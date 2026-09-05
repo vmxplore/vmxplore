@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -138,5 +139,35 @@ func TestFCGhostsAreFiltered(t *testing.T) {
 	}
 	if got := withoutFCGhosts(groups, nil); len(got[1].Rows) != 4 {
 		t.Error("with no instances nothing is filtered")
+	}
+}
+
+// The local reader: records under the instances dir become instances with
+// state from the units and addresses from the leases — here, with neither
+// available, "shut off" and no address. A missing dir is no instances.
+func TestFCInstancesLocal(t *testing.T) {
+	dir := t.TempDir()
+	if insts, err := fcInstancesLocal(dir + "/none"); err != nil || insts != nil {
+		t.Errorf("missing dir: %v %v", insts, err)
+	}
+	if err := os.MkdirAll(dir+"/web-stack-1", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := `{"name":"web-stack-1","golden":"app-web-stack","mac":"aa:fc:ac:a1:b7:20","tap":"fc-web-stack-1","bridge":"virbr0","vcpus":2,"ram_mb":2048,"port":80,"root_zvol":"rpool/vms/web-stack-1","data_zvol":"","sock":"/var/lib/kfire/jail/firecracker/web-stack-1/root/run/firecracker.socket"}`
+	if err := os.WriteFile(dir+"/web-stack-1/instance.json", []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insts, err := fcInstancesLocal(dir)
+	if err != nil || len(insts) != 1 {
+		t.Fatalf("insts = %v, err = %v", insts, err)
+	}
+	if in := insts[0]; in.Name != "web-stack-1" || in.Golden != "app-web-stack" || in.State != "shut off" || in.IP != "" {
+		t.Errorf("instance = %+v", in)
+	}
+	if err := os.WriteFile(dir+"/web-stack-1/instance.json", []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fcInstancesLocal(dir); err == nil {
+		t.Error("a broken record must be an error, so kfire answers instead")
 	}
 }

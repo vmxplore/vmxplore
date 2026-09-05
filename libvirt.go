@@ -374,6 +374,27 @@ func (lv *LV) leaseAddrs(d libvirt.Domain) ([]string, error) {
 //
 // Returns an empty slice (not an error) when the domain simply has no
 // lease yet; callers poll.
+// LeasesByMAC is every DHCP lease on the named network, keyed by MAC in
+// lower case — what a Firecracker microVM's address is found by, since it
+// has no domain to ask. One round trip for every instance at once.
+func (lv *LV) LeasesByMAC(network string) (map[string]string, error) {
+	n, err := lv.l.NetworkLookupByName(network)
+	if err != nil {
+		return nil, err
+	}
+	leases, _, err := lv.l.NetworkGetDhcpLeases(n, nil, 65536, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, l := range leases {
+		if len(l.Mac) > 0 && l.Ipaddr != "" {
+			out[strings.ToLower(l.Mac[0])] = l.Ipaddr
+		}
+	}
+	return out, nil
+}
+
 func (lv *LV) LeaseIPs(name string) ([]string, error) {
 	d, err := lv.l.DomainLookupByName(name)
 	if err != nil {

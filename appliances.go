@@ -412,7 +412,12 @@ type applianceFlags struct {
 	sshKey   string
 	noWait   bool
 	golden   bool // seal as a clone template instead of enrolling
-	rest     []string
+	// distro overrides the tile's cloud image (a key into cloudImages):
+	// every substrate recipe carries an apt branch and an rpm branch, and
+	// a tile pinned to one image never exercises the other. The Web Stack
+	// was proven on Fedora only until this flag (2026-09-05).
+	distro string
+	rest   []string
 }
 
 // parseApplianceFlags splits argv into guest options and KEY=VALUE pairs.
@@ -444,6 +449,13 @@ func parseApplianceFlags(args []string) (applianceFlags, error) {
 			f.noWait = true
 		case "--golden":
 			f.golden = true
+		case "--distro":
+			i++
+			if f.distro, err = need(i, "--distro"); err == nil {
+				if _, ok := cloudImages[f.distro]; !ok {
+					err = fmt.Errorf("--distro %q: not a cloud image key (see --images)", f.distro)
+				}
+			}
 		case "--ssh-key":
 			i++
 			var p string
@@ -486,6 +498,9 @@ func RunApplianceBuild(name string, args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 2
+	}
+	if f.distro != "" {
+		a.Distro = f.distro
 	}
 	vals := a.Defaults()
 	if err := applianceOverrides(a, vals, f.rest); err != nil {
@@ -582,7 +597,7 @@ func RunApplianceBuild(name string, args []string) int {
 // there is no qcow2 golden — and reports that plainly.
 //
 // This is the demo: build a database stack with one button in a few
-// minutes, then turn around and clone out a cluster of them in a second.
+// minutes, then turn around and clone a cluster of them in a second.
 func SealApplianceGolden(vm string, log func(string)) error {
 	r, ok := rowForDomain(vm)
 	if !ok {

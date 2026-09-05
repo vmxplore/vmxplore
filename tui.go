@@ -737,7 +737,7 @@ func (m *ui) View() string {
 		return "loading…"
 	}
 	var b strings.Builder
-	// short semantic version only — the full build clone lives in --version
+	// short semantic version only — the full build number lives in --version
 	// (operator: the long form in the title bar is obnoxious)
 	title := styKey.Render("vmxplore") + styTitle.Render(" v"+version+" — VM estate")
 	if tools := KldloadTools(); len(tools) > 0 {
