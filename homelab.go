@@ -15,7 +15,7 @@
 //   "how to self-host X" blog post behind it, and every one of those posts is
 //   the same four moves — trust a repo key, install, write a unit, open a
 //   port. Encoding them once turns an evening into a button, and Make Golden →
-//   Clone turns the result into a template you can stamp out.
+//   Clone turns the result into a template you can clone out.
 //
 // WHY THE APT ENTRIES PIN A FINGERPRINT:
 //   Upstream's own instructions are, without exception, `curl … | gpg --dearmor`
@@ -1163,7 +1163,7 @@ app_summary
 // Written for abyss: the FreeBSD box that runs thirty music streams, on its
 // way to kldload. The model is one icecast INSTANCE per station — its own
 // unit, its own port, its own dataset — so one station's restart, quota or
-// migration never touches the other twenty-nine. add-station stamps out
+// migration never touches the other twenty-nine. add-station clones out
 // number thirty-one.
 var icecast = Appliance{
 	Name:     "Icecast Stations",
@@ -1287,7 +1287,7 @@ UNIT
 app_selinux var_t "/srv/stations(/.*)?"
 app_selinux var_log_t "/srv/stations/[0-9]+/log(/.*)?"
 
-# ─── add-station: stamp out the next one ────────────────────────────────────
+# ─── add-station: clone out the next one ────────────────────────────────────
 cat >/usr/local/bin/add-station <<'ADDST'
 #!/usr/bin/env bash
 # add-station <n> [name] — dataset, config, unit and port 8000+n for one station.

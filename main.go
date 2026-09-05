@@ -39,12 +39,12 @@ import (
 // .2 = the Fyne GUI surface (GUI-first, operator call 2026-08-07).
 const version = "0.4.0"
 
-// buildNum is stamped by the Makefile (-X main.buildNum=<n>) from the
+// buildNum is cloned by the Makefile (-X main.buildNum=<n>) from the
 // self-incrementing, gitignored .buildnum counter — the family scheme
 // (zxplore/wgxplore identical). Empty in a bare `go build`.
 var buildNum = ""
 
-// versionFull is version plus the build stamp: "0.2.2 b42".
+// versionFull is version plus the build clone: "0.2.2 b42".
 func versionFull() string {
 	if buildNum == "" || buildNum == "0" {
 		return version
@@ -90,7 +90,7 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                             --golden      once the app answers, seal the VM
                                           as a clone template (@golden) and
                                           skip enrollment; right-click →
-                                          Clone then stamps out ready copies
+                                          Clone then clones out ready copies
                           By default it waits for the first boot to finish
                           and prints the appliance's real URL on stdout.
   --appliance-script N    print the post-install script instead of building.

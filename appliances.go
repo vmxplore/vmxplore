@@ -340,7 +340,7 @@ func waitAppliance(ctx context.Context, name string, port int, tcp bool, progres
 		// 25m, not 10: a NeedsZFS recipe on a stock cloud image now
 		// INSTALLS ZFS first, and the dkms build alone is 5-8 minutes on
 		// two vCPUs before the app's own install starts. The golden fast
-		// path (seal a built appliance, stamp clones) is what brings this
+		// path (seal a built appliance, clone clones) is what brings this
 		// back to seconds.
 		bootTimeout = 25 * time.Minute
 	)
@@ -563,7 +563,7 @@ func RunApplianceBuild(name string, args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "\n%s is a golden — right-click → Clone in the GUI, "+
-			"or clone from %s@golden, stamps out ready copies.\n", a.Name, spec.Name)
+			"or clone from %s@golden, clones out ready copies.\n", a.Name, spec.Name)
 		fmt.Println(spec.Name + "@golden")
 		return 0
 	}
@@ -582,7 +582,7 @@ func RunApplianceBuild(name string, args []string) int {
 // there is no qcow2 golden — and reports that plainly.
 //
 // This is the demo: build a database stack with one button in a few
-// minutes, then turn around and stamp out a cluster of them in a second.
+// minutes, then turn around and clone out a cluster of them in a second.
 func SealApplianceGolden(vm string, log func(string)) error {
 	r, ok := rowForDomain(vm)
 	if !ok {
@@ -1747,7 +1747,7 @@ systemctl restart "$_redsvc" 2>/dev/null || true
 # A landing page that PROVES the stack rather than announces it: every
 # visit opens PostgreSQL as the app user and writes a visit row, bumps a
 # counter in the cache over its own wire protocol, and prints this
-# instance's hostname, address and uptime. Ten stamped copies each show
+# instance's hostname, address and uptime. Ten cloned copies each show
 # their own name and counts, which is the demo ("wouldn't it be better to
 # have a fully built example page", operator, 2026-09-05). The credentials
 # live in a config the fpm user can read and nobody else can.

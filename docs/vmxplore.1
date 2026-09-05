@@ -227,7 +227,7 @@ Prints
 .Ar vmname Ns @golden .
 The same is a checkbox in the build dialog, and
 .Sy Clone
-on the golden then stamps out ready copies in seconds instead of running
+on the golden then clones out ready copies in seconds instead of running
 the recipe again.
 .El
 .Sh THE ESTATE
@@ -619,7 +619,7 @@ Blocks are shared until a clone diverges, so a clone costs almost nothing
 until it is used.
 .Ss EZ Fleet
 One dialog for the whole pattern: build a machine, let it settle, seal it
-into a golden, then stamp out a chosen number of clones.
+into a golden, then clone out a chosen number of clones.
 Cloud mode only — a golden must be a finished system — and it needs a ZFS
 parent.
 .Ss Sound
@@ -825,7 +825,7 @@ one port
 .Pq 8000+N ,
 one dataset per station \(em so restarting station 7 touches one stream.
 .Ql add-station 31 jazz-after-dark
-stamps out the next one.
+clones out the next one.
 .Dl vmx --appliance \(dqIcecast Stations\(dq --vm radio --set IC_STATIONS=8
 .It Sy SDR Station Pq :8073
 OpenWebRX+ waterfall in the browser and a SoapyRemote server on :55132 so
@@ -933,7 +933,7 @@ It did not always: a mass delete of test appliances left every one of
 their meshes behind as an inactive member in
 .Xr wgx 1 .
 .Ss Firecracker microVMs
-A built appliance can be stamped as Firecracker microVMs: a ZFS clone of its
+A built appliance can be cloned as Firecracker microVMs: a ZFS clone of its
 zvols plus a Firecracker process, which is a few hundred milliseconds of
 work and a few hundred megabytes of host memory per copy, against minutes
 and gigabytes for a libvirt build.
@@ -952,11 +952,11 @@ lists the shut-off appliance VMs and snapshots the chosen one's zvols
 pulling its kernel out and leaving the VM untouched (the same thing as
 .Sy Firecracker golden
 on the VM's own menu);
-.Sy Stamp microVMs
+.Sy Clone microVMs
 asks for a golden, a count and a size and runs
-.Ql kfire stamp --wait
+.Ql kfire clone --wait
 in a log window with a line per instance as it answers; each golden is a
-row, and clicking it stamps that golden; the instances follow as estate
+row, and clicking it clones that golden; the instances follow as estate
 rows with the address each one serves on; and
 .Sy Destroy all microVMs
 names every instance before it removes them.
@@ -1404,7 +1404,7 @@ EOF
 .Ss From one machine to a fleet
 The whole pattern, in order.
 Build one machine with a post-install script, check it by hand, then seal
-and stamp:
+and clone:
 .Bl -enum
 .It
 Build with
@@ -1431,14 +1431,14 @@ golden until it diverges.
 .Cm EZ Fleet
 does all five in one dialog when you already trust the script.
 .Ss Firecracker
-Build the Web Stack once, shut it down, make it a golden, stamp ten:
+Build the Web Stack once, shut it down, make it a golden, clone ten:
 .Bd -literal -offset indent
 $ vmx --build-all --only "Web Stack"      # four minutes, once
 # kfire golden app-web-stack                # or right-click → Firecracker golden
-# kfire stamp app-web-stack -n 10 --wait    # or Apps → Stamp microVMs
-web-stack-1  stamped in 195 ms  (2 vCPU / 2048 MB, aa:fc:ac:a1:b7:20 on virbr0)
+# kfire clone app-web-stack -n 10 --wait    # or Apps → Clone microVMs
+web-stack-1  cloned in 195 ms  (2 vCPU / 2048 MB, aa:fc:ac:a1:b7:20 on virbr0)
 \&...
-10 stamped in 5014 ms, 0 failed
+10 cloned in 5014 ms, 0 failed
 web-stack-1          192.168.122.33   http 200  answering at  13105 ms
 \&...
 all 10 answering · host: 8796 MB available

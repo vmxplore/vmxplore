@@ -11,7 +11,7 @@
 //  3. Snapshots the zvol @golden — the anchor planCloneGolden clones from.
 //
 // Why: build one VM carefully — cloud image or a hand-run installer —
-// seal it once, stamp out clones for free. This is the klab/kimage golden
+// seal it once, clone out clones for free. This is the klab/kimage golden
 // workflow generalized to any ZFS+KVM host, capability-probed as always.
 //
 // Notes: re-goldening destroys the old @golden first; ZFS refuses while
@@ -113,7 +113,7 @@ func MakeGolden(r Row, progress func(string)) error {
 	}
 	// An appliance's second disk is its in-guest pool: the database, the
 	// media, the thing the tile exists for. A golden that sealed only the
-	// root would stamp out clones that boot and then have nothing to serve.
+	// root would clone out clones that boot and then have nothing to serve.
 	// The disk list comes from the domain, the same list planCloneFrom
 	// walks, so what gets a @golden here is exactly what a clone looks for.
 	for _, extra := range domainZvols(r)[1:] {
@@ -131,7 +131,7 @@ func MakeGolden(r Row, progress func(string)) error {
 		}
 		progress(extra + " is golden too — clones get their pool")
 	}
-	progress(name + " is golden — right-click → Clone stamps out instant copies")
+	progress(name + " is golden — right-click → Clone clones out instant copies")
 	return nil
 }
 
@@ -152,7 +152,7 @@ func planCloneGolden(r Row, newName string) (verbPlan, error) {
 	return planCloneFrom(r, newName, true)
 }
 
-// ─── Naming the things we stamp out ──────────────────────────────────
+// ─── Naming the things we clone out ──────────────────────────────────
 //
 // Naming N clones is a chore that stops nobody from cloning but slows
 // everybody down, and the names rarely mean anything a week later. Leaving

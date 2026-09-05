@@ -86,7 +86,7 @@ var toolActions = map[string][]toolAction{
 		// knowing the klab verbs by heart (operator, 2026-08-19).
 		//
 		// Each set is a distinct lineage, not a variation:
-		//   base     — lean blue/green images, what clones and kspawn stamp from
+		//   base     — lean blue/green images, what clones and kspawn clone from
 		//   desktop  — the same distros carrying GNOME, for workstation clones
 		//   ztest    — every zfs-tests.sh prerequisite and pre-created loopback
 		//              vdevs baked in, which the lean images deliberately omit
@@ -132,7 +132,7 @@ var toolActions = map[string][]toolAction{
 		{label: "export vhd", desc: "golden as VHD", builds: true, argv: []string{"kimage", "export", "vhd"}},
 		{label: "export vmdk", desc: "golden as VMDK", builds: true, argv: []string{"kimage", "export", "vmdk"}},
 		{label: "export all", desc: "golden in every format", builds: true, argv: []string{"kimage", "export", "all"}},
-		{label: "deploy…", desc: "stamp N VMs out of an image", builds: true, argv: []string{"kimage", "deploy"},
+		{label: "deploy…", desc: "clone N VMs out of an image", builds: true, argv: []string{"kimage", "deploy"},
 			prompt: "<image> <count>"},
 		{label: "full…", desc: "build + export + deploy, one shot", builds: true, argv: []string{"kimage", "full"},
 			prompt: "[count] (empty = 1)"},

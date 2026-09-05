@@ -1,13 +1,13 @@
 //go:build gui
 
-// fleet.go — the one-click fleet: build a golden image, then stamp N clones
+// fleet.go — the one-click fleet: build a golden image, then clone N clones
 // off it. The "EZ build/clone" button.
 //
 // What it does, in order:
 //  1. BuildNewVM to create the source (cloud image + optional post-install,
 //     or an installer ISO the operator has already provisioned).
 //  2. Waits for cloud-init to settle, then MakeGolden (seal + @golden).
-//  3. Stamps count clones off @golden via planCloneGolden + runPlan,
+//  3. Clones count clones off @golden via planCloneGolden + runPlan,
 //     each an instant zero-copy ZFS clone.
 //
 // Why: this is the whole value proposition in one gesture — "give me five
@@ -21,7 +21,7 @@
 // still working grows the zvol, and one that has finished stops. That
 // matters because the pause used to be a fixed 90 seconds, tuned for a base
 // image plus a short post-install. A desktop takes five to ten minutes, so
-// the golden would have been sealed mid-install and every clone stamped
+// the golden would have been sealed mid-install and every clone cloned
 // from a half-built system.
 package main
 
@@ -64,7 +64,7 @@ func BuildFleet(spec NewVMSpec, count int, zfsParent string, progress func(strin
 		return fmt.Errorf("make golden: %w", err)
 	}
 
-	progress(fmt.Sprintf("[3/3] stamping %d clones off the golden…", count))
+	progress(fmt.Sprintf("[3/3] cloning %d clones off the golden…", count))
 	started := 0
 	for i := 1; i <= count; i++ {
 		cn := fmt.Sprintf("%s-%d", spec.Name, i)

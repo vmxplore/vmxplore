@@ -1,7 +1,7 @@
 //go:build gui
 
 // firecracker_gui.go — the GUI-only half of firecracker.go: the goldens
-// list the Stamp dialog and the branch rows read, and the streaming runner
+// list the Clone dialog and the branch rows read, and the streaming runner
 // the batch window feeds. Split off because `staticcheck ./...` without the
 // gui tag reports anything only gui.go reaches as unused (make check,
 // 2026-09-05).
@@ -60,7 +60,7 @@ func fcGoldensCached() []FCGolden {
 }
 
 // streamCmd runs argv and hands every output line to log as it arrives,
-// which is what a stamp needs: each instance prints as it comes up, and a
+// which is what a clone needs: each instance prints as it comes up, and a
 // ten-instance --wait is half a minute nobody wants to stare at a blank
 // window for. ctx cancels by killing the process. Audited like a plan.
 func streamCmd(ctx context.Context, log func(string), argv ...string) error {

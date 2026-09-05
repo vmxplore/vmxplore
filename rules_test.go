@@ -108,7 +108,7 @@ func TestClonesGetTheirOwnSection(t *testing.T) {
 		{"app-web-stack", "", "apps"},
 		{"app-vdi-deskto", "", "apps"},
 		{"st-web-stack", "", "apps (self-test)"},
-		// an explicit rule wins over lineage: k8s nodes are stamped off
+		// an explicit rule wins over lineage: k8s nodes are cloned off
 		// k8s-golden and belong to their cluster, not to "clones"
 		{"kldload-cp", "rpool/vms/k8s-golden@clone-1", "k8s: kldload"},
 		{"kldload-w-2", "rpool/vms/k8s-golden@clone-2", "k8s: kldload"},

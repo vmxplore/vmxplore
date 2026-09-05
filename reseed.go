@@ -193,7 +193,7 @@ var logPathRe = regexp.MustCompile(`(<log file=')([^']*/)[^'/]+(-console\.log')`
 //
 //	Cannot open log file: '…-console.log': Device or resource busy
 //
-// Observed 2026-08-17: two clones stamped off klab-desktop-fedora, both
+// Observed 2026-08-17: two clones cloned off klab-desktop-fedora, both
 // pointing at the source's log, and the operator got "failed to start".
 //
 // Args:    dom — the clone's domain name.

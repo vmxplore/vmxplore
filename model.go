@@ -101,7 +101,7 @@ func BuildEstate(doms []Dom, dss map[string]*Dataset,
 		// it catches a clone whatever it was called, including the ones an
 		// operator named by hand, and it cannot mislabel a machine that
 		// merely happens to be called clone-something. A rule that already
-		// claimed the row always wins, so the k8s nodes stamped off
+		// claimed the row always wins, so the k8s nodes cloned off
 		// k8s-golden stay under their cluster where they belong.
 		if r.Group == "" && r.Origin != "" {
 			r.Group = "clones"

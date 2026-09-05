@@ -226,7 +226,7 @@ func TestPlanCloneGolden(t *testing.T) {
 		t.Skip("virt-clone not installed on this host")
 	}
 	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora@golden")
-	p, err := planCloneGolden(offRow(), "stamped")
+	p, err := planCloneGolden(offRow(), "cloned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,14 +235,14 @@ func TestPlanCloneGolden(t *testing.T) {
 		joined += strings.Join(c, " ") + ";"
 	}
 	if !strings.Contains(joined,
-		"zfs clone rpool/vms/klab-blue-fedora@golden rpool/vms/stamped;") {
+		"zfs clone rpool/vms/klab-blue-fedora@golden rpool/vms/cloned;") {
 		t.Errorf("golden clone must clone @golden, got %s", joined)
 	}
 	if strings.Contains(joined, "zfs snapshot") {
 		t.Error("golden clone must NOT take a fresh snapshot")
 	}
 	stubDatasets(t, "rpool/vms/klab-blue-fedora") // never made golden
-	if _, err := planCloneGolden(offRow(), "stamped"); err == nil {
+	if _, err := planCloneGolden(offRow(), "cloned"); err == nil {
 		t.Error("golden clone of a source with no @golden must refuse")
 	}
 }
@@ -473,21 +473,21 @@ func TestPlanCloneGoldenPerDiskAnchor(t *testing.T) {
 	}
 	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora-data",
 		"rpool/vms/klab-blue-fedora@golden")
-	p, err := planCloneGolden(applianceRow(), "stamped")
+	p, err := planCloneGolden(applianceRow(), "cloned")
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := joinCmds(p.cmds)
-	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora@golden rpool/vms/stamped;") {
+	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora@golden rpool/vms/cloned;") {
 		t.Errorf("root must clone @golden: %s", joined)
 	}
-	if !strings.Contains(joined, "zfs snapshot rpool/vms/klab-blue-fedora-data@clone-stamped;") {
+	if !strings.Contains(joined, "zfs snapshot rpool/vms/klab-blue-fedora-data@clone-cloned;") {
 		t.Errorf("unsealed data disk must be cloned live: %s", joined)
 	}
 
 	stubDatasets(t, "rpool/vms/klab-blue-fedora", "rpool/vms/klab-blue-fedora-data",
 		"rpool/vms/klab-blue-fedora@golden", "rpool/vms/klab-blue-fedora-data@golden")
-	p, err = planCloneGolden(applianceRow(), "stamped")
+	p, err = planCloneGolden(applianceRow(), "cloned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestPlanCloneGoldenPerDiskAnchor(t *testing.T) {
 	if strings.Contains(joined, "zfs snapshot") {
 		t.Errorf("fully sealed golden must take no snapshot: %s", joined)
 	}
-	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora-data@golden rpool/vms/stamped-data;") {
+	if !strings.Contains(joined, "zfs clone rpool/vms/klab-blue-fedora-data@golden rpool/vms/cloned-data;") {
 		t.Errorf("data disk must clone its @golden: %s", joined)
 	}
 }

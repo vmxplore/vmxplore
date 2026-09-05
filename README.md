@@ -103,7 +103,7 @@ shown before it runs.
   ssh with your own key and `known_hosts` ([the exact trust story](#remote)). No
   agent on the far side.
 
-- **Golden → clone → fleet, on ZFS** — seal a VM into a golden and stamp out N
+- **Golden → clone → fleet, on ZFS** — seal a VM into a golden and clone out N
   zero-copy clones; blocks are shared until a clone diverges.
 
 - **Apps — a self-hosted application as one button** — pick an app, fill in its
@@ -280,7 +280,7 @@ in a window costs a fraction of a full redraw.</em></sub>
 <td valign="top">
 
 **EZ Fleet** — pick a distro and a number: it builds one golden, seals it, and
-stamps out N zero-copy ZFS clones in a single gesture. "Give me five Fedora
+clones out N zero-copy ZFS clones in a single gesture. "Give me five Fedora
 boxes," done. On a ZFS host a clone is a metadata operation — blocks are
 shared until a clone diverges.
 
@@ -392,26 +392,26 @@ stdout. `WF_ADMIN_PASS` is left out above on purpose: password fields left blank
 are generated from `crypto/rand` and written to `/root/` inside the guest, so
 the happy path needs no typing and no reused password.
 
-### Firecracker — a golden stamped in milliseconds
+### Firecracker — a golden cloned in milliseconds
 
-A built appliance can be stamped as Firecracker microVMs. The golden is
+A built appliance can be cloned as Firecracker microVMs. The golden is
 built once, the slow way, by the pipeline above; each copy is a ZFS clone of
 its zvols plus a Firecracker process. Measured on a 24-core desktop:
 
-| | libvirt build | Firecracker stamp |
+| | libvirt build | Firecracker clone |
 |---|---|---|
 | One Web Stack | ~4 min | 195 ms, serving HTTP 7 s later |
 | Ten Web Stacks | ~40 min | 5 s, all serving at 33 s |
 | Host memory, idle instance | 2 GB reserved | ~300 MB |
 
 Shut an appliance VM down, right-click it → **Firecracker golden**, then
-**Apps → Stamp microVMs**. The instances appear in the estate under
+**Apps → Clone microVMs**. The instances appear in the estate under
 `firecracker` with their addresses; Start, Shut down, Force off and Delete
 work on them, and the rest is `kfire(8)` on the host:
 
 ```bash
 sudo kfire golden app-web-stack
-sudo kfire stamp app-web-stack -n 10 --wait
+sudo kfire clone app-web-stack -n 10 --wait
 sudo kfire ssh web-stack-3 'systemctl is-active nginx postgresql valkey'
 sudo kfire destroy --all
 ```

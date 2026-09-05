@@ -7,7 +7,7 @@
 - **A live example page.** nginx → PHP-FPM → PostgreSQL + Valkey: every
   visit opens the database as the app user and writes a row, bumps a
   counter in the cache over its own wire protocol, and prints the
-  instance's hostname, address, uptime and sizes. Ten stamped copies each
+  instance's hostname, address, uptime and sizes. Ten cloned copies each
   show their own name and counts. `/healthz` is 200 only when both stores
   answered; the operator's own app still proxies at `/app/`.
 - **Build all reads the recipe's verdict.** A tile whose in-guest checks
@@ -16,14 +16,14 @@
 
 ### Firecracker microVMs
 
-- **A `firecracker` group in the estate.** Instances stamped by `kfire(8)`
+- **A `firecracker` group in the estate.** Instances cloned by `kfire(8)`
   show beside the domains with state and address, in the GUI and the TUI;
   Start, Shut down, Force off and Delete route to kfire, and the verbs that
   belong to a golden refuse by name on a microVM.
-- **Firecracker golden** on a shut-off appliance's menu, and **Stamp
+- **Firecracker golden** on a shut-off appliance's menu, and **Clone
   microVMs** in the Apps branch: a golden, a count, a size, then a log
   window with a line per instance as it answers. The Web Stack: four
-  minutes to build once, 195 ms to stamp, serving seven seconds later.
+  minutes to build once, 195 ms to clone, serving seven seconds later.
 
 ### Build all: one at a time, built big
 

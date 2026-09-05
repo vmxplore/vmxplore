@@ -88,7 +88,7 @@ func TestTierColumnMatchesAMatrixColumn(t *testing.T) {
 
 // A GUI session's PATH does not include /usr/local/sbin, which is exactly
 // where kldload installs kldload-db. Before this, every caller used LookPath
-// alone and read the miss as "not a kldload host", so clones stamped out from
+// alone and read the miss as "not a kldload host", so clones cloned out from
 // the GUI were never registered and nothing said so (.120, 2026-08-22).
 func TestFindToolFallsBackToAbsolutePathWhenPATHMisses(t *testing.T) {
 	dir := t.TempDir()

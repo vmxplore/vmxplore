@@ -400,12 +400,12 @@ const (
 	buildAllUID        = "app-build-all"
 	destroyAllUID      = "app-destroy-all"
 	// The Firecracker branch: a fixture whenever kfire is on the host —
-	// the Stamp row, then the goldens, then the instances (as "vm/" rows,
+	// the Clone row, then the goldens, then the instances (as "vm/" rows,
 	// so they carry the estate verbs). Outside "grp/" for the same reason
 	// the catalog is: it is not a libvirt group.
 	fcBranchUID       = "firecracker"
 	fcGoldenUIDPrefix = "fcg/"
-	stampUID          = "fc-stamp"       // clone a golden N times
+	fcCloneUID        = "fc-clone"       // clone a golden N times
 	fcMakeGoldenUID   = "fc-make-golden" // pick a shut-off appliance → kfire golden
 	fcDestroyAllUID   = "fc-destroy-all" // kfire destroy --all, confirmed
 	// The kldload tool launcher, also a tree branch: one sub-branch per
@@ -877,8 +877,8 @@ func runGUI(rs *Ruleset) {
 	// (onyx, 2026-09-04); the row the operator is looking at now changes.
 	var buildAllStatus string
 	var openDestroyAll func()
-	var openStamp func()
-	var openStampFor func(golden string)
+	var openFCClone func()
+	var openFCCloneFor func(golden string)
 	var openFCMakeGolden, openFCDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
@@ -905,7 +905,7 @@ func runGUI(rs *Ruleset) {
 		if uid == fcBranchUID {
 			gs := fcGoldensCached()
 			out := make([]string, 0, len(gs)+len(fcRowsNow)+3)
-			out = append(out, fcMakeGoldenUID, stampUID)
+			out = append(out, fcMakeGoldenUID, fcCloneUID)
 			for _, g := range gs {
 				out = append(out, fcGoldenUIDPrefix+g.Name)
 			}
@@ -1036,8 +1036,8 @@ func runGUI(rs *Ruleset) {
 			// widgets — a stale closure here would aim a VM verb at an
 			// appliance.
 			if g, ok := strings.CutPrefix(uid, fcGoldenUIDPrefix); ok {
-				// A golden: what a stamp clones. The row is the shortcut to
-				// stamping it; the sizes are what a stamp inherits.
+				// A golden: what a clone clones. The row is the shortcut to
+				// cloning it; the sizes are what a clone inherits.
 				row := o.(*vmRow)
 				row.title.Text = "◇ " + g
 				row.title.Color = acBrand.at()
@@ -1048,19 +1048,19 @@ func runGUI(rs *Ruleset) {
 						if fg.DataZvol != "" {
 							data = " + data pool"
 						}
-						row.detail.Text = fmt.Sprintf("   golden · %d vCPU / %d MB%s · %d clone(s) · click to stamp",
+						row.detail.Text = fmt.Sprintf("   golden · %d vCPU / %d MB%s · %d clone(s) · click to clone",
 							fg.VCPUs, fg.RAMMB, data, fg.Clones)
 					}
 				}
 				row.detail.Color = theme.Color(theme.ColorNameForeground)
-				row.onTap = func() { openStampFor(g) }
+				row.onTap = func() { openFCCloneFor(g) }
 				row.onToggle = func() {}
 				row.onRange = func() {}
 				row.onMenu = func(fyne.Position) {}
 				row.Refresh()
 				return
 			}
-			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == stampUID ||
+			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == fcCloneUID ||
 				uid == fcMakeGoldenUID || uid == fcDestroyAllUID {
 				// The three catalog-wide verbs. `open` is a pointer because
 				// the window closures are assigned after the tree exists.
@@ -1083,18 +1083,18 @@ func runGUI(rs *Ruleset) {
 				case fcMakeGoldenUID:
 					row.title.Text = "◆ Make a golden…"
 					row.title.Color = acBrand.at()
-					row.detail.Text = "snapshot a shut-off appliance VM's zvols and pull its kernel — what stamps clone"
+					row.detail.Text = "snapshot a shut-off appliance VM's zvols and pull its kernel — what clones clone"
 					open = &openFCMakeGolden
 				case fcDestroyAllUID:
 					row.title.Text = "✕ Destroy all microVMs"
 					row.title.Color = acGold.at()
 					row.detail.Text = "kfire destroy --all: every instance with its zvols, tap, seed, unit and estate row"
 					open = &openFCDestroyAll
-				case stampUID:
-					row.title.Text = "⚡ Stamp microVMs"
+				case fcCloneUID:
+					row.title.Text = "⚡ Clone microVMs"
 					row.title.Color = acBrand.at()
 					row.detail.Text = "Firecracker clones of a golden — 250 ms each, serving in seconds; they appear under \"firecracker\""
-					open = &openStamp
+					open = &openFCClone
 				default:
 					row.title.Text = "✕ Destroy all"
 					row.title.Color = acGold.at()
@@ -2372,7 +2372,7 @@ func runGUI(rs *Ruleset) {
 		// A golden is a template, not a member of the estate: it is sealed
 		// (machine-id and host keys stripped) and snapshotted @golden, and
 		// deliberately NOT enrolled — a mesh key baked into a template is
-		// one key shared by every clone. Right-click → Clone then stamps
+		// one key shared by every clone. Right-click → Clone then clones
 		// out ready copies in seconds instead of running the recipe again.
 		goldenChk := widget.NewCheck(
 			"seal as a golden when ready — a clone template, not enrolled", nil)
@@ -2746,9 +2746,9 @@ func runGUI(rs *Ruleset) {
 			}, w)
 	}
 
-	// Stamp: a golden, a count, a size → kfire stamp --wait in the batch
-	// window, one line per instance as it answers. Cancel kills the stamp
-	// mid-loop; whatever was stamped stays listed and can be deleted.
+	// Clone: a golden, a count, a size → kfire clone --wait in the batch
+	// window, one line per instance as it answers. Cancel kills the clone
+	// mid-loop; whatever was cloned stays listed and can be deleted.
 	// Make a golden: the shut-off appliance VMs with a zvol behind them are
 	// the candidates; the plan is the same one the row's context menu runs.
 	openFCMakeGolden = func() {
@@ -2821,11 +2821,11 @@ func runGUI(rs *Ruleset) {
 					})
 			}, w)
 	}
-	openStamp = func() { openStampFor("") }
-	openStampFor = func(preselect string) {
-		auditLog("gui: Stamp microVMs tile pressed", 0)
+	openFCClone = func() { openFCCloneFor("") }
+	openFCCloneFor = func(preselect string) {
+		auditLog("gui: Clone microVMs tile pressed", 0)
 		if !kfireAvailable() {
-			dialog.ShowInformation("Stamp microVMs",
+			dialog.ShowInformation("Clone microVMs",
 				"kfire is not on this host. It ships with kldload's KVM host;\n"+
 					"Firecracker itself is installed at firstboot.", w)
 			return
@@ -2836,9 +2836,9 @@ func runGUI(rs *Ruleset) {
 			return
 		}
 		if len(goldens) == 0 {
-			dialog.ShowInformation("Stamp microVMs",
+			dialog.ShowInformation("Clone microVMs",
 				"No Firecracker golden yet.\n\nShut an appliance VM down, then right-click it\n"+
-					"→ Firecracker golden. Stamping clones that.", w)
+					"→ Firecracker golden. Cloning clones that.", w)
 			return
 		}
 		names := make([]string, len(goldens))
@@ -2863,7 +2863,7 @@ func runGUI(rs *Ruleset) {
 			widget.NewFormItem("How many", count),
 			widget.NewFormItem("vCPU", cpu),
 			widget.NewFormItem("RAM", ram))
-		dialog.ShowCustomConfirm("Stamp Firecracker microVMs", "Stamp", "Cancel", form, func(ok bool) {
+		dialog.ShowCustomConfirm("Clone Firecracker microVMs", "Clone", "Cancel", form, func(ok bool) {
 			if !ok {
 				return
 			}
@@ -2872,23 +2872,23 @@ func runGUI(rs *Ruleset) {
 				dialog.ShowError(fmt.Errorf("how many: a positive number"), w)
 				return
 			}
-			args := []string{"stamp", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
+			args := []string{"clone", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
 			if c := strings.TrimSpace(cpu.Text); c != "" {
 				args = append(args, "--cpu", c)
 			}
 			if m := strings.TrimSpace(ram.Text); m != "" {
 				args = append(args, "--ram", m)
 			}
-			batchLogWindow("Stamp Firecracker microVMs",
-				fmt.Sprintf("Stamping %d microVM(s) from %s. Each is a ZFS clone of the\n"+
+			batchLogWindow("Clone Firecracker microVMs",
+				fmt.Sprintf("Cloning %d microVM(s) from %s. Each is a ZFS clone of the\n"+
 					"golden's zvols and a Firecracker process; the line for each one\n"+
 					"prints when it answers on its port. They appear in the estate\n"+
 					"under \"firecracker\" and are removed with Delete.\n", n, sel.Selected),
-				"Stamp", true, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+				"Clone", true, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
 					err := streamCmd(ctx, log, kfireArgv(args...)...)
 					fcInvalidate()
 					if err != nil {
-						return "stamp FAILED — " + err.Error()
+						return "clone FAILED — " + err.Error()
 					}
 					return "done — the instances are under \"firecracker\" in the estate"
 				})
@@ -3127,7 +3127,7 @@ func runGUI(rs *Ruleset) {
 	// It used to require a row to already be selected and then silently do
 	// NOTHING when one was not, and even when it worked it made exactly one
 	// clone with no way to ask for more. The whole point of a golden is
-	// stamping out copies (a clone here is a ZFS clone: 17-460 MB and about
+	// cloning out copies (a clone here is a ZFS clone: 17-460 MB and about
 	// 0.2s), so "which golden, and how many" is the entire question and
 	// neither half could be answered. Reported 2026-08-15: "you should be
 	// able to select the golden images and spit out as many as you like".
@@ -3135,7 +3135,7 @@ func runGUI(rs *Ruleset) {
 	// Goldens are listed first and marked, because they are what anyone
 	// opening this dialog is looking for.
 	cloneAny := func() {
-		// ── What you can stamp from ──────────────────────────────────
+		// ── What you can clone from ──────────────────────────────────
 		// One entry per candidate, carrying its own right-hand detail so
 		// the list renderer stays a dumb painter.
 		type src struct {
@@ -3168,7 +3168,7 @@ func runGUI(rs *Ruleset) {
 		// ...and the option to make a golden that does not exist yet.
 		//
 		// Clone and "EZ Fleet" were two menu entries asking the same question —
-		// what do I stamp from, and how many — and differing only in whether
+		// what do I clone from, and how many — and differing only in whether
 		// the source already existed. That split made the tool feel disjointed
 		// and left the honest answer ("you have no goldens yet") hidden behind
 		// the wrong menu (operator, 2026-08-15: "we only need 1 menu").
@@ -3241,14 +3241,14 @@ func runGUI(rs *Ruleset) {
 		// A golden is shut off, so its clones arrive shut off, and four
 		// powered-off definitions are indistinguishable from the button having
 		// done nothing at all ("I said I want 4 debian desktops and I get
-		// nothing", operator 2026-08-15). Stamping a machine and leaving it
+		// nothing", operator 2026-08-15). Cloning a machine and leaving it
 		// dark is not the feature; the default is to bring them up.
 		//
 		// It stays a choice because booting a large batch at once is a real
 		// load — twenty desktops racing for the same disk is a host nobody can
-		// use — and someone stamping a shelf of images for later wants them
+		// use — and someone cloning a shelf of images for later wants them
 		// cold.
-		startAfter := widget.NewCheck("power them on once stamped", nil)
+		startAfter := widget.NewCheck("power them on once cloned", nil)
 		startAfter.SetChecked(true)
 		var view []src
 		selectedLabel := ""
@@ -3300,7 +3300,7 @@ func runGUI(rs *Ruleset) {
 			}
 			newDesktop.SetSelected(want)
 			newNote.SetText("builds a golden first (~5-10 min, plus 1.5-3GB if a desktop is " +
-				"chosen), then stamps the clones from it")
+				"chosen), then clones the clones from it")
 			newBox.Show()
 		}
 		list.OnSelected = func(id widget.ListItemID) {
@@ -3354,7 +3354,7 @@ func runGUI(rs *Ruleset) {
 		}
 		rebuild()
 
-		heading := widget.NewLabel("Stamp from")
+		heading := widget.NewLabel("Clone from")
 		heading.TextStyle = fyne.TextStyle{Bold: true}
 		bottom := container.NewVBox(
 			showAll, startAfter,
@@ -3368,7 +3368,7 @@ func runGUI(rs *Ruleset) {
 		// size leaves over, which is the whole point of giving it one.
 		content := container.NewBorder(heading, bottom, nil, nil, list)
 
-		d := dialog.NewCustomConfirm("Stamp out machines — clone a golden, or build one",
+		d := dialog.NewCustomConfirm("Clone out machines — clone a golden, or build one",
 			"Go", "Cancel", content, func(ok bool) {
 				if !ok {
 					return
@@ -3454,7 +3454,7 @@ func runGUI(rs *Ruleset) {
 
 				row, okRow := byLabel[selectedLabel]
 				if !okRow {
-					dialog.ShowError(errors.New("pick something to stamp from"), w)
+					dialog.ShowError(errors.New("pick something to clone from"), w)
 					return
 				}
 				// The pool the clones land in — the source's parent, which is
@@ -3548,7 +3548,7 @@ func runGUI(rs *Ruleset) {
 						// answering to the name of the machine it came off.
 						//
 						// Reported and skipped rather than fatal here: this
-						// dialog stamps from an arbitrary source, which may
+						// dialog clones from an arbitrary source, which may
 						// never have been cloud-init seeded at all, and the
 						// batch is the operator's to finish. ReseedClone is a
 						// no-op when there is no seed cdrom to replace.
@@ -3598,7 +3598,7 @@ func runGUI(rs *Ruleset) {
 						fyne.Do(func() {
 							if guiStatus != nil {
 								if powerOn {
-									guiStatus(fmt.Sprintf("· stamped %d of %d from %s, %d running",
+									guiStatus(fmt.Sprintf("· cloned %d of %d from %s, %d running",
 										done, len(names), row.D.Name, up))
 								} else {
 									guiStatus(fmt.Sprintf("· cloned %d of %d from %s",

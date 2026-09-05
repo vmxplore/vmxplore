@@ -244,7 +244,7 @@ func Tier() string {
 // /usr/local/sbin, and a desktop session's PATH does not include sbin
 // directories. Every caller here used LookPath alone and treated the miss as
 // "this is not a kldload host", silently. Measured on .120 (2026-08-22): nine
-// clones stamped out from the GUI, every one of them absent from state.db and
+// clones cloned out from the GUI, every one of them absent from state.db and
 // therefore invisible to the Ansible inventory and the estate's reconcile
 // annotation — while the exact same binary resolved fine from a root shell,
 // which is why it had looked correct every time it was checked by hand.

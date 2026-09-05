@@ -12,7 +12,7 @@
 //     so they run, audit and refresh exactly like the virsh ones.
 //
 // WHY a separate runtime at all: the Web Stack tile is four minutes to
-// build under libvirt and 250 ms to stamp from its zvols under Firecracker,
+// build under libvirt and 250 ms to clone from its zvols under Firecracker,
 // serving HTTP seven seconds later on ~300 MB of host memory (onyx,
 // 2026-09-05). The golden is built once, the slow way, with the whole
 // appliance pipeline; the copies are microVMs. "It should have its own
@@ -24,7 +24,7 @@
 //
 // Notes: the estate refreshes every two seconds and a kfire call is a
 // process plus a virsh lease read, so instances are cached for ten seconds
-// here. A stamp or a delete calls fcInvalidate so the next refresh is
+// here. A clone or a delete calls fcInvalidate so the next refresh is
 // honest rather than ten seconds stale.
 package main
 
@@ -148,9 +148,9 @@ func fcRefresh() {
 
 // fcRowsCached is every instance as an estate row — empty, not absent,
 // when there are none: the Firecracker branch is a fixture of a host that
-// has kfire, so the operator can find the goldens and the Stamp row
+// has kfire, so the operator can find the goldens and the Clone row
 // before the first instance exists ("I still don't see it", 2026-09-05,
-// looking at an estate with nothing stamped yet).
+// looking at an estate with nothing cloned yet).
 func fcRowsCached() []Row {
 	if !kfireAvailable() {
 		return nil
@@ -162,7 +162,7 @@ func fcRowsCached() []Row {
 }
 
 // fcGroupCached is the instances as one estate group for the TUI's flat
-// list; false when kfire is absent or nothing is stamped.
+// list; false when kfire is absent or nothing is cloned.
 func fcGroupCached() (GroupRows, bool) {
 	rows := fcRowsCached()
 	if len(rows) == 0 {
@@ -183,11 +183,11 @@ func withFirecracker(groups []GroupRows) []GroupRows {
 // ─── verb plans ─────────────────────────────────────────────────────────
 
 // fcRefuse is every verb that has no meaning for a microVM: snapshots,
-// clones and rollbacks belong to the golden it was stamped from, and
+// clones and rollbacks belong to the golden it was cloned from, and
 // suspend/reboot/autostart are libvirt's. Naming the verb keeps the error
 // from reading as a bug.
 func fcRefuse(r Row, verb string) (verbPlan, error) {
-	return verbPlan{}, fmt.Errorf("%s is a Firecracker microVM — %s is not a microVM verb (kfire golden/stamp/destroy are)", r.D.Name, verb)
+	return verbPlan{}, fmt.Errorf("%s is a Firecracker microVM — %s is not a microVM verb (kfire golden/clone/destroy are)", r.D.Name, verb)
 }
 
 func planFCStart(r Row) (verbPlan, error) {
@@ -237,7 +237,7 @@ func planFCDelete(r Row) (verbPlan, error) {
 // planFCGolden makes a shut-off appliance VM a Firecracker golden: kfire
 // snapshots its zvols @kfire and pulls the kernel off its root. The VM
 // itself is untouched and can be started again; the snapshot is what the
-// stamps clone. Distinct from "Make Golden", which seals for kvm-clone.
+// clones clone. Distinct from "Make Golden", which seals for kvm-clone.
 func planFCGolden(r Row) (verbPlan, error) {
 	if r.FC != nil {
 		return fcRefuse(r, "golden")
@@ -278,7 +278,7 @@ func fcTouched(p verbPlan) bool {
 // its state.db row ("in state.db, not in libvirt") and its zvol clones
 // ("zvol without a domain") are exactly what BuildEstate is built to
 // flag, and exactly what a Firecracker instance looks like from libvirt's
-// side. Four stamped instances showed eight yellow ghosts beside their
+// side. Four cloned instances showed eight yellow ghosts beside their
 // real rows ("they are all unreconciled and don't show IPs", onyx,
 // 2026-09-05). Matched by name and by dataset, so a stale ghost is still
 // a ghost once its instance is gone.
