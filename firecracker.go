@@ -140,9 +140,10 @@ func fcRows(insts []FCInstance) []Row {
 // fcGroupCached is the "firecracker" group, or false when kfire is absent
 // or has nothing. Ten-second cache: see the banner.
 var (
-	fcMu     sync.Mutex
-	fcAt     time.Time
-	fcCached []FCInstance
+	fcMu      sync.Mutex
+	fcAt      time.Time
+	fcCached  []FCInstance
+	fcGoldenC []FCGolden
 )
 
 func fcInvalidate() {
@@ -151,26 +152,59 @@ func fcInvalidate() {
 	fcMu.Unlock()
 }
 
-func fcGroupCached() (GroupRows, bool) {
+// fcRefresh reads instances and goldens when the cache is older than ten
+// seconds. A kfire that cannot answer (no sudo, no state dir yet) means
+// empty lists, not a crash of the estate view; the audit log has the why.
+func fcRefresh() {
+	if time.Since(fcAt) <= 10*time.Second {
+		return
+	}
+	insts, err := fcInstances()
+	if err != nil {
+		auditLog("kfire list --json: "+err.Error(), 1)
+		insts = nil
+	}
+	gs, err := fcGoldens()
+	if err != nil {
+		auditLog("kfire goldens --json: "+err.Error(), 1)
+		gs = nil
+	}
+	fcCached, fcGoldenC, fcAt = insts, gs, time.Now()
+}
+
+// fcRowsCached is every instance as an estate row — empty, not absent,
+// when there are none: the Firecracker branch is a fixture of a host that
+// has kfire, so the operator can find the goldens and the Stamp row
+// before the first instance exists ("I still don't see it", 2026-09-05,
+// looking at an estate with nothing stamped yet).
+func fcRowsCached() []Row {
 	if !kfireAvailable() {
-		return GroupRows{}, false
+		return nil
 	}
 	fcMu.Lock()
 	defer fcMu.Unlock()
-	if time.Since(fcAt) > 10*time.Second {
-		insts, err := fcInstances()
-		if err != nil {
-			// a kfire that cannot answer (no sudo, no state dir yet) is
-			// "no group", not a crash of the estate view; the audit log has it
-			auditLog("kfire list --json: "+err.Error(), 1)
-			insts = nil
-		}
-		fcCached, fcAt = insts, time.Now()
+	fcRefresh()
+	return fcRows(fcCached)
+}
+
+func fcGoldensCached() []FCGolden {
+	if !kfireAvailable() {
+		return nil
 	}
-	if len(fcCached) == 0 {
+	fcMu.Lock()
+	defer fcMu.Unlock()
+	fcRefresh()
+	return fcGoldenC
+}
+
+// fcGroupCached is the instances as one estate group for the TUI's flat
+// list; false when kfire is absent or nothing is stamped.
+func fcGroupCached() (GroupRows, bool) {
+	rows := fcRowsCached()
+	if len(rows) == 0 {
 		return GroupRows{}, false
 	}
-	return GroupRows{Label: fcGroupLabel, Rows: fcRows(fcCached)}, true
+	return GroupRows{Label: fcGroupLabel, Rows: rows}, true
 }
 
 // withFirecracker appends the firecracker group to an estate — the one

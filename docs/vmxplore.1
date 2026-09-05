@@ -942,19 +942,24 @@ are microVMs.
 .Xr kfire 8
 owns them and this console shows them.
 .Pp
-Right-click a shut-off appliance VM
-.Pq Sy Firecracker golden
-to snapshot its zvols
-.Ql @kfire
-and pull its kernel out; the VM itself is untouched.
 The
+.Sy Firecracker
+branch of the tree is a fixture of any host with
+.Xr kfire 8 :
+.Sy Make a golden\&…
+lists the shut-off appliance VMs and snapshots the chosen one's zvols
+.Ql @kfire ,
+pulling its kernel out and leaving the VM untouched (the same thing as
+.Sy Firecracker golden
+on the VM's own menu);
 .Sy Stamp microVMs
-row in the Apps branch asks for a golden, a count and a size, runs
+asks for a golden, a count and a size and runs
 .Ql kfire stamp --wait
-in a log window with a line per instance as it answers, and the instances
-appear in the estate under a
-.Ql firecracker
-group with the address each one serves on.
+in a log window with a line per instance as it answers; each golden is a
+row, and clicking it stamps that golden; the instances follow as estate
+rows with the address each one serves on; and
+.Sy Destroy all microVMs
+names every instance before it removes them.
 .Pp
 On those rows
 .Sy Start ,

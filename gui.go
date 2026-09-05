@@ -399,7 +399,15 @@ const (
 	selfTestUID        = "app-selftest"
 	buildAllUID        = "app-build-all"
 	destroyAllUID      = "app-destroy-all"
-	stampUID           = "app-stamp" // Firecracker: clone a golden N times
+	// The Firecracker branch: a fixture whenever kfire is on the host —
+	// the Stamp row, then the goldens, then the instances (as "vm/" rows,
+	// so they carry the estate verbs). Outside "grp/" for the same reason
+	// the catalog is: it is not a libvirt group.
+	fcBranchUID       = "firecracker"
+	fcGoldenUIDPrefix = "fcg/"
+	stampUID          = "fc-stamp"       // clone a golden N times
+	fcMakeGoldenUID   = "fc-make-golden" // pick a shut-off appliance → kfire golden
+	fcDestroyAllUID   = "fc-destroy-all" // kfire destroy --all, confirmed
 	// The kldload tool launcher, also a tree branch: one sub-branch per
 	// tool group, one row per tool. On a host without the toolset the branch
 	// holds a single row that says where to get it.
@@ -799,6 +807,10 @@ func runGUI(rs *Ruleset) {
 	// st.rows both read it so selection, filtering and the flat helpers
 	// stay in sync. uid scheme: "grp/<label>" branch, "vm/<name>" leaf.
 	var viewGroups []GroupRows
+	// fcRowsNow is the Firecracker instances as rows: in st.rows so
+	// selection, verbs and the batch bar see them, under their own branch
+	// in the tree rather than a "grp/" group.
+	var fcRowsNow []Row
 	rebuildView := func() {
 		q := strings.ToLower(strings.TrimSpace(st.filter))
 		viewGroups = viewGroups[:0]
@@ -815,6 +827,11 @@ func runGUI(rs *Ruleset) {
 				st.rows = append(st.rows, rows...)
 			}
 		}
+		for _, r := range fcRowsNow {
+			if q == "" || strings.Contains(strings.ToLower(r.D.Name), q) {
+				st.rows = append(st.rows, r)
+			}
+		}
 	}
 	rowByUID := func(uid string) (Row, bool) {
 		name := strings.TrimPrefix(uid, "vm/")
@@ -823,6 +840,11 @@ func runGUI(rs *Ruleset) {
 				if r.D.Name == name {
 					return r, true
 				}
+			}
+		}
+		for _, r := range fcRowsNow {
+			if r.D.Name == name {
+				return r, true
 			}
 		}
 		return Row{}, false
@@ -856,6 +878,8 @@ func runGUI(rs *Ruleset) {
 	var buildAllStatus string
 	var openDestroyAll func()
 	var openStamp func()
+	var openStampFor func(golden string)
+	var openFCMakeGolden, openFCDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
 	// each probe is a LookPath per tool.
@@ -873,7 +897,25 @@ func runGUI(rs *Ruleset) {
 			// tabs in the console card as well; listing the same things
 			// twice was the redundancy the operator asked to lose
 			// (2026-09-03), so the console keeps Serial and Screen only.
+			if kfireAvailable() {
+				out = append(out, fcBranchUID)
+			}
 			return append(out, applianceBranchUID, toolsBranchUID)
+		}
+		if uid == fcBranchUID {
+			gs := fcGoldensCached()
+			out := make([]string, 0, len(gs)+len(fcRowsNow)+3)
+			out = append(out, fcMakeGoldenUID, stampUID)
+			for _, g := range gs {
+				out = append(out, fcGoldenUIDPrefix+g.Name)
+			}
+			for _, r := range fcRowsNow {
+				out = append(out, "vm/"+r.D.Name)
+			}
+			if len(fcRowsNow) > 0 {
+				out = append(out, fcDestroyAllUID)
+			}
+			return out
 		}
 		if uid == toolsBranchUID {
 			if len(toolGroups) == 0 {
@@ -905,7 +947,7 @@ func runGUI(rs *Ruleset) {
 		}
 		if uid == applianceBranchUID {
 			out := make([]string, 0, len(Appliances())+3)
-			out = append(out, selfTestUID, buildAllUID, destroyAllUID, stampUID)
+			out = append(out, selfTestUID, buildAllUID, destroyAllUID)
 			for _, n := range ApplianceNames() {
 				out = append(out, applianceUIDPrefix+n)
 			}
@@ -925,7 +967,7 @@ func runGUI(rs *Ruleset) {
 		return nil
 	}
 	isBranch := func(uid string) bool {
-		return uid == "" || uid == applianceBranchUID || uid == toolsBranchUID ||
+		return uid == "" || uid == applianceBranchUID || uid == toolsBranchUID || uid == fcBranchUID ||
 			strings.HasPrefix(uid, "grp/") || strings.HasPrefix(uid, toolGroupUIDPrefix)
 	}
 	tree = widget.NewTree(childUIDs, isBranch,
@@ -942,6 +984,18 @@ func runGUI(rs *Ruleset) {
 				t := o.(*canvas.Text)
 				if uid == applianceBranchUID {
 					t.Text = fmt.Sprintf("Apps  (%d)", len(Appliances()))
+					t.Color = acBrand.at()
+					t.Refresh()
+					return
+				}
+				if uid == fcBranchUID {
+					run := 0
+					for _, r := range fcRowsNow {
+						if r.D.State == "running" {
+							run++
+						}
+					}
+					t.Text = fmt.Sprintf("Firecracker  (%d golden, %d microVM, %d running)", len(fcGoldensCached()), len(fcRowsNow), run)
 					t.Color = acBrand.at()
 					t.Refresh()
 					return
@@ -981,7 +1035,33 @@ func runGUI(rs *Ruleset) {
 			// Every callback is reassigned because Fyne recycles leaf
 			// widgets — a stale closure here would aim a VM verb at an
 			// appliance.
-			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == stampUID {
+			if g, ok := strings.CutPrefix(uid, fcGoldenUIDPrefix); ok {
+				// A golden: what a stamp clones. The row is the shortcut to
+				// stamping it; the sizes are what a stamp inherits.
+				row := o.(*vmRow)
+				row.title.Text = "◇ " + g
+				row.title.Color = acBrand.at()
+				row.detail.Text = "   golden"
+				for _, fg := range fcGoldensCached() {
+					if fg.Name == g {
+						data := ""
+						if fg.DataZvol != "" {
+							data = " + data pool"
+						}
+						row.detail.Text = fmt.Sprintf("   golden · %d vCPU / %d MB%s · %d clone(s) · click to stamp",
+							fg.VCPUs, fg.RAMMB, data, fg.Clones)
+					}
+				}
+				row.detail.Color = theme.Color(theme.ColorNameForeground)
+				row.onTap = func() { openStampFor(g) }
+				row.onToggle = func() {}
+				row.onRange = func() {}
+				row.onMenu = func(fyne.Position) {}
+				row.Refresh()
+				return
+			}
+			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == stampUID ||
+				uid == fcMakeGoldenUID || uid == fcDestroyAllUID {
 				// The three catalog-wide verbs. `open` is a pointer because
 				// the window closures are assigned after the tree exists.
 				row := o.(*vmRow)
@@ -1000,6 +1080,16 @@ func runGUI(rs *Ruleset) {
 						row.detail.Text = buildAllStatus
 					}
 					open = &openBuildAll
+				case fcMakeGoldenUID:
+					row.title.Text = "◆ Make a golden…"
+					row.title.Color = acBrand.at()
+					row.detail.Text = "snapshot a shut-off appliance VM's zvols and pull its kernel — what stamps clone"
+					open = &openFCMakeGolden
+				case fcDestroyAllUID:
+					row.title.Text = "✕ Destroy all microVMs"
+					row.title.Color = acGold.at()
+					row.detail.Text = "kfire destroy --all: every instance with its zvols, tap, seed, unit and estate row"
+					open = &openFCDestroyAll
 				case stampUID:
 					row.title.Text = "⚡ Stamp microVMs"
 					row.title.Color = acBrand.at()
@@ -2659,7 +2749,80 @@ func runGUI(rs *Ruleset) {
 	// Stamp: a golden, a count, a size → kfire stamp --wait in the batch
 	// window, one line per instance as it answers. Cancel kills the stamp
 	// mid-loop; whatever was stamped stays listed and can be deleted.
-	openStamp = func() {
+	// Make a golden: the shut-off appliance VMs with a zvol behind them are
+	// the candidates; the plan is the same one the row's context menu runs.
+	openFCMakeGolden = func() {
+		auditLog("gui: Make a golden (Firecracker) pressed", 0)
+		var cands []Row
+		for _, r := range st.rows {
+			if r.FC == nil && !r.Synthetic && r.DS != nil && r.D.State == "shut off" {
+				cands = append(cands, r)
+			}
+		}
+		if len(cands) == 0 {
+			dialog.ShowInformation("Make a Firecracker golden",
+				"No candidate: a golden is taken from a SHUT-OFF VM with a zvol\n"+
+					"behind it (the appliance layout). Build a tile, shut it down,\n"+
+					"then come back here.", w)
+			return
+		}
+		names := make([]string, len(cands))
+		for i, r := range cands {
+			names[i] = r.D.Name
+		}
+		sel := widget.NewSelect(names, nil)
+		sel.SetSelected(names[0])
+		dialog.ShowCustomConfirm("Make a Firecracker golden", "Make golden", "Cancel",
+			container.NewVBox(widget.NewLabel("Snapshot this VM's zvols @kfire and pull its kernel out.\nThe VM itself is untouched."), sel),
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				for _, r := range cands {
+					if r.D.Name == sel.Selected {
+						p, err := planFCGolden(r)
+						if err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						firePlan(w, p, func() {
+							fcInvalidate()
+							refreshNow()
+						})
+					}
+				}
+			}, w)
+	}
+	// Destroy all: the list it will act on is the list it acts on.
+	openFCDestroyAll = func() {
+		names := make([]string, 0, len(fcRowsNow))
+		for _, r := range fcRowsNow {
+			names = append(names, r.D.Name)
+		}
+		if len(names) == 0 {
+			dialog.ShowInformation("Destroy all microVMs", "nothing to remove — no Firecracker instance exists", w)
+			return
+		}
+		dialog.ShowConfirm("Destroy every Firecracker microVM",
+			"Removes, with their zvol clones, taps, seeds, units and estate rows:\n\n  "+
+				strings.Join(names, "\n  ")+"\n\nGoldens are kept. There is no undo.",
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				batchLogWindow("Destroy every Firecracker microVM", "", "Destroy all", true,
+					func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+						err := streamCmd(ctx, log, kfireArgv("destroy", "--all")...)
+						fcInvalidate()
+						if err != nil {
+							return "destroy FAILED — " + err.Error()
+						}
+						return "done"
+					})
+			}, w)
+	}
+	openStamp = func() { openStampFor("") }
+	openStampFor = func(preselect string) {
 		auditLog("gui: Stamp microVMs tile pressed", 0)
 		if !kfireAvailable() {
 			dialog.ShowInformation("Stamp microVMs",
@@ -2684,6 +2847,11 @@ func runGUI(rs *Ruleset) {
 		}
 		sel := widget.NewSelect(names, nil)
 		sel.SetSelected(names[0])
+		for _, n := range names {
+			if n == preselect {
+				sel.SetSelected(n)
+			}
+		}
 		count := widget.NewEntry()
 		count.SetText("1")
 		cpu := widget.NewEntry()
@@ -3694,7 +3862,8 @@ func runGUI(rs *Ruleset) {
 			st.cpu = cpuPercent(st.prevCPU, cpuRaw, at.Sub(st.prevAt), doms)
 		}
 		st.prevCPU, st.prevAt = cpuRaw, at
-		st.groups = withFirecracker(BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann))
+		st.groups = BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann)
+		fcRowsNow = fcRowsCached()
 		rebuildView()
 		tree.Refresh()
 		if !didFold && len(viewGroups) > 0 {
