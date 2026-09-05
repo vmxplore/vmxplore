@@ -96,6 +96,13 @@ group ^klab-(blue|green|test)-[a-z]+$   klab
 group ^klab-ztest-[a-z0-9]+-[0-9]+$     klab
 
 # kspawn throwaway clusters: kspawn-<cluster>-<NN>.
+# Appliance tiles from the catalog: build-all names them app-<tile> and the
+# self-test st-<tile>. One folder, like the goldens and the klab sites — ten
+# of them in "ungrouped" beside the leftovers read as "all over the place"
+# (operator, 2026-09-04).
+group ^app-[a-z0-9-]+$          apps
+group ^st-[a-z0-9-]+$           apps (self-test)
+
 group ^kspawn-(.+)-[0-9]+$      kspawn: $1
 
 # k8s clusters from kube-cluster: <cluster>-cp[N] / <cluster>-w<N>; the

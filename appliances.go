@@ -1146,7 +1146,7 @@ chmod 0600 /root/writefreely-credentials.txt
 echo "WriteFreely ${WF_VERSION} is up at ${wf_host} — sign in as ${WF_ADMIN_USER}"
 `
 
-// ─── WriteFreely Desktop ─────────────────────────────────────────────
+// ─── WriteFreely ─────────────────────────────────────────────
 //
 // The same blog, plus a machine to write on: the VM boots straight into a
 // full-screen editor with no login prompt and no desktop to navigate, so
@@ -1164,7 +1164,7 @@ echo "WriteFreely ${WF_VERSION} is up at ${wf_host} — sign in as ${WF_ADMIN_US
 // plus a browser is a fraction of that, and every one of those packages
 // exists to put a single window on screen.
 var writeFreelyDesktop = Appliance{
-	Name: "WriteFreely Desktop",
+	Name: "WriteFreely",
 	Summary: "A writing machine: the blog plus a full-screen editor, " +
 		"booting straight into it",
 	Homepage: "https://writefreely.org",

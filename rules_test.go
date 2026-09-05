@@ -105,6 +105,9 @@ func TestClonesGetTheirOwnSection(t *testing.T) {
 		{"my-test-box", "rpool/vms/klab-golden-fedora@golden", "clones"},
 		// no origin: not a clone, so it stays in the ungrouped pile
 		{"demo-leftover", "", "ungrouped"},
+		{"app-web-stack", "", "apps"},
+		{"app-vdi-deskto", "", "apps"},
+		{"st-web-stack", "", "apps (self-test)"},
 		// an explicit rule wins over lineage: k8s nodes are stamped off
 		// k8s-golden and belong to their cluster, not to "clones"
 		{"kldload-cp", "rpool/vms/k8s-golden@clone-1", "k8s: kldload"},

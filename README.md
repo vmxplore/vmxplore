@@ -328,8 +328,8 @@ guest until it is on.
 
 ## Apps — preconfigured application VMs
 
-<img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely Desktop appliance — the VM boots straight into the editor, signed in" width="100%"/>
-<sub><em>WriteFreely Desktop: power on, write. No login prompt, no desktop to
+<img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely appliance — the VM boots straight into the editor, signed in" width="100%"/>
+<sub><em>WriteFreely: power on, write. No login prompt, no desktop to
 navigate — the Screen tab <strong>is</strong> the application. It signs itself
 in as the admin you set up, at 2560x1440, and narrates its own first boot on
 both consoles while it builds.</em></sub>
@@ -353,22 +353,33 @@ consequences worth knowing:
   bash reading named variables; only shell-quoted assignments are prepended. A
   site name containing a quote, a `$(…)` or a backtick is inert data.
 
-Two entries ship today, both [WriteFreely](https://writefreely.org/) — the
-same blog, headless or as a writing machine. It is a real upstream project
-with its own docs and community; vmxplore just packages it:
+Twelve entries ship today. Each is a real upstream project with its own
+docs and community; vmxplore packages it as a first boot that ends in a
+verified, enrolled service, and the closing report says where it is and
+how to log in:
 
 | | |
 |---|---|
-| **[WriteFreely](https://writefreely.org/)** | 1 vCPU / 1 GB. Minimalist federated blogging behind Caddy with automatic HTTPS. Reach it from your own browser. |
-| **[WriteFreely Desktop](https://writefreely.org/)** | 2 vCPU / 3 GB. The same blog *plus a machine to write on*: X, a kiosk window manager and a browser, booting straight into the editor already signed in as the admin you set up. Deliberately not GNOME — measured, `gnome-core` costs 802 additional packages to put one window on screen. |
+| **[Web Stack](https://nginx.org)** | 2 vCPU / 2 GB. nginx reverse proxy in front of PostgreSQL and Redis, wired together and health-checked |
+| **[WriteFreely](https://writefreely.org)** | 2 vCPU / 3 GB. A writing machine: the blog plus a full-screen editor, booting straight into it |
+| **[Jellyfin on ZFS](https://jellyfin.org)** | 2 vCPU / 2 GB. Free-software media server on tuned datasets — per-title media, 16K library, throwaway cache |
+| **[Plex on ZFS](https://www.plex.tv)** | 2 vCPU / 2 GB. Plex media server on tuned ZFS datasets — per-title datasets, 8K-record library, throwaway transcodes |
+| **[Seedbox](https://www.qbittorrent.org)** | 2 vCPU / 2 GB. qBittorrent on tuned datasets, with a VPN kill switch that fails closed |
+| **[Icecast Stations](https://icecast.org)** | 2 vCPU / 1 GB. A rack of independent Icecast servers — one unit, port and dataset per station |
+| **[SDR Station](https://www.openwebrx.de)** | 2 vCPU / 2 GB. OpenWebRX + SoapyRemote around a HackRF/RTL-SDR — the estate's antenna socket |
+| **[Tvheadend DVR](https://tvheadend.org)** | 2 vCPU / 2 GB. Over-the-air + satellite DVR — tuners in, recordings on a tuned dataset, streams out |
+| **[AdGuard Home](https://adguard.com/adguard-home.html)** | 1 vCPU / 1 GB. Network-wide DNS ad and tracker blocking, with DoH/DoT |
+| **[Syncthing](https://syncthing.net)** | 1 vCPU / 1 GB. Continuous file sync between your own machines — no server, no cloud |
+| **[VDI Desktop](https://kldload.com/pages/build-vdi)** | 2 vCPU / 2 GB. A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client |
+| **[RDP Desktop](https://www.xrdp.org)** | 2 vCPU / 2 GB. An XFCE desktop over RDP — mstsc, Remmina or FreeRDP; keyboard, mouse, clipboard and sound |
 
 From the terminal, no GUI needed:
 
 ```bash
 vmx --appliances                       # the catalog, with each entry's fields
-vmx --appliance-script "WriteFreely Desktop"   # print the installer, build nothing
+vmx --appliance-script WriteFreely   # print the installer, build nothing
 
-vmx --appliance "WriteFreely Desktop" --vm blog \
+vmx --appliance WriteFreely --vm blog \
     WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
 
 vmx --selftest                         # build + audit every tile, keep the failures

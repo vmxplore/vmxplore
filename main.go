@@ -122,10 +122,10 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           substrates — bare KVM, KVM + ZFS, kldloadOS — with
                           their requirements ticked for this host.
 
-    vmx --appliance "WriteFreely Desktop" --vm blog \
+    vmx --appliance WriteFreely --vm blog \
         WF_SITE_NAME='My Blog' WF_ADMIN_USER=matt
 
-    vmx --appliance-script "WriteFreely Desktop" WF_DOMAIN=blog.example.com
+    vmx --appliance-script WriteFreely WF_DOMAIN=blog.example.com
 
 Environment:
   VMX_SSH_USER   user for the TUI's ssh-to-guest verb

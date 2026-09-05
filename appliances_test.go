@@ -342,7 +342,7 @@ func TestEveryApplianceRendersFromItsOwnDefaults(t *testing.T) {
 		// options the wrapper relies on to fail loudly. Only the FIRST line
 		// is the wrapper's business — a shebang deeper in is a heredoc
 		// writing a script into the guest, which several entries legitimately
-		// do (WriteFreely Desktop writes an .xinitrc).
+		// do (WriteFreely writes an .xinitrc).
 		if first, _, _ := strings.Cut(strings.TrimLeft(a.Script, "\n"), "\n"); strings.HasPrefix(first, "#!") {
 			t.Errorf("%s: script opens with a shebang — the runcmd wrapper owns that", a.Name)
 		}
