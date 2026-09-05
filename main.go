@@ -104,11 +104,13 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                             --keep        keep passing VMs too
   --build-all             build every tile as a kept VM named app-<tile>;
                           tiles whose VM already exists are skipped, so it is
-                          also "build whatever is missing". Tiles build in
-                          parallel, as many at once as host memory allows
-                          (VMX_BUILD_JOBS=N overrides). Ends by printing
-                          every tile's URL and logins on stdout. Exit
-                          status is the number of failed tiles.
+                          also "build whatever is missing". Tiles build one
+                          at a time, each with most of the host's cores and
+                          spare RAM while it installs and trimmed to catalog
+                          size once it answers (VMX_BUILD_JOBS=N builds N at
+                          once at catalog size). Ends by printing every
+                          tile's URL and logins on stdout. Exit status is
+                          the number of failed tiles.
                             --only A,B    only these tiles (names or app-
                                           VM names, comma-separated)
   --destroy-all           remove every VM this tool built — the app-* builds
@@ -206,7 +208,7 @@ func main() {
 					only = args[j]
 				}
 			}
-			_, failed, access := BuildAllAppliances(only,
+			_, failed, access, _ := BuildAllAppliances(only,
 				func(l string) { fmt.Fprintln(os.Stderr, l) })
 			// stdout is the report, stderr was the progress: the URLs and
 			// logins are what the operator keeps, so they are what a

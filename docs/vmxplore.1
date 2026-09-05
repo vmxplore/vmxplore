@@ -150,12 +150,17 @@ Build every catalog entry as a kept VM named
 and exit with the number that failed.
 Entries whose VM already exists are skipped, so a second run builds only
 what is missing.
-Tiles build in parallel, as many at once as the host's free memory allows
-(each tile's RAM plus headroom for the host);
+Tiles build one at a time.
+Each is built with most of the host's cores (less two, at most eight) and
+four times its catalog RAM (at most 8G, and never more than the host can
+spare), because a first boot is package installs and, for the ZFS tiles, a
+dkms compile; once the tile answers on its port it is trimmed back to its
+catalog size, memory live and vCPUs at the next boot where the guest refuses
+a live unplug.
 .Ev VMX_BUILD_JOBS
-overrides the count.
-Every progress line is prefixed with its VM name so the interleaved stream
-still reads.
+builds that many at once instead, at catalog size.
+Every progress line is prefixed with its VM name so a parallel stream still
+reads.
 .Fl -only
 restricts the run to a comma-separated list of tile names or
 .Ql app-
@@ -859,10 +864,10 @@ on one machine into a five-second rollback rather than a restore.
 .Ql add-share photos
 creates a snapshot-isolated dataset for a new folder.
 .Dl vmx --appliance Syncthing --vm sync
-.It Sy WriteFreely Desktop Pq :80
+.It Sy WriteFreely Pq :80
 A minimalist federated blog whose VM boots straight into the editor,
 signed in, in the Screen tab.
-.Dl vmx --appliance \(dqWriteFreely Desktop\(dq --vm blog
+.Dl vmx --appliance WriteFreely --vm blog
 .It Sy VDI Desktop Pq :8889 WebRTC, :8888 HLS, :8890 SRT
 A headless XFCE desktop streamed with sound to any browser, the
 kldload.com VDI design as a tile: XFCE on labwc driving a virtual
@@ -1035,10 +1040,10 @@ lines to teach it your convention.
 How many tiles
 .Fl -build-all
 builds at once.
-Unset, the count is derived from the host's free memory; set it when that
-arithmetic misjudges the host, or to
-.Ql 1
-to build in series.
+Unset, one: each tile gets the host's spare cores and RAM while it installs.
+Set to N, N tiles build together at their catalog size and share the host.
+Until 2026-09-04 the count was derived from free memory; that launched five
+on a 32G desktop and the OOM killer ended the run at seven of twelve.
 .It Ev VMX_FULLSCREEN_KEY
 The fullscreen chord, as modifiers and a key joined by
 .Ql + ,
@@ -1140,13 +1145,13 @@ List the catalog with every entry's fields, then build one and wait for
 its URL:
 .Bd -literal -offset indent
 vmx --appliances
-vmx --appliance "WriteFreely Desktop" --vm blog \e
+vmx --appliance WriteFreely --vm blog \e
     WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
 .Ed
 .Pp
 Read the installer an entry would run, without building anything:
 .Bd -literal -offset indent
-vmx --appliance-script "WriteFreely Desktop" > writefreely-install.sh
+vmx --appliance-script WriteFreely > writefreely-install.sh
 .Ed
 .Pp
 Prove the whole catalog, keep one of everything, then clear it all away:

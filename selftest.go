@@ -28,6 +28,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,9 +59,16 @@ func selfTestVM(appName string) string {
 // destroyApplianceVM unwinds everything a tile build creates, newest-first,
 // every step tolerant of absence — teardown is how the NEXT run gets a clean
 // field, so it must work from any partial state.
+//
+// Every mutation here goes through sudoMutate so it lands in the audit log:
+// a destroy-all of twelve VMs used to leave no trace at all, and the one
+// signal the operator had that it was running was the VM count going down
+// (onyx, 2026-09-04). The zvol destroy retries "dataset is busy" the way
+// runPlan does — qemu lets go of the disk a moment after virsh destroy,
+// and the bare call here was silently leaving zvols behind.
 func destroyApplianceVM(vm string) {
-	_, _ = sudoRun("virsh", "destroy", vm)
-	_, _ = sudoRun("virsh", "undefine", vm, "--nvram")
+	sudoMutate("virsh", "destroy", vm)
+	sudoMutate("virsh", "undefine", vm, "--nvram")
 	// zfsArgv, not bare zfs: the routing gate exists so every dataset
 	// operation lands on whichever host the session targets, and a teardown
 	// that quietly ran on the wrong machine is exactly the kind of thing it
@@ -68,21 +77,40 @@ func destroyApplianceVM(vm string) {
 		for _, ds := range strings.Split(out, "\n") {
 			ds = strings.TrimSpace(ds)
 			if strings.HasSuffix(ds, "/"+vm) || strings.HasSuffix(ds, "/"+vm+"-data") {
-				_, _ = sudoRun(zfsArgv("destroy", "-r", ds)...)
+				argv := zfsArgv("destroy", "-r", ds)
+				out, err := sudoMutate(argv...)
+				for attempt := 1; err != nil && attempt <= busyDestroyRetries &&
+					busyDestroy(argv, out); attempt++ {
+					time.Sleep(busyDestroyDelay(attempt))
+					out, err = sudoMutate(argv...)
+				}
 			}
 		}
 	}
 	for _, f := range []string{vm + ".qcow2", vm + "-data.qcow2", vm + "-seed.iso"} {
-		_, _ = sudoRun("rm", "-f", "/var/lib/libvirt/images/"+f)
+		sudoMutate("rm", "-f", "/var/lib/libvirt/images/"+f)
 	}
 	if haveHostCmd("kvm-mesh") {
-		_, _ = sudoRun("kvm-mesh", "down", enrollMeshName(vm))
+		sudoMutate("kvm-mesh", "down", enrollMeshName(vm))
 	}
 	// the state-DB row retires itself: sync's pass 4 drops rows whose
 	// domain no longer exists
 	if haveHostCmd("kldload-networks") {
-		_, _ = sudoRun("kldload-networks", "sync")
+		sudoMutate("kldload-networks", "sync")
 	}
+}
+
+// sudoMutate is sudoRun for a command that changes the host: the same call,
+// plus the audit line every mutation owes. Read-only probes keep sudoRun,
+// so the log stays a record of what was done rather than of what was asked.
+func sudoMutate(args ...string) (string, error) {
+	out, err := sudoRun(args...)
+	rc := 0
+	if err != nil {
+		rc = 1
+	}
+	auditLog("sudo -n "+strings.Join(args, " "), rc)
+	return out, err
 }
 
 // selfTestOne builds and audits a single tile. Returns the result; the VM is
@@ -292,55 +320,118 @@ func applianceVMName(appName string) string {
 	return strings.TrimRight("app-"+s, "-")
 }
 
-// buildJobs is how many tiles build-all runs at once: every tile in
-// parallel when the host has the memory for it, fewer when it does not.
+// buildJobs is how many tiles build-all runs at once: one, unless
+// VMX_BUILD_JOBS says otherwise.
 //
-// WHY parallel at all: ten tiles in series was an afternoon — each one is a
-// cloud-image convert, a first boot, and for the ZFS tiles a 5-8 minute
-// dkms build on two vCPUs, while the other 22 cores sat idle (onyx,
-// 2026-09-04, "can the build all button build everything in parallel?").
-// The guests do not contend for anything but RAM: each one gets its own
-// zvol, seed ISO, transient domain and lease.
+// HISTORY: for most of 2026-09-04 this derived a count from MemAvailable —
+// "as many as fit" — and the arithmetic launched five on onyx (32GB, a
+// GNOME desktop, ARC already at its floor). The five ballooned to their
+// full RAM together, the kernel OOM-killed pipewire, the terminals, the
+// portals and finally this program at seven of twelve tiles, and the tiles
+// that finished under contention took eleven and twelve minutes each
+// against under two for the first one to run alone. Parallel builds do not
+// contend for disk or network; they contend for RAM, and a host that is
+// swapping finishes later than one building in series. So the default is
+// one at a time, with the whole host's cores and spare RAM handed to that
+// one build (buildSize), which is where the wall-clock actually goes: a
+// zfs dkms build on two vCPUs is five to eight minutes on its own.
 //
-// WHY bounded by memory and not cores: a guest that cannot get its RAM is
-// swapped by the host, and ten guests swapping together finish later than
-// ten in series. The bound is MemAvailable minus headroom for the host,
-// divided by the largest tile's RAM, so the wave that starts is one that
-// fits. VMX_BUILD_JOBS overrides it for a host the arithmetic misjudges.
-//
-// Known bias: on a ZFS host the ARC is not counted as reclaimable in
-// MemAvailable, so after a few image converts the reading is lower than
-// what the guests could actually get (onyx: 21G before a two-tile run,
-// 7G during it, with the ARC at 15G). The bound therefore errs toward
-// fewer tiles, never more — the right way to be wrong here.
-//
-// Args: n is the number of tiles to build, maxTileMB the largest RAM
-// request among them, availMB the host's MemAvailable, env the value of
-// VMX_BUILD_JOBS ("" when unset). Returns a count in [1, n].
-func buildJobs(n, maxTileMB, availMB int, env string) int {
+// VMX_BUILD_JOBS=N is the operator saying "I know this host" and is taken
+// as given, capped only at the tile count. Anything unparseable or under 1
+// is one. Returns a count in [1, n].
+func buildJobs(n int, env string) int {
 	if n < 1 {
 		return 1
 	}
-	if env != "" {
-		if j, err := strconv.Atoi(env); err == nil && j >= 1 {
-			if j > n {
-				return n
-			}
-			return j
-		}
-	}
-	const headroomMB = 4096 // the host, libvirt, the ARC's working set
-	if maxTileMB < 1 {
-		maxTileMB = 1
-	}
-	j := (availMB - headroomMB) / maxTileMB
-	if j < 1 {
+	j, err := strconv.Atoi(env)
+	if err != nil || j < 1 {
 		return 1
 	}
 	if j > n {
 		return n
 	}
 	return j
+}
+
+// buildSize is the vCPU count and RAM a tile is BUILT with, as opposed to
+// the catalog size it runs at once it is up. A first boot is package
+// installs, a recipe, and for the ZFS tiles a dkms compile: all of it
+// scales with cores and page cache, and none of it is what the tile needs
+// afterwards. So a serial build gets most of the host — the cores less two
+// for the desktop, capped at 8 where a dkms -j stops gaining, and four
+// times the catalog RAM capped at 8G and at what the host can spare — and
+// shrinkToCatalog hands it back the moment the tile answers.
+//
+// jobs != 1 returns the catalog size unchanged: parallel tiles share the
+// host and the boost is what made five of them thrash. hostCPUs is the
+// building host's core count, availMB its MemAvailable at the moment the
+// tile starts (read per tile, since the previous one just gave its RAM
+// back). Never below the catalog size, so a small host still builds.
+func buildSize(a Appliance, jobs, hostCPUs, availMB int) (vcpus, ramMB int) {
+	vcpus, ramMB = a.VCPUs, a.RAMMB
+	if jobs != 1 {
+		return vcpus, ramMB
+	}
+	const (
+		vcpuCap    = 8
+		ramCapMB   = 8192
+		headroomMB = 4096 // the host, libvirt, the ARC's working set
+	)
+	if c := hostCPUs - 2; c > vcpus {
+		vcpus = c
+	}
+	if vcpus > vcpuCap {
+		vcpus = vcpuCap
+	}
+	want := 4 * a.RAMMB
+	if want > ramCapMB {
+		want = ramCapMB
+	}
+	if room := availMB - headroomMB; want > room {
+		want = room
+	}
+	if want > ramMB {
+		ramMB = want
+	}
+	return vcpus, ramMB
+}
+
+// shrinkToCatalog returns a tile built at buildSize to its catalog vCPU
+// and RAM: memory live through the balloon and in the definition, so the
+// next tile starts with the RAM the last one borrowed; vCPUs in the
+// definition, and live where the guest lets them go. A refusal is logged,
+// not hidden — the operator who reads "22 vCPUs" in the estate a week
+// later must be able to find why here.
+func shrinkToCatalog(vm string, a Appliance, builtCPUs, builtMB int, log func(string)) {
+	if builtCPUs == a.VCPUs && builtMB == a.RAMMB {
+		return
+	}
+	mem := fmt.Sprintf("%dM", a.RAMMB)
+	cpus := fmt.Sprint(a.VCPUs)
+	fail := func(step, out string) {
+		log("  size: " + step + " failed — " + strings.SplitN(out, "\n", 2)[0])
+	}
+	if out, err := sudoRun("virsh", "setmem", vm, mem, "--live", "--config"); err != nil {
+		fail("setmem", out)
+	}
+	if out, err := sudoRun("virsh", "setmaxmem", vm, mem, "--config"); err != nil {
+		fail("setmaxmem", out)
+	}
+	// current before maximum: the maximum cannot drop below the current count
+	if out, err := sudoRun("virsh", "setvcpus", vm, cpus, "--config"); err != nil {
+		fail("setvcpus --config", out)
+	}
+	if out, err := sudoRun("virsh", "setvcpus", vm, cpus, "--config", "--maximum"); err != nil {
+		fail("setvcpus --maximum", out)
+	}
+	if out, err := sudoRun("virsh", "setvcpus", vm, cpus, "--live"); err != nil {
+		// hot-unplug needs the guest's cooperation; idle vCPUs cost the
+		// host nothing, so this is a note, and the definition fixes it at
+		// the next boot
+		log(fmt.Sprintf("  size: %d vCPUs stay until the next reboot (live unplug refused: %s)",
+			builtCPUs, strings.SplitN(out, "\n", 2)[0]))
+	}
+	log(fmt.Sprintf("  size: trimmed to catalog %d vCPU / %d MB", a.VCPUs, a.RAMMB))
 }
 
 // memAvailableMB reads MemAvailable from /proc/meminfo. 0 when it cannot,
@@ -364,10 +455,11 @@ func memAvailableMB() int {
 
 // BuildAllAppliances builds every tile as a KEPT VM (no audit, no teardown) —
 // the "give me one of everything" button. Already-present VMs are left alone,
-// so it doubles as "build whatever is missing". Tiles build in parallel, as
-// many at once as the host's memory allows (buildJobs); every log line is
-// prefixed with its VM so the interleaved stream still reads. Returns built
-// and failed counts.
+// so it doubles as "build whatever is missing". Tiles build one at a time
+// (buildJobs), each with most of the host's cores and spare RAM for the
+// duration of its first boot (buildSize) and trimmed back to catalog size
+// once it answers; every log line is prefixed with its VM so a parallel run
+// under VMX_BUILD_JOBS still reads. Returns built and failed counts.
 //
 // The host-side steps that two builds must not run at the same moment —
 // fetching a shared cloud image, allocating a mesh subnet, issuing a cert —
@@ -387,7 +479,13 @@ func memAvailableMB() int {
 // the window. Before this the generated passwords existed only inside the
 // guest under /root, and a ten-tile build ended with ten VMs the operator
 // had to ssh into one by one to learn how to log in (onyx, 2026-09-04).
-func BuildAllAppliances(only string, log func(string)) (built, failed int, access []string) {
+//
+// urls is one landing URL per tile that came up, in the same order — the
+// GUI opens each in a browser tab when the run ends, so "one button" ends
+// with the twelve login pages in front of the operator rather than a list
+// to copy out of a log (operator, 2026-09-04). The CLI prints them as part
+// of access and opens nothing: a terminal may be an ssh session.
+func BuildAllAppliances(only string, log func(string)) (built, failed int, access, urls []string) {
 	want := map[string]bool{}
 	for _, o := range strings.Split(only, ",") {
 		if o = strings.TrimSpace(strings.ToLower(o)); o != "" {
@@ -395,7 +493,6 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 		}
 	}
 	var todo []Appliance
-	maxRAM := 0
 	for _, a := range Appliances() {
 		vm := applianceVMName(a.Name)
 		if len(want) > 0 && !want[strings.ToLower(a.Name)] && !want[vm] {
@@ -406,9 +503,6 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 			continue
 		}
 		todo = append(todo, a)
-		if a.RAMMB > maxRAM {
-			maxRAM = a.RAMMB
-		}
 	}
 	if len(todo) == 0 {
 		if len(want) > 0 {
@@ -416,10 +510,13 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 		} else {
 			log("build-all: nothing to build")
 		}
-		return 0, 0, nil
+		return 0, 0, nil, nil
 	}
-	jobs := buildJobs(len(todo), maxRAM, memAvailableMB(), os.Getenv("VMX_BUILD_JOBS"))
-	head := fmt.Sprintf("build-all: %d tile(s), %d at a time (VMX_BUILD_JOBS overrides)", len(todo), jobs)
+	jobs := buildJobs(len(todo), os.Getenv("VMX_BUILD_JOBS"))
+	head := fmt.Sprintf("build-all: %d tile(s), one at a time, each built with the host's spare cores and RAM", len(todo))
+	if jobs > 1 {
+		head = fmt.Sprintf("build-all: %d tile(s), %d at a time at catalog size (VMX_BUILD_JOBS)", len(todo), jobs)
+	}
 	log(head)
 	auditLog(head, 0) // a build-all starting is a fact the audit log should carry
 
@@ -427,6 +524,7 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, jobs)
 	blocks := make([][]string, len(todo)) // catalog order, not finish order
+	landing := make([]string, len(todo))
 	for i, a := range todo {
 		wg.Add(1)
 		go func(i int, a Appliance) {
@@ -440,11 +538,12 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 				}
 				log("[" + vm + "] " + l)
 			}
-			ok, lines := buildOneAppliance(a, vm, tlog)
+			ok, lines, url := buildOneAppliance(a, vm, jobs, tlog)
 			mu.Lock()
 			if ok {
 				built++
 				blocks[i] = lines
+				landing[i] = url
 			} else {
 				failed++
 			}
@@ -454,19 +553,38 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int, acces
 	wg.Wait()
 	log("")
 	log(fmt.Sprintf("build-all: %d built, %d failed", built, failed))
-	for _, b := range blocks {
+	for i, b := range blocks {
 		if len(b) > 0 {
 			access = append(access, b...)
 			access = append(access, "")
+			if landing[i] != "" {
+				urls = append(urls, landing[i])
+			}
 		}
 	}
-	return built, failed, access
+	return built, failed, access, urls
 }
 
-// buildOneAppliance is one tile of build-all: spec, build, USB, wait for
-// the port, enroll. Returns ok=false on any failure, having logged why, and
-// on success the tile's access block for the closing report.
-func buildOneAppliance(a Appliance, vm string, log func(string)) (bool, []string) {
+// landingURL is the one address to open for a tile that is up: the first
+// URL in its LandsOn line with the address filled in, else the probe URL.
+func landingURL(a Appliance, probe string) string {
+	if strings.Contains(a.LandsOn, "<vm-ip>") {
+		if m := landingURLRe.FindString(strings.ReplaceAll(a.LandsOn, "<vm-ip>", ipOf(probe))); m != "" {
+			return m
+		}
+	}
+	return probe
+}
+
+var landingURLRe = regexp.MustCompile(`(?:https?|rdp)://[^\s()·]+`)
+
+// buildOneAppliance is one tile of build-all: spec, build at buildSize, USB,
+// wait for the port, enroll, trim to catalog size. Returns ok=false on any
+// failure, having logged why, and on success the tile's access block for
+// the closing report. jobs is what BuildAllAppliances runs; the boost is
+// only for a serial run and only on the local host, where the core count
+// and MemAvailable read here are the building host's.
+func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool, []string, string) {
 	log("building " + a.Name)
 	// Resolved here, not inside Spec, so the generated secrets are known to
 	// this side and can be reported at the end; Render resolves again and
@@ -474,12 +592,21 @@ func buildOneAppliance(a Appliance, vm string, log func(string)) (bool, []string
 	vals, err := a.resolve(a.Defaults())
 	if err != nil {
 		log("  spec: " + err.Error())
-		return false, nil
+		return false, nil, ""
 	}
 	spec, err := a.Spec(vm, "admin", "", "", vals)
 	if err != nil {
 		log("  spec: " + err.Error())
-		return false, nil
+		return false, nil, ""
+	}
+	builtCPUs, builtMB := a.VCPUs, a.RAMMB
+	if target.SSHHost == "" {
+		builtCPUs, builtMB = buildSize(a, jobs, runtime.NumCPU(), memAvailableMB())
+	}
+	if builtCPUs != a.VCPUs || builtMB != a.RAMMB {
+		spec.VCPUs, spec.RAMMB = builtCPUs, builtMB
+		log(fmt.Sprintf("  building with %d vCPU / %d MB (catalog %d / %d, restored once it answers)",
+			builtCPUs, builtMB, a.VCPUs, a.RAMMB))
 	}
 	if KldloadTier() == "kldload" {
 		if k := hostOpsPubkey(); k != "" {
@@ -489,20 +616,21 @@ func buildOneAppliance(a Appliance, vm string, log func(string)) (bool, []string
 	parent := zfsParentForBuild()
 	if err := BuildNewVM(spec, parent, log); err != nil {
 		log("  build FAILED: " + err.Error())
-		return false, nil
+		return false, nil, ""
 	}
 	AttachUSBDevices(vm, a.USB, log)
 	url, err := waitAppliance(vm, a.Port, a.ProbeTCP, log)
 	if err != nil {
 		log("  came up but did not answer: " + err.Error())
-		return false, nil
+		return false, nil, ""
 	}
 	EnrollAppliance(vm, applianceSlug(a.Name), log)
+	shrinkToCatalog(vm, a, builtCPUs, builtMB, log)
 	if a.ProbeTCP {
 		url = "rdp://" + url // the one TCP tile today; the scheme is what a client wants
 	}
 	log("  " + a.Name + " ready on " + url)
-	return true, applianceAccess(a, spec, vals, url)
+	return true, applianceAccess(a, spec, vals, url), landingURL(a, url)
 }
 
 // ipOf strips a probe URL (http://h:p/, rdp://h:p, h:p) down to its host.
@@ -528,7 +656,9 @@ func applianceAccess(a Appliance, spec NewVMSpec, vals map[string]string, url st
 	if strings.Contains(a.LandsOn, "<vm-ip>") {
 		where = strings.ReplaceAll(a.LandsOn, "<vm-ip>", ipOf(url))
 	}
-	out := []string{fmt.Sprintf("%s  (%s)", a.Name, spec.Name), "  " + where}
+	// Name, then what it is in one line, then where it is: a report read a
+	// week later has to say what "app-sdr-statio" was for.
+	out := []string{fmt.Sprintf("%s  (%s)", a.Name, spec.Name), "  " + a.Summary, "  " + where}
 	for _, h := range a.ClientHint {
 		out = append(out, "  "+strings.ReplaceAll(h, "<vm-ip>", ipOf(url)))
 	}

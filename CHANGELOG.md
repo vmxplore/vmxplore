@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Build all: one at a time, built big
+
+- **Tiles build in series by default.** The memory-derived parallel count
+  launched five builds on a 32 GB desktop; they ballooned together, the OOM
+  killer took the desktop session apart and the run died at seven of twelve.
+  Tiles that finished under contention took eleven and twelve minutes each,
+  the first one alone under two. `VMX_BUILD_JOBS=N` still builds N at once,
+  at catalog size.
+- **Each tile is built with most of the host.** Cores less two (at most
+  eight) and four times its catalog RAM (at most 8 GB, never more than the
+  host can spare) for the duration of its first boot, then trimmed back to
+  catalog size once it answers: memory live via the balloon, vCPUs live
+  where the guest allows and at the next boot otherwise. The log says what
+  it borrowed and when it gave it back.
+
 ## 0.4.0 — 2026-08-11
 
 Nine cloud images, a desktop selector, and the security work that should have

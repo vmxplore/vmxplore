@@ -2431,12 +2431,26 @@ func runGUI(rs *Ruleset) {
 		batchLogWindow("Build every appliance",
 			"Building every catalog tile as a kept VM named app-<tile>. Tiles\n"+
 				"whose VM already exists are skipped, so this is also \"build\n"+
-				"whatever is missing\". Tiles build in parallel, as many at once\n"+
-				"as host memory allows; each line below is tagged with its VM.\n"+
-				"A ZFS tile takes ~10-20 min, so expect the whole run to take\n"+
-				"about as long as its slowest tile.\n",
+				"whatever is missing\". Tiles build one at a time, each with most\n"+
+				"of this host's cores and spare RAM while it installs, then trimmed\n"+
+				"to its catalog size once it answers. Expect a few minutes per\n"+
+				"tile; the login page of every tile that came up opens at the end.\n",
 			"Build all", true, func(log func(string)) string {
-				built, failed, access := BuildAllAppliances("", log)
+				built, failed, access, urls := BuildAllAppliances("", log)
+				// One button, then the login pages: every tile that came up
+				// opens in its own browser tab, the RDP one in Remmina via
+				// its rdp:// handler. Spaced so the browser keeps them in
+				// one window instead of racing twelve launches.
+				for i, u := range urls {
+					if parsed, err := url.Parse(u); err == nil {
+						if i > 0 {
+							time.Sleep(700 * time.Millisecond)
+						}
+						if err := fyne.CurrentApp().OpenURL(parsed); err != nil {
+							log("could not open " + u + ": " + err.Error())
+						}
+					}
+				}
 				// The very last thing in the window: where each tile is
 				// and how to get in, in one place, after the noise.
 				sum := fmt.Sprintf("done — %d built, %d failed", built, failed)
@@ -3777,6 +3791,12 @@ func runGUI(rs *Ruleset) {
 	// below them, and a row that used to close the window from underneath
 	// now costs the console nothing. Fullscreen is unaffected — it borrows
 	// the tab's content, not this header (setConsoleOnly).
+	// The verb row rides in an HScroll: as a plain row it made the header
+	// 1135 px wide, a Fyne split never lets a pane shrink below its content,
+	// and the estate/console divider stopped moving on the same day the row
+	// arrived ("the bar between left and right pane doesn't work",
+	// operator, 2026-09-04). Scrolled, the header asks for ~400 px and the
+	// row scrolls sideways only when the pane is genuinely too narrow.
 	consoleHead := container.NewBorder(nil, nil,
 		heading("CONSOLE", acGold),
 		container.NewHBox(fsHint, sysdiagHeadBtn, manualBtn),
@@ -3791,12 +3811,6 @@ func runGUI(rs *Ruleset) {
 	// dragging the same splitter to the same place. 0.24 rather than 0.21
 	// since the dossier moved in beside the tree: its longest line is a
 	// disk path, and at a fifth of a 2560-wide window that line wrapped.
-	// The verb row rides in an HScroll: as a plain row it made the header
-	// 1135 px wide, a Fyne split never lets a pane shrink below its content,
-	// and the estate/console divider stopped moving on the same day the row
-	// arrived ("the bar between left and right pane doesn't work",
-	// operator, 2026-09-04). Scrolled, the header asks for ~400 px and the
-	// row scrolls sideways only when the pane is genuinely too narrow.
 	//
 	// Starting positions, not constraints — Fyne remembers neither, so this
 	// is what every launch looks like until the operator drags. The console

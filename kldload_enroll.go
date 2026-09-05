@@ -151,7 +151,7 @@ func enrollGuestSSH(ip string, cmd string) (string, error) {
 // 10.254.x; the subnet only becomes visibly used once `kvm-mesh up` has
 // created the interface. Two enrollments between those two moments pick
 // the same /24, and the second `up` either fails or lands two meshes on
-// one subnet. Build-all runs tiles in parallel since 2026-09-04, so the
+// one subnet. Build-all can run tiles in parallel (VMX_BUILD_JOBS), so the
 // pick-and-create pair holds this lock; the CA issue does too, since the
 // estate CA keeps a serial index file. Everything else in enrollment is
 // ssh into one guest and needs no ordering.
