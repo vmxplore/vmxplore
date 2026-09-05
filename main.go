@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -125,6 +126,11 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                                           other branch, for proving it
                             --only A,B    only these tiles (names or app-
                                           VM names, comma-separated)
+  --enroll NAME --ip IP [--role ROLE]
+                          put a guest on the substrate the way a built
+                          appliance is: mesh, estate cert, inventory row.
+                          For a guest with no libvirt domain; kfire calls
+                          this for each microVM once it answers.
   --destroy-all           remove every VM this tool built — the app-* builds
                           and any st-* self-test leftover — with their disks,
                           data disks, mesh and inventory rows. Lists them and
@@ -239,6 +245,39 @@ func main() {
 				fmt.Println(l)
 			}
 			os.Exit(failed)
+		case "--enroll":
+			// Enrollment for a guest with no libvirt domain: kfire hands a
+			// microVM's name and address here after it answers on its port.
+			name, ip, role := "", "", ""
+			for j := i + 1; j < len(args); j++ {
+				switch args[j] {
+				case "--ip":
+					if j+1 < len(args) {
+						j++
+						ip = args[j]
+					}
+				case "--role":
+					if j+1 < len(args) {
+						j++
+						role = args[j]
+					}
+				default:
+					if name == "" && !strings.HasPrefix(args[j], "-") {
+						name = args[j]
+					}
+				}
+			}
+			if name == "" || ip == "" {
+				fmt.Fprintln(os.Stderr, "usage: vmx --enroll NAME --ip IP [--role ROLE]")
+				os.Exit(2)
+			}
+			if role == "" {
+				role = "guest"
+			}
+			if err := EnrollGuestAt(name, ip, role, func(l string) { fmt.Fprintln(os.Stderr, l) }); err != nil {
+				os.Exit(1)
+			}
+			return
 		case "--destroy-all":
 			// The one verb here with no undo, so it shows its list and
 			// stops unless told otherwise. Exit 2 is "usage": the operator

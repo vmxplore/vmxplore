@@ -216,9 +216,28 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 		log("enroll: " + vmName + " took no address in 4m — run enrollment later by hand")
 		return
 	}
+	_ = EnrollGuestAt(vmName, ip, "appliance-"+appSlug, log)
+}
+
+// EnrollGuestAt is enrollment from the address on: root ssh, the recipe's
+// end, the mesh, the estate cert, the inventory row. EnrollAppliance finds
+// the address through libvirt and calls this; `vmx --enroll` calls it for
+// a guest that has no domain — a Firecracker microVM, whose address kfire
+// already knows. One implementation, so a microVM ends up on the substrate
+// the same way a built appliance does ("do the clones and microVMs also
+// need/have wireguard?", operator, 2026-09-05). Returns an error only when
+// nothing could be done at all (no root ssh); partial steps are logged.
+func EnrollGuestAt(vmName, ip, role string, log func(string)) error {
+	if KldloadTier() != "kldload" {
+		return nil
+	}
+	if !enrollNameRE.MatchString(vmName) {
+		log("enroll: VM name " + vmName + " fails the safety pattern — skipped")
+		return fmt.Errorf("enroll: unsafe name %q", vmName)
+	}
 	log("enroll: " + vmName + " at " + ip + " — waiting for root ssh")
 	sshUp := false
-	deadline = time.Now().Add(3 * time.Minute)
+	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		if _, err := enrollGuestSSH(ip, "true"); err == nil {
 			sshUp = true
@@ -228,7 +247,7 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 	}
 	if !sshUp {
 		log("enroll: root ssh never answered — the guest may predate key seeding; skipped")
-		return
+		return fmt.Errorf("enroll: no root ssh to %s at %s", vmName, ip)
 	}
 
 	// ── mesh ──
@@ -315,7 +334,6 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 
 	// ── inventory ──
 	if haveHostCmd("kldload-db") {
-		role := "appliance-" + appSlug
 		if _, err := sudoRun("kldload-db", "vm-register",
 			"--name", vmName, "--role", role, "--status", "running"); err != nil {
 			log("enroll: kldload-db vm-register failed — the VM will not appear in Ansible")
@@ -324,6 +342,7 @@ func EnrollAppliance(vmName, appSlug string, log func(string)) {
 		}
 	}
 	log("enroll: done — " + vmName + " is on the substrate")
+	return nil
 }
 
 // applianceSlug is the inventory-safe form of a catalog name.
