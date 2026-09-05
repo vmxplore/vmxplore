@@ -711,7 +711,13 @@ func powerOff(vm string, log func(string)) {
 		out, _ := sudoRun("virsh", "domstate", vm)
 		return strings.TrimSpace(out)
 	}
-	if out, err := sudoMutate("virsh", "shutdown", vm); err != nil {
+	// agent first, ACPI second: every guest this tool builds ships
+	// qemu-guest-agent on its channel (newvm.go), and a guest whose session
+	// swallows the power key still answers the agent — WriteFreely's kiosk
+	// X session sat on the ACPI button for the full two minutes and was
+	// forced off (onyx, 2026-09-04). A guest without the agent, or before it
+	// is up, falls through to ACPI as before.
+	if out, err := sudoMutate("virsh", "shutdown", vm, "--mode", "agent,acpi"); err != nil {
 		log("  shutdown: " + strings.SplitN(out, "\n", 2)[0])
 		return
 	}
