@@ -3780,7 +3780,7 @@ func runGUI(rs *Ruleset) {
 	consoleHead := container.NewBorder(nil, nil,
 		heading("CONSOLE", acGold),
 		container.NewHBox(fsHint, sysdiagHeadBtn, manualBtn),
-		buttons)
+		container.NewHScroll(buttons))
 	consolePane := gap(container.NewBorder(consoleHead, nil, nil, nil,
 		consoleCard))
 	// Defaults measured from the operator's own layout (2026-08-13), not
@@ -3791,6 +3791,12 @@ func runGUI(rs *Ruleset) {
 	// dragging the same splitter to the same place. 0.24 rather than 0.21
 	// since the dossier moved in beside the tree: its longest line is a
 	// disk path, and at a fifth of a 2560-wide window that line wrapped.
+	// The verb row rides in an HScroll: as a plain row it made the header
+	// 1135 px wide, a Fyne split never lets a pane shrink below its content,
+	// and the estate/console divider stopped moving on the same day the row
+	// arrived ("the bar between left and right pane doesn't work",
+	// operator, 2026-09-04). Scrolled, the header asks for ~400 px and the
+	// row scrolls sideways only when the pane is genuinely too narrow.
 	//
 	// Starting positions, not constraints — Fyne remembers neither, so this
 	// is what every launch looks like until the operator drags. The console
