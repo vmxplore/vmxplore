@@ -3640,12 +3640,11 @@ func runGUI(rs *Ruleset) {
 		fyne.NewMenuItem("Autostart on/off", verb(planAutostart)))
 	mBuild := menuButton("Build", theme.ContentAddIcon(),
 		fyne.NewMenuItem("New VM…", newVMDialog),
-		fyne.NewMenuItem("Application — a configured app…",
-			func() { applianceDialog("") }),
+		fyne.NewMenuItem("App / Appliance…", func() { applianceDialog("") }),
 		// ONE entry. Clone and EZ Fleet asked the same question and differed
 		// only in whether the source already existed, which read as two tools
 		// for one job. The source dropdown now covers both.
-		fyne.NewMenuItem("Clone / Fleet — stamp out machines…", cloneAny),
+		fyne.NewMenuItem("Clone / Fleet…", cloneAny),
 		fyne.NewMenuItem("Make Golden…", goldenAct))
 	mEstate := menuButton("Estate", theme.ComputerIcon(),
 		fyne.NewMenuItem("Migrate to host…", soon("Migrate (teleport)", "0.3")))
