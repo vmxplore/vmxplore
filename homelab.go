@@ -1911,6 +1911,22 @@ app_enable mediamtx
 id vdi >/dev/null 2>&1 || useradd -r -m -d /var/lib/vdi -s /usr/sbin/nologin vdi
 install -d -m 0750 -o vdi -g vdi /var/lib/vdi
 
+# Something on screen, or the stream reads as blank. XFCE on a cloud image has
+# no wallpaper package: the backdrop is black with a thin panel, which in VLC
+# looks like "connected but nothing" (onyx, 2026-09-05 — the stream was fine,
+# the desktop was empty). An autostarted terminal running top gives a viewer
+# motion and a clock whatever the wallpaper does. XDG autostart, so
+# xfce4-session launches it and it inherits the session's display.
+install -d -m 0700 -o vdi -g vdi /var/lib/vdi/.config/autostart
+cat >/var/lib/vdi/.config/autostart/vdi-top.desktop <<'DESK'
+[Desktop Entry]
+Type=Application
+Name=top
+Comment=Something moving on the desktop so a viewer can tell the stream is live
+Exec=xfce4-terminal --title=top --geometry=100x28 --execute top -d 2
+DESK
+chown -R vdi:vdi /var/lib/vdi/.config
+
 cat >/usr/local/sbin/kldload-vdi-session <<'SESS'
 #!/usr/bin/env bash
 # kldload-vdi-session <n> — one headless XFCE desktop, streamed to mediamtx
