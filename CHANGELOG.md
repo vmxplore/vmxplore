@@ -16,6 +16,9 @@
   catalog size once it answers: memory live via the balloon, vCPUs live
   where the guest allows and at the next boot otherwise. The log says what
   it borrowed and when it gave it back.
+- **The closing report links each tile's upstream docs** next to the
+  instance that was just built. The browser tabs at the end are the
+  instances; the documentation is a line in the report.
 
 ## 0.4.0 — 2026-08-11
 

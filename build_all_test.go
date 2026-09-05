@@ -75,7 +75,7 @@ func TestOsinfoKnows(t *testing.T) {
 // The closing report names the URL, the guest login and every secret the
 // recipe was given, and nothing that is not a secret.
 func TestApplianceAccess(t *testing.T) {
-	a := Appliance{Name: "Thing", Summary: "a thing that does things", Fields: []ApplianceField{
+	a := Appliance{Name: "Thing", Summary: "a thing that does things", Homepage: "https://thing.example", Fields: []ApplianceField{
 		{Key: "T_POOL", Label: "pool name"},
 		{Key: "T_DB_PASS", Label: "database password", Secret: true, Generate: true},
 		{Key: "T_ADMIN_PASS", Label: "admin password", Secret: true},
@@ -93,6 +93,7 @@ func TestApplianceAccess(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Thing  (app-thing)", "a thing that does things", "http://192.0.2.9:8080/",
+		"docs: https://thing.example",
 		"guest login: admin / " + DefaultGuestPassword,
 		"root: ssh root@<ip>",
 		"database password (T_DB_PASS): s3cr3t",

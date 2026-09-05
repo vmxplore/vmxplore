@@ -659,6 +659,14 @@ func applianceAccess(a Appliance, spec NewVMSpec, vals map[string]string, url st
 	// Name, then what it is in one line, then where it is: a report read a
 	// week later has to say what "app-sdr-statio" was for.
 	out := []string{fmt.Sprintf("%s  (%s)", a.Name, spec.Name), "  " + a.Summary, "  " + where}
+	// The upstream project's page beside the instance that was just built:
+	// the report is where the operator goes to find their new service, and
+	// its docs are the next thing they want ("the home page is nice too",
+	// operator, 2026-09-04). A link in the report, not a tab — the browser
+	// gets the instances, twelve more tabs of documentation would be noise.
+	if a.Homepage != "" {
+		out = append(out, "  docs: "+a.Homepage)
+	}
 	for _, h := range a.ClientHint {
 		out = append(out, "  "+strings.ReplaceAll(h, "<vm-ip>", ipOf(url)))
 	}
