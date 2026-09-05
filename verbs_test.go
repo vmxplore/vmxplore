@@ -544,3 +544,67 @@ func TestRunPlanUnwindsOnFailure(t *testing.T) {
 		t.Errorf("failed undo must be named in the error: %v", err)
 	}
 }
+
+// A `zfs destroy` that reports "dataset is busy" is retried, and the plan
+// goes on to its later steps once the dataset lets go. A fake zfs on PATH
+// fails twice and then succeeds.
+func TestRunPlanRetriesBusyDestroy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bin := t.TempDir()
+	counter := bin + "/calls"
+	script := "#!/bin/sh\n" +
+		"n=$(cat " + counter + " 2>/dev/null || echo 0); n=$((n+1)); echo $n >" + counter + "\n" +
+		"if [ $n -le 2 ]; then echo \"cannot destroy 'rpool/vms/x': dataset is busy\" >&2; exit 1; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bin+"/zfs", []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	marker := bin + "/after"
+	p := verbPlan{cmds: [][]string{
+		{"zfs", "destroy", "-r", "rpool/vms/x"},
+		{"touch", marker},
+	}}
+	if err := runPlan(p); err != nil {
+		t.Fatalf("busy destroy must be retried, got %v", err)
+	}
+	if n, _ := os.ReadFile(counter); strings.TrimSpace(string(n)) != "3" {
+		t.Errorf("zfs was called %s times, want 3", strings.TrimSpace(string(n)))
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("the step after the busy destroy did not run")
+	}
+	// Not every zfs failure is retried: a missing dataset fails at once.
+	os.Remove(counter)
+	gone := "#!/bin/sh\necho \"cannot open 'rpool/vms/x': dataset does not exist\" >&2; exit 1\n"
+	if err := os.WriteFile(bin+"/zfs", []byte(gone), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPlan(p); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("a missing dataset must fail immediately, got %v", err)
+	}
+	if !busyDestroy([]string{"sudo", "-n", "zfs", "destroy", "x"}, "dataset is busy") {
+		t.Error("busyDestroy must see through sudo -n")
+	}
+	if busyDestroy([]string{"zfs", "snapshot", "x"}, "dataset is busy") {
+		t.Error("only destroy is retried")
+	}
+}
+
+// Delete takes the seed ISO with the VM: it holds the guest's login hash
+// and the recipe's secrets, and it used to outlive every VM.
+func TestPlanDeleteRemovesSeed(t *testing.T) {
+	p, err := planDelete(offRow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range p.post {
+		if strings.HasSuffix(strings.Join(c, " "), "rm -f /var/lib/libvirt/images/klab-blue-fedora-seed.iso") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("delete post steps do not remove the seed ISO: %v", p.post)
+	}
+}

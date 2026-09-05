@@ -268,7 +268,8 @@ func planDelete(r Row) (verbPlan, error) {
 		// this; the verb never did, so a mass delete of test appliances on
 		// onyx (2026-09-03) left nine ap-* meshes whose only peer no longer
 		// existed, and wgx showed every one of them as an inactive member.
-		post: append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
+		post: append(append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
+			seedCleanupPost(r.D.Name)...),
 	}, nil
 }
 
@@ -295,8 +296,23 @@ func planReconcile(r Row) (verbPlan, error) {
 		cmds:      cmds,
 		warn:      warn,
 		needsRoot: needsRoot,
-		post:      append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
+		post: append(append(dbUnregisterVM(r.D.Name), meshTeardownPost(r.D.Name)...),
+			seedCleanupPost(r.D.Name)...),
 	}, nil
+}
+
+// seedCleanupPost removes the VM's NoCloud seed ISO, when one is still on
+// the host. The seed carries the guest's user-data — its login hash and
+// every recipe secret — and delete left it behind for every VM ever
+// removed: 71 of them under /var/lib/libvirt/images on onyx, 2026-09-04,
+// for machines that no longer existed. Best effort like the rest of post
+// (a missing file is the common case), root because the build installs
+// it mode 0600 as root.
+func seedCleanupPost(name string) [][]string {
+	root := os.Geteuid() == 0
+	return [][]string{
+		asRoot(root, "rm", "-f", "/var/lib/libvirt/images/"+name+"-seed.iso"),
+	}
 }
 
 // domainZvols returns the datasets behind every zvol-backed disk of r's
@@ -658,6 +674,27 @@ func runPlan(p verbPlan) error {
 			rc = 1
 		}
 		auditLog(strings.Join(argv, " "), rc)
+		// A zvol stays "busy" for a moment after the domain that had it
+		// open is destroyed: qemu releases the block device asynchronously,
+		// and `zfs destroy` run in the same second as `virsh destroy` fails
+		// "dataset is busy". The plan then stopped with the domain gone and
+		// the disk, the inventory row and the mesh all still there — the
+		// operator saw a dialog and a VM that was half deleted (onyx,
+		// 2026-09-04 16:36, `test`; the same at 08:15 and on 2026-08-31).
+		// Transient by nature and bounded here: the wait is a few seconds
+		// at most, each attempt is audited, and a dataset that is busy for
+		// a real reason (still attached elsewhere) fails after the last try
+		// with the same message it always had.
+		for attempt := 1; err != nil && attempt <= busyDestroyRetries &&
+			busyDestroy(argv, string(out)); attempt++ {
+			time.Sleep(busyDestroyDelay(attempt))
+			out, err = exec.Command(argv[0], argv[1:]...).CombinedOutput()
+			rc = 0
+			if err != nil {
+				rc = 1
+			}
+			auditLog(fmt.Sprintf("%s (retry %d, dataset was busy)", strings.Join(argv, " "), attempt), rc)
+		}
 		if err != nil {
 			msg := strings.TrimSpace(string(out))
 			if msg == "" {
@@ -739,6 +776,38 @@ func unwind(p verbPlan, failed int) string {
 		s += "\nROLLBACK FAILED, clean up by hand: " + strings.Join(broken, "; ")
 	}
 	return s
+}
+
+// busyDestroyRetries bounds the wait for a released zvol: the delays below
+// sum to about 12 s, longer than qemu has ever taken to let go of a disk
+// here and short enough that a genuinely held dataset still fails while
+// the operator is watching.
+const busyDestroyRetries = 8
+
+// busyDestroyDelay grows with the attempt: the first retry is almost
+// immediate, since the usual case is a release that lands milliseconds
+// after virsh returns.
+func busyDestroyDelay(attempt int) time.Duration {
+	d := 250 * time.Millisecond << uint(attempt-1)
+	if d > 3*time.Second {
+		d = 3 * time.Second
+	}
+	return d
+}
+
+// busyDestroy reports whether argv is a `zfs destroy` (bare or under sudo)
+// that failed because the dataset is busy — the one zfs failure worth
+// retrying.
+func busyDestroy(argv []string, out string) bool {
+	if !strings.Contains(strings.ToLower(out), "dataset is busy") {
+		return false
+	}
+	for i, a := range argv {
+		if a == "zfs" && i+1 < len(argv) && argv[i+1] == "destroy" {
+			return true
+		}
+	}
+	return false
 }
 
 // auditLogFailed fires once, ever, when neither audit path can be written.
