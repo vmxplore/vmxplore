@@ -1860,8 +1860,13 @@ cat >/var/www/app/index.php <<'PHP'
 // The example page. See stack.php for what each visit does.
 require '/var/www/app/stack.php';
 $c = ws_config();
-$pg = ws_postgres($c, true);
-$ca = ws_cache($c, true);
+// A visit is a GET of the page itself. The favicon a browser asks for on
+// every load, a HEAD probe, a monitor's poll of a path that falls through
+// to this script: none of those is someone looking at the page, and each
+// one used to count ("the hit counter going up too fast", 2026-09-05).
+$visit = ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && strtok($_SERVER['REQUEST_URI'] ?? '/', '?') === '/';
+$pg = ws_postgres($c, $visit);
+$ca = ws_cache($c, $visit);
 $host = gethostname();
 $ip = $_SERVER['SERVER_ADDR'] ?? '';
 $up = (int)explode(' ', (string)@file_get_contents('/proc/uptime'))[0];
@@ -1923,8 +1928,9 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+    location = /favicon.ico { access_log off; return 204; }
     location ~ \.php$ { fastcgi_pass unix:${_fpmsock}; include fastcgi_params; fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name; }
-    location / { try_files \$uri \$uri/ /index.php; }
+    location / { try_files \$uri \$uri/ =404; }
 }
 NGINX
 # Debian ships a default site that also claims :80 default_server.
