@@ -2533,7 +2533,13 @@ func runGUI(rs *Ruleset) {
 	// tile, heading for a name clash (onyx, 2026-09-04). While a run is
 	// going the window refuses to close — the run would carry on unseen.
 	batchOpen := map[string]fyne.Window{}
-	batchLogWindow := func(title, intro, button string, auto bool,
+	//
+	// autoClose, when non-zero, closes the window that long after a job
+	// that did not fail: a destroy or a clone is seconds of log nobody
+	// wants to dismiss by hand ("those should auto close in 3 seconds",
+	// operator, 2026-09-05). A summary that says FAILED keeps the window,
+	// and Build all passes zero because its closing report is the point.
+	batchLogWindow := func(title, intro, button string, auto bool, autoClose time.Duration,
 		job func(ctx context.Context, log func(string), prog func(done, total int, tile string)) string) {
 		if prev, ok := batchOpen[title]; ok {
 			prev.RequestFocus()
@@ -2635,6 +2641,10 @@ func runGUI(rs *Ruleset) {
 					cancel.Disable()
 					busy = false
 					stop()
+					if autoClose > 0 && !strings.Contains(sum, "FAILED") {
+						status.SetText(status.Text + fmt.Sprintf(" · closing in %ds", int(autoClose.Seconds())))
+						time.AfterFunc(autoClose, func() { fyne.Do(bw.Close) })
+					}
 				})
 			}()
 		})
@@ -2681,7 +2691,7 @@ func runGUI(rs *Ruleset) {
 				"each one is and how to log in, and the estate starts it.\n"+
 				"Cancel starts nothing more and removes the tile in flight, so\n"+
 				"the next run rebuilds it.\n",
-			"Build all", true, func(ctx context.Context, log func(string), prog func(int, int, string)) string {
+			"Build all", true, 0, func(ctx context.Context, log func(string), prog func(int, int, string)) string {
 				// The tile the operator clicked says what the run is doing.
 				tileSays := func(text string) {
 					fyne.Do(func() {
@@ -2739,7 +2749,7 @@ func runGUI(rs *Ruleset) {
 				if !ok {
 					return
 				}
-				batchLogWindow("Destroy every appliance", "", "Destroy all", true,
+				batchLogWindow("Destroy every appliance", "", "Destroy all", true, 3*time.Second,
 					func(_ context.Context, log func(string), _ func(int, int, string)) string {
 						return fmt.Sprintf("done — %d removed", DestroyAllAppliances(log))
 					})
@@ -2810,7 +2820,7 @@ func runGUI(rs *Ruleset) {
 				if !ok {
 					return
 				}
-				batchLogWindow("Destroy every Firecracker microVM", "", "Destroy all", true,
+				batchLogWindow("Destroy every Firecracker microVM", "", "Destroy all", true, 3*time.Second,
 					func(ctx context.Context, log func(string), _ func(int, int, string)) string {
 						err := streamCmd(ctx, log, kfireArgv("destroy", "--all")...)
 						fcInvalidate()
@@ -2884,7 +2894,7 @@ func runGUI(rs *Ruleset) {
 					"golden's zvols and a Firecracker process; the line for each one\n"+
 					"prints when it answers on its port. They appear in the estate\n"+
 					"under \"firecracker\" and are removed with Delete.\n", n, sel.Selected),
-				"Clone", true, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+				"Clone", true, 3*time.Second, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
 					err := streamCmd(ctx, log, kfireArgv(args...)...)
 					fcInvalidate()
 					if err != nil {
