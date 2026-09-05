@@ -127,35 +127,29 @@ func onWayland() bool {
 }
 
 // driveWindowFullScreen reports whether the fullscreen toggle should also put
-// the window itself fullscreen, or strip the panes and leave the frame to the
-// compositor.
+// the window itself fullscreen, or only strip the panes and leave the frame
+// to the compositor.
 //
-// Returns: true to call SetFullScreen from the toggle.
+// Returns: true to call SetFullScreen from the toggle. The default is true
+// everywhere; VMX_FULLSCREEN_WINDOW=never turns the window half off.
 //
-// WHY this is a decision and not simply a call: Fyne chooses the target
-// monitor itself, and under Wayland it cannot choose correctly. Read
-// getMonitorForWindow in internal/driver/glfw/window_desktop.go — the entire
-// geometry search sits behind `if !build.IsWayland`, because the Wayland
-// protocol never tells a client where its own window is. What remains is
-// viewport.GetMonitor() and then GetPrimaryMonitor(), so on a multi-head
-// Wayland desktop the console goes fullscreen on the PRIMARY monitor no
-// matter which one the operator was working on.
+// HISTORY: this was false under Wayland from 2026-08-11 to 2026-09-04. Fyne
+// picks the target monitor itself, and under Wayland it cannot: the
+// protocol never tells a client where its own window is, the geometry
+// search in getMonitorForWindow sits behind `if !build.IsWayland`, and
+// what remains is GLFW's "primary" monitor — the first output announced.
+// On a multi-head GNOME desktop the console jumped to another screen on
+// every toggle (window on monitor 1, fullscreen on monitor 3). The way out
+// was the compositor's own fullscreen key, which always uses the head the
+// window is on.
 //
-// HISTORY: 2026-08-11, reported from a multi-head GNOME/Wayland desktop —
-// window on monitor 1, fullscreen opened on monitor 3. There is no fix
-// available from this side: xdg_toplevel.set_fullscreen accepts a null output
-// and lets the compositor pick the current one, which is exactly the desired
-// behaviour, but neither GLFW nor Fyne exposes it. Rather than teleport the
-// operator's console to another screen, the toggle strips the panes and the
-// compositor's own fullscreen key does the frame — it always uses the head
-// the window is actually on, and the two compose to the same result.
-//
-// On X11 the geometry search runs and gets it right, so both halves fire from
-// the one key there.
-//
-// VMX_FULLSCREEN_WINDOW overrides the choice: "always" to drive the window
-// even on Wayland (correct on a single-monitor desktop, where there is no
-// wrong head to pick), "never" to leave the frame alone anywhere.
+// The protocol allows exactly that from the client side too:
+// xdg_toplevel.set_fullscreen with a NULL output lets the compositor pick
+// the current one. GLFW never passes NULL and nothing above it can ask, so
+// the build carries a patched copy of GLFW that does
+// (third_party/glfw/VMXPLORE-PATCH.md, gated by TestGLFWPatchPresent).
+// With that in place the one chord does both halves on every platform, as
+// the operator asked on 2026-09-04.
 func driveWindowFullScreen() bool {
 	switch strings.ToLower(strings.TrimSpace(
 		os.Getenv("VMX_FULLSCREEN_WINDOW"))) {
@@ -164,7 +158,7 @@ func driveWindowFullScreen() bool {
 	case "never", "0", "no", "false":
 		return false
 	}
-	return !onWayland()
+	return true
 }
 
 // ctrlShortcutModifier is the modifier Fyne reserves for the standard editing

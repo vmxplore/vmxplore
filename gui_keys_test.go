@@ -107,21 +107,21 @@ func TestLabelMatchesTheBinding(t *testing.T) {
 	}
 }
 
-// The window half of the toggle is platform-conditional, and the override has
-// to work in both directions: an operator on a single-monitor Wayland desktop
-// wants it on (no wrong head exists), and one who dislikes it wants it off
-// everywhere. Defaults are asserted per session type.
+// The window half of the toggle is on everywhere since the vendored GLFW
+// lets the compositor pick the output (TestGLFWPatchPresent guards that);
+// the override still has to work in both directions.
 func TestDriveWindowFullScreen(t *testing.T) {
 	for _, tc := range []struct {
 		name, sessionType, waylandDisplay, override string
 		want                                        bool
 	}{
 		{"x11 drives the window", "x11", "", "", true},
-		{"wayland does not", "wayland", "", "", false},
-		{"WAYLAND_DISPLAY alone is enough", "", "wayland-0", "", false},
-		{"always overrides wayland", "wayland", "wayland-0", "always", true},
+		{"wayland drives it too, on the patched GLFW", "wayland", "", "", true},
+		{"WAYLAND_DISPLAY alone changes nothing", "", "wayland-0", "", true},
+		{"always is still accepted", "wayland", "wayland-0", "always", true},
 		{"never overrides x11", "x11", "", "never", false},
-		{"junk override falls back to the default", "wayland", "", "maybe", false},
+		{"never overrides wayland", "wayland", "wayland-0", "never", false},
+		{"junk override falls back to the default", "wayland", "", "maybe", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_SESSION_TYPE", tc.sessionType)
