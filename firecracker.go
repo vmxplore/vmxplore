@@ -29,11 +29,8 @@
 package main
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -55,16 +52,6 @@ type FCInstance struct {
 	DataZvol string `json:"data_zvol"`
 	State    string `json:"state"` // running / shut off
 	IP       string `json:"ip"`
-}
-
-// FCGolden is one row of `kfire goldens --json`.
-type FCGolden struct {
-	Name     string `json:"name"`
-	VCPUs    int    `json:"vcpus"`
-	RAMMB    int    `json:"ram_mb"`
-	Port     int    `json:"port"`
-	DataZvol string `json:"data_zvol"`
-	Clones   int    `json:"clones"`
 }
 
 const fcGroupLabel = "firecracker"
@@ -104,14 +91,6 @@ func fcInstances() ([]FCInstance, error) {
 	return out, nil
 }
 
-func fcGoldens() ([]FCGolden, error) {
-	var out []FCGolden
-	if err := kfireJSON(&out, "goldens", "--json"); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // fcRows shapes instances as estate rows. State and address come from
 // kfire; memory is the ceiling (Firecracker commits lazily), which is
 // what the operator sized. Persistent is true because a stopped instance
@@ -140,10 +119,9 @@ func fcRows(insts []FCInstance) []Row {
 // fcGroupCached is the "firecracker" group, or false when kfire is absent
 // or has nothing. Ten-second cache: see the banner.
 var (
-	fcMu      sync.Mutex
-	fcAt      time.Time
-	fcCached  []FCInstance
-	fcGoldenC []FCGolden
+	fcMu     sync.Mutex
+	fcAt     time.Time
+	fcCached []FCInstance
 )
 
 func fcInvalidate() {
@@ -152,9 +130,10 @@ func fcInvalidate() {
 	fcMu.Unlock()
 }
 
-// fcRefresh reads instances and goldens when the cache is older than ten
-// seconds. A kfire that cannot answer (no sudo, no state dir yet) means
-// empty lists, not a crash of the estate view; the audit log has the why.
+// fcRefresh reads the instances when the cache is older than ten seconds.
+// A kfire that cannot answer (no sudo, no state dir yet) means an empty
+// list, not a crash of the estate view; the audit log has the why. Callers
+// hold fcMu. The goldens ride the same clock in firecracker_gui.go.
 func fcRefresh() {
 	if time.Since(fcAt) <= 10*time.Second {
 		return
@@ -164,12 +143,7 @@ func fcRefresh() {
 		auditLog("kfire list --json: "+err.Error(), 1)
 		insts = nil
 	}
-	gs, err := fcGoldens()
-	if err != nil {
-		auditLog("kfire goldens --json: "+err.Error(), 1)
-		gs = nil
-	}
-	fcCached, fcGoldenC, fcAt = insts, gs, time.Now()
+	fcCached, fcAt = insts, time.Now()
 }
 
 // fcRowsCached is every instance as an estate row — empty, not absent,
@@ -185,16 +159,6 @@ func fcRowsCached() []Row {
 	defer fcMu.Unlock()
 	fcRefresh()
 	return fcRows(fcCached)
-}
-
-func fcGoldensCached() []FCGolden {
-	if !kfireAvailable() {
-		return nil
-	}
-	fcMu.Lock()
-	defer fcMu.Unlock()
-	fcRefresh()
-	return fcGoldenC
 }
 
 // fcGroupCached is the instances as one estate group for the TUI's flat
@@ -214,41 +178,6 @@ func withFirecracker(groups []GroupRows) []GroupRows {
 		groups = append(withoutFCGhosts(groups, g.Rows), g)
 	}
 	return groups
-}
-
-// streamCmd runs argv and hands every output line to log as it arrives,
-// which is what a stamp needs: each instance prints as it comes up, and a
-// ten-instance --wait is half a minute nobody wants to stare at a blank
-// window for. ctx cancels by killing the process. Audited like a plan.
-func streamCmd(ctx context.Context, log func(string), argv ...string) error {
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	done := make(chan struct{})
-	go func() {
-		sc := bufio.NewScanner(pr)
-		sc.Buffer(make([]byte, 1<<20), 1<<20)
-		for sc.Scan() {
-			log(sc.Text())
-		}
-		close(done)
-	}()
-	err := cmd.Wait()
-	_ = pw.Close()
-	<-done
-	rc := 0
-	if err != nil {
-		rc = 1
-	}
-	auditLog(strings.Join(argv, " "), rc)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return err
 }
 
 // ─── verb plans ─────────────────────────────────────────────────────────
