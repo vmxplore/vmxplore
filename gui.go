@@ -879,6 +879,7 @@ func runGUI(rs *Ruleset) {
 	var openDestroyAll func()
 	var openFCClone func()
 	var openFCCloneFor func(golden string)
+	var openInBrowser func()
 	var openFCMakeGolden, openFCDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
@@ -3088,6 +3089,31 @@ func runGUI(rs *Ruleset) {
 		d.Show()
 	}
 
+	// Open in browser: the guest's address, on the port a microVM's golden
+	// serves or :80 for anything else. A microVM answers before the
+	// operator can copy its address out of the log ("deploys so fast I
+	// can't get the IP and open a browser fast enough", 2026-09-05).
+	openInBrowser = func() {
+		r, ok := st.selected()
+		if !ok {
+			return
+		}
+		ip := firstIPv4(r.D.IPs)
+		if ip == "" {
+			dialog.ShowError(fmt.Errorf("%s has no address yet", r.D.Name), w)
+			return
+		}
+		u := "http://" + ip + "/"
+		if r.FC != nil && r.FC.Port > 0 && r.FC.Port != 80 {
+			u = fmt.Sprintf("http://%s:%d/", ip, r.FC.Port)
+		}
+		if parsed, err := url.Parse(u); err == nil {
+			if err := fyne.CurrentApp().OpenURL(parsed); err != nil {
+				dialog.ShowError(err, w)
+			}
+		}
+	}
+
 	// Enroll on the substrate: the enrollment a built appliance gets —
 	// mesh, estate cert, inventory row — for any running guest: a clone
 	// made by hand, an imported VM, a microVM. Progress in the status line.
@@ -3728,6 +3754,7 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("Make Golden…", goldenAct),
 			fyne.NewMenuItem("Firecracker golden", verb(planFCGolden)),
 			fyne.NewMenuItem("Enroll on the substrate", enrollAct),
+			fyne.NewMenuItem("Open in browser", openInBrowser),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
 			fyne.NewMenuItem("Resize disk…", resizeDialog),
