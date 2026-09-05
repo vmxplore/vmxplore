@@ -32,6 +32,10 @@
 .Fl -build-all
 .Op Fl -only Ar tiles
 .Nm
+.Fl -enroll Ar name
+.Fl -ip Ar address
+.Op Fl -role Ar role
+.Nm
 .Fl -destroy-all
 .Op Fl -yes
 .Nm
@@ -178,6 +182,14 @@ came up: its URL, the upstream project's documentation, the guest login,
 root over ssh where the host's ops key was seeded, and every secret the
 recipe was given or generated.
 In the console the same report is the last thing in the Build all window.
+.It Fl -enroll Ar name Fl -ip Ar address Op Fl -role Ar role
+Put a guest on the substrate the way a built appliance is: a WireGuard mesh
+of its own, a leaf from the estate CA pushed into the guest, the inventory
+row.
+For a guest that has no libvirt domain;
+.Xr kfire 8
+calls this for each microVM once it answers on its port.
+Exit 1 when root ssh to the address never answers.
 .It Fl -destroy-all
 Remove every VM this tool built \(em the
 .Ql app-*
