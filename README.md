@@ -360,7 +360,7 @@ how to log in:
 
 | | |
 |---|---|
-| **[Web Stack](https://nginx.org)** | 2 vCPU / 2 GB. nginx reverse proxy in front of PostgreSQL and Redis, wired together and health-checked |
+| **[Web Stack](https://nginx.org)** | 2 vCPU / 2 GB. nginx + PHP-FPM in front of PostgreSQL and Valkey on their own pool, with a live example page |
 | **[WriteFreely](https://writefreely.org)** | 2 vCPU / 3 GB. A writing machine: the blog plus a full-screen editor, booting straight into it |
 | **[Jellyfin on ZFS](https://jellyfin.org)** | 2 vCPU / 2 GB. Free-software media server on tuned datasets — per-title media, 16K library, throwaway cache |
 | **[Plex on ZFS](https://www.plex.tv)** | 2 vCPU / 2 GB. Plex media server on tuned ZFS datasets — per-title datasets, 8K-record library, throwaway transcodes |

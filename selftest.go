@@ -704,6 +704,28 @@ func buildOneAppliance(ctx context.Context, a Appliance, vm string, jobs int, lo
 		log("  came up but did not answer: " + err.Error())
 		return tileFailed, nil, ""
 	}
+	// The recipe's own verdict, not just the port: the Web Stack answered
+	// on :80 with a page whose every connection was "Permission denied",
+	// and build-all called it ready (onyx, 2026-09-05). app_summary in the
+	// guest counts its checks; a tile that fails them is a failed build,
+	// left running so the operator can look, and said so.
+	if strings.Contains(a.Script, "app_summary") {
+		verdict, fails := recipeVerdict(ipOf(url), 3*time.Minute)
+		switch verdict {
+		case "RESULT: VERIFIED":
+			log("  recipe verdict: VERIFIED")
+		case "RESULT: INCOMPLETE":
+			log("  recipe verdict: INCOMPLETE — the guest's own checks failed:")
+			for _, f := range fails {
+				log("    " + f)
+			}
+			log("  left running for inspection: ssh root@" + ipOf(url) + " · /var/log/cloud-init-output.log")
+			return tileFailed, nil, ""
+		default:
+			log("  recipe verdict: not reported within 3 minutes of the port answering — treated as failed; see /var/log/cloud-init-output.log in the guest")
+			return tileFailed, nil, ""
+		}
+	}
 	EnrollAppliance(vm, applianceSlug(a.Name), log)
 	shrinkToCatalog(vm, a, builtCPUs, builtMB, log)
 	if a.ProbeTCP {
@@ -764,6 +786,39 @@ func powerOff(vm string, log func(string)) {
 		time.Sleep(2 * time.Second)
 	}
 	log("  shut off — start it from the estate when wanted")
+}
+
+// recipeVerdict polls the guest for app_summary's closing line — the port
+// can answer minutes before the recipe's checks and snapshot finish — and
+// returns it with the FAIL lines when it is INCOMPLETE. Empty after the
+// wait means the recipe never reported.
+func recipeVerdict(ip string, wait time.Duration) (verdict string, fails []string) {
+	deadline := time.Now().Add(wait)
+	for verdict == "" && time.Now().Before(deadline) {
+		out, _ := enrollGuestSSH(ip,
+			"grep -hoE 'RESULT: (VERIFIED|INCOMPLETE)' /var/log/cloud-init-output.log 2>/dev/null | tail -1")
+		verdict = strings.TrimSpace(out)
+		if verdict == "" {
+			time.Sleep(10 * time.Second)
+		}
+	}
+	if verdict == "RESULT: INCOMPLETE" {
+		out, _ := enrollGuestSSH(ip, "grep -E ' FAIL$' /var/log/cloud-init-output.log | tail -8")
+		fails = parseFailLines(out)
+	}
+	return verdict, fails
+}
+
+// parseFailLines keeps the check labels of app_check's FAIL lines.
+func parseFailLines(out string) []string {
+	var fails []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasSuffix(l, "FAIL") {
+			fails = append(fails, strings.TrimSpace(strings.TrimSuffix(l, "FAIL")))
+		}
+	}
+	return fails
 }
 
 // ipOf strips a probe URL (http://h:p/, rdp://h:p, h:p) down to its host.

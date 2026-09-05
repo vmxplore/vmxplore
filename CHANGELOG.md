@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### The Web Stack is a LAMP page, not a placeholder
+
+- **A live example page.** nginx → PHP-FPM → PostgreSQL + Valkey: every
+  visit opens the database as the app user and writes a row, bumps a
+  counter in the cache over its own wire protocol, and prints the
+  instance's hostname, address, uptime and sizes. Ten stamped copies each
+  show their own name and counts. `/healthz` is 200 only when both stores
+  answered; the operator's own app still proxies at `/app/`.
+- **Build all reads the recipe's verdict.** A tile whose in-guest checks
+  failed is a failed build, listed with the checks that failed and left
+  running for inspection, instead of "ready" because its port answered.
+
 ### Firecracker microVMs
 
 - **A `firecracker` group in the estate.** Instances stamped by `kfire(8)`

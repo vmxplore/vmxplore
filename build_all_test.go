@@ -129,3 +129,15 @@ func TestLandingURL(t *testing.T) {
 		t.Errorf("fallback landingURL = %q", got)
 	}
 }
+
+// app_check prints "  label<padding> FAIL"; the build reports the labels.
+func TestParseFailLines(t *testing.T) {
+	out := "  healthz: both stores answer              FAIL\n  page queries both                        OK\n  page wrote a visit                       FAIL\n"
+	got := parseFailLines(out)
+	if len(got) != 2 || got[0] != "healthz: both stores answer" || got[1] != "page wrote a visit" {
+		t.Errorf("parseFailLines = %q", got)
+	}
+	if len(parseFailLines("")) != 0 {
+		t.Error("empty input must give no lines")
+	}
+}
