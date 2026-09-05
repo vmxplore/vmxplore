@@ -480,11 +480,13 @@ func memAvailableMB() int {
 // guest under /root, and a ten-tile build ended with ten VMs the operator
 // had to ssh into one by one to learn how to log in (onyx, 2026-09-04).
 //
-// urls is one landing URL per tile that came up, in the same order — the
-// GUI opens each in a browser tab when the run ends, so "one button" ends
-// with the twelve login pages in front of the operator rather than a list
-// to copy out of a log (operator, 2026-09-04). The CLI prints them as part
-// of access and opens nothing: a terminal may be an ssh session.
+// urls is one landing URL per tile that came up AND was left running
+// (VMX_BUILD_KEEP_RUNNING=1) — the GUI opens each in a browser tab when the
+// run ends, so "one button" ends with the login pages in front of the
+// operator rather than a list to copy out of a log (operator, 2026-09-04).
+// By default every finished tile is shut off (powerOff) and urls is empty;
+// the report still carries the addresses. The CLI prints the report and
+// opens nothing: a terminal may be an ssh session.
 func BuildAllAppliances(only string, log func(string)) (built, failed int, access, urls []string) {
 	want := map[string]bool{}
 	for _, o := range strings.Split(only, ",") {
@@ -630,7 +632,54 @@ func buildOneAppliance(a Appliance, vm string, jobs int, log func(string)) (bool
 		url = "rdp://" + url // the one TCP tile today; the scheme is what a client wants
 	}
 	log("  " + a.Name + " ready on " + url)
-	return true, applianceAccess(a, spec, vals, url), landingURL(a, url)
+	access := applianceAccess(a, spec, vals, url)
+	if keepRunning() {
+		return true, access, landingURL(a, url)
+	}
+	powerOff(vm, log)
+	access = append(access, "  state: shut off — start it from the estate when wanted")
+	return true, access, "" // nothing to open: the page is not being served
+}
+
+// keepRunning is VMX_BUILD_KEEP_RUNNING=1: leave every built tile up and
+// open its page at the end. The default is off — see powerOff.
+func keepRunning() bool {
+	return os.Getenv("VMX_BUILD_KEEP_RUNNING") == "1"
+}
+
+// powerOff shuts a finished tile down and waits for it. A build-all is
+// "one of everything, kept" — kept as a VM to start when wanted, not as
+// twelve services running at once: after the run that built the web stack
+// the operator's next words were that finished tiles should be shut off
+// (onyx, 2026-09-04), and twelve idle appliances were most of what put a
+// 32G host into the OOM killer earlier that day. The report still carries
+// every URL and login; the estate starts the VM. Graceful first, and a
+// guest that ignores the ACPI button for two minutes is forced — a fresh
+// cloud image with nothing but a just-configured service loses nothing to
+// that, and a tile left running against the operator's ask is the worse
+// outcome.
+func powerOff(vm string, log func(string)) {
+	state := func() string {
+		out, _ := sudoRun("virsh", "domstate", vm)
+		return strings.TrimSpace(out)
+	}
+	if out, err := sudoMutate("virsh", "shutdown", vm); err != nil {
+		log("  shutdown: " + strings.SplitN(out, "\n", 2)[0])
+		return
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for state() != "shut off" {
+		if time.Now().After(deadline) {
+			log("  did not shut down in 2 minutes — forcing it off")
+			if out, err := sudoMutate("virsh", "destroy", vm); err != nil {
+				log("  destroy: " + strings.SplitN(out, "\n", 2)[0])
+				return
+			}
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	log("  shut off — start it from the estate when wanted")
 }
 
 // ipOf strips a probe URL (http://h:p/, rdp://h:p, h:p) down to its host.

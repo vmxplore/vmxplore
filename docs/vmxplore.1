@@ -161,6 +161,11 @@ a live unplug.
 builds that many at once instead, at catalog size.
 Every progress line is prefixed with its VM name so a parallel stream still
 reads.
+A finished tile is shut off: the run leaves twelve VMs to start when wanted,
+not twelve services running at once on a host that may not have the memory
+for them.
+.Ev VMX_BUILD_KEEP_RUNNING
+leaves them up, and in the GUI opens each one's page at the end.
 .Fl -only
 restricts the run to a comma-separated list of tile names or
 .Ql app-
@@ -1037,6 +1042,12 @@ and add
 lines to teach it your convention.
 .Sh ENVIRONMENT
 .Bl -tag -width "VMX_FULLSCREEN_KEY"
+.It Ev VMX_BUILD_KEEP_RUNNING
+Set to
+.Ql 1 ,
+.Fl -build-all
+leaves every finished tile running and the GUI opens its page at the end.
+Unset, each tile is shut off once it is built, verified and enrolled.
 .It Ev VMX_BUILD_JOBS
 How many tiles
 .Fl -build-all

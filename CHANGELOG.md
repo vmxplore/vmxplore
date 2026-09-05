@@ -16,6 +16,10 @@
   catalog size once it answers: memory live via the balloon, vCPUs live
   where the guest allows and at the next boot otherwise. The log says what
   it borrowed and when it gave it back.
+- **Finished tiles are shut off.** A build-all leaves VMs to start when
+  wanted, not twelve services running at once on a host that may not have
+  the memory for them. The report still carries every address and login;
+  `VMX_BUILD_KEEP_RUNNING=1` leaves them up and opens their pages.
 - **The closing report links each tile's upstream docs** next to the
   instance that was just built. The browser tabs at the end are the
   instances; the documentation is a line in the report.

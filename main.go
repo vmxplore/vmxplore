@@ -107,10 +107,12 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           also "build whatever is missing". Tiles build one
                           at a time, each with most of the host's cores and
                           spare RAM while it installs and trimmed to catalog
-                          size once it answers (VMX_BUILD_JOBS=N builds N at
-                          once at catalog size). Ends by printing every
-                          tile's URL and logins on stdout. Exit status is
-                          the number of failed tiles.
+                          size once it answers, then shut off — start one
+                          from the estate when wanted (VMX_BUILD_KEEP_RUNNING=1
+                          leaves them up; VMX_BUILD_JOBS=N builds N at once
+                          at catalog size). Ends by printing every tile's
+                          URL and logins on stdout. Exit status is the
+                          number of failed tiles.
                             --only A,B    only these tiles (names or app-
                                           VM names, comma-separated)
   --destroy-all           remove every VM this tool built — the app-* builds

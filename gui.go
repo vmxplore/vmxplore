@@ -971,7 +971,7 @@ func runGUI(rs *Ruleset) {
 				case buildAllUID:
 					row.title.Text = "▶ Build all"
 					row.title.Color = acBrand.at()
-					row.detail.Text = "one of everything, kept — tiles that already exist are skipped"
+					row.detail.Text = "one of everything, kept and shut off — tiles that already exist are skipped"
 					open = &openBuildAll
 				default:
 					row.title.Text = "✕ Destroy all"
@@ -2433,8 +2433,9 @@ func runGUI(rs *Ruleset) {
 				"whose VM already exists are skipped, so this is also \"build\n"+
 				"whatever is missing\". Tiles build one at a time, each with most\n"+
 				"of this host's cores and spare RAM while it installs, then trimmed\n"+
-				"to its catalog size once it answers. Expect a few minutes per\n"+
-				"tile; the login page of every tile that came up opens at the end.\n",
+				"to its catalog size once it answers, verified, then shut off.\n"+
+				"Expect a few minutes per tile; the report at the end says where\n"+
+				"each one is and how to log in, and the estate starts it.\n",
 			"Build all", true, func(log func(string)) string {
 				built, failed, access, urls := BuildAllAppliances("", log)
 				// One button, then the login pages: every tile that came up
