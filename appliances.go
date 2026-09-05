@@ -27,6 +27,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -74,6 +75,16 @@ type Appliance struct {
 
 	Port    int    // primary service port, opened in the guest firewall
 	LandsOn string // human hint: where the service appears once booted
+	// ProbeTCP: the port speaks something other than HTTP (RDP, say), so
+	// "up" is a TCP accept, not an HTTP response. Default false keeps the
+	// stricter HTTP probe for everything that serves a page.
+	ProbeTCP bool
+	// ClientHint: lines the closing report prints under the landing line,
+	// <vm-ip> substituted — what to run or set on the OPERATOR's machine
+	// to get in with everything working. Born of the RDP tile: sound was
+	// right in the guest and silent on the desk for an hour, because
+	// Remmina defaults audio off and nothing said so (onyx, 2026-09-04).
+	ClientHint []string
 
 	// Needs is the substrate this recipe was written for. Recipes target
 	// kldload (KVM + ZFS) by default; declaring NeedsZFS is what lets the
@@ -310,6 +321,16 @@ func applianceOverrides(a Appliance, vals map[string]string,
 // timed out — the two phases fail for entirely different reasons (no DHCP
 // lease vs. an installer that died), so they are reported separately.
 func WaitAppliance(name string, port int, progress func(string)) (string, error) {
+	return waitAppliance(name, port, false, progress)
+}
+
+// WaitApplianceTCP is WaitAppliance for a port that does not speak HTTP:
+// ready means the guest accepts a TCP connection on it.
+func WaitApplianceTCP(name string, port int, progress func(string)) (string, error) {
+	return waitAppliance(name, port, true, progress)
+}
+
+func waitAppliance(name string, port int, tcp bool, progress func(string)) (string, error) {
 	const (
 		leaseTimeout = 3 * time.Minute
 		// 25m, not 10: a NeedsZFS recipe on a stock cloud image now
@@ -347,11 +368,19 @@ func WaitAppliance(name string, port int, progress func(string)) (string, error)
 
 	// Any HTTP response counts as ready: a redirect or even a 404 means
 	// the service is listening, and only the appliance knows what its own
-	// landing page should be.
+	// landing page should be. A TCP tile (RDP) is ready when the port
+	// accepts, and its URL is not http:// at all.
+	if tcp {
+		url = fmt.Sprintf("%s:%d", ip, port)
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	for deadline := time.Now().Add(bootTimeout); time.Now().Before(deadline); {
-		resp, err := client.Get(url)
-		if err == nil {
+		if tcp {
+			if c, err := net.DialTimeout("tcp", url, 5*time.Second); err == nil {
+				c.Close()
+				return url, nil
+			}
+		} else if resp, err := client.Get(url); err == nil {
 			resp.Body.Close()
 			return url, nil
 		}
@@ -508,7 +537,7 @@ func RunApplianceBuild(name string, args []string) int {
 		}
 		return 0
 	}
-	url, err := WaitAppliance(spec.Name, a.Port, log)
+	url, err := waitAppliance(spec.Name, a.Port, a.ProbeTCP, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 		return 1
@@ -715,6 +744,7 @@ var applianceCatalog = []Appliance{
 	writeFreelyDesktop,
 	jellyfin, plex, seedbox, icecast, sdrStation, tvheadend,
 	adguardHome, syncthing,
+	vdiDesktop, rdpDesktop,
 }
 
 // ─── WriteFreely ─────────────────────────────────────────────────────

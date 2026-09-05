@@ -17,9 +17,9 @@
 
 **The family:** [kldload](https://github.com/kldload/kldload) — the substrate &middot; [zxplore](https://github.com/zxplore/zxplore) — the ZFS console &middot; [wgxplore](https://github.com/wgxplore/wgxplore) — the WireGuard console &middot; **vmxplore** — the VM console
 
-<img src="assets/screenshots/estate-annotated.png" width="960" alt="vmxplore annotated — the estate tree on the left, a live console middle-right, the full domain dossier and verb toolbar below"/>
+<img src="assets/screenshots/estate-annotated.png" width="960" alt="vmxplore annotated — the estate tree and the selected machine's dossier on the left, a live console with the verb row above it on the right"/>
 
-<sub><em>One window: the estate tree, a live console, the full dossier, and every verb — annotated.</em></sub>
+<sub><em>One window, two panes: the estate with its dossier, the console with its verbs — annotated.</em></sub>
 
 </div>
 
@@ -158,17 +158,16 @@ the estate tree (the **Apps** branch) and the **Build** menu; the substrate's
 tools are the tree's **kldload tools** branch, and a **kldload** tab appears
 beside the two only while one of them is running.
 
-There is no button bar. **Alt+Insert** collapses the three-pane layout to the
+There is no button bar. **Alt+Insert** collapses the two-pane layout to the
 console alone — estate, details, tabs and border gone — and asks the guest to
 change resolution to match, so the picture fills the pane instead of sitting
 letterboxed inside it. The same chord comes back out.
 
-Under X11 it fullscreens the window too. Under **Wayland it deliberately does
-not**: the protocol never tells a client where its own window is, so the
-toolkit picks the primary monitor and a multi-head desktop watches its console
-jump to another screen. Use the compositor's own fullscreen key for the frame —
-the two compose, and a compositor never picks the wrong head.
-`VMX_FULLSCREEN_WINDOW=always|never` overrides either way, and the chord itself
+It fullscreens the window too, on the monitor the window is on. Under Wayland
+the toolkit cannot know which monitor that is and stock GLFW guesses the
+primary one, so the build carries a one-line patch to GLFW that lets the
+compositor choose (`third_party/glfw/VMXPLORE-PATCH.md`).
+`VMX_FULLSCREEN_WINDOW=never` keeps the frame as it is, and the chord itself
 is `VMX_FULLSCREEN_KEY` (Shift-only chords are rejected at startup — the
 toolkit never delivers them). **Ctrl+V**
 pastes the host clipboard into the guest (as RFB cut text *and* as

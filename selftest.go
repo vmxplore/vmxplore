@@ -143,7 +143,7 @@ func selfTestOne(a Appliance, keep bool, log func(string)) selfTestResult {
 	buildErr := BuildNewVM(spec, parent, blogLine)
 	if buildErr == nil {
 		AttachUSBDevices(vm, a.USB, blogLine)
-		_, buildErr = WaitAppliance(vm, a.Port, blogLine)
+		_, buildErr = waitAppliance(vm, a.Port, a.ProbeTCP, blogLine)
 	}
 	if buildErr == nil {
 		EnrollAppliance(vm, applianceSlug(a.Name), blogLine)
@@ -378,7 +378,16 @@ func memAvailableMB() int {
 // VM names and restricts the run to those — the same addressing --selftest
 // --only uses, so two tiles can be built side by side without the other
 // eight.
-func BuildAllAppliances(only string, log func(string)) (built, failed int) {
+//
+// access is the closing report: one block per tile that came up, with its
+// URL and every login the operator needs — the guest account, root over ssh
+// where the host's ops key was seeded, and each secret the recipe was
+// given or generated. It is returned rather than logged so each caller can
+// put it where it belongs: the CLI on stdout, the GUI as the last thing in
+// the window. Before this the generated passwords existed only inside the
+// guest under /root, and a ten-tile build ended with ten VMs the operator
+// had to ssh into one by one to learn how to log in (onyx, 2026-09-04).
+func BuildAllAppliances(only string, log func(string)) (built, failed int, access []string) {
 	want := map[string]bool{}
 	for _, o := range strings.Split(only, ",") {
 		if o = strings.TrimSpace(strings.ToLower(o)); o != "" {
@@ -407,7 +416,7 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int) {
 		} else {
 			log("build-all: nothing to build")
 		}
-		return 0, 0
+		return 0, 0, nil
 	}
 	jobs := buildJobs(len(todo), maxRAM, memAvailableMB(), os.Getenv("VMX_BUILD_JOBS"))
 	head := fmt.Sprintf("build-all: %d tile(s), %d at a time (VMX_BUILD_JOBS overrides)", len(todo), jobs)
@@ -417,9 +426,10 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, jobs)
-	for _, a := range todo {
+	blocks := make([][]string, len(todo)) // catalog order, not finish order
+	for i, a := range todo {
 		wg.Add(1)
-		go func(a Appliance) {
+		go func(i int, a Appliance) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -430,30 +440,46 @@ func BuildAllAppliances(only string, log func(string)) (built, failed int) {
 				}
 				log("[" + vm + "] " + l)
 			}
-			ok := buildOneAppliance(a, vm, tlog)
+			ok, lines := buildOneAppliance(a, vm, tlog)
 			mu.Lock()
 			if ok {
 				built++
+				blocks[i] = lines
 			} else {
 				failed++
 			}
 			mu.Unlock()
-		}(a)
+		}(i, a)
 	}
 	wg.Wait()
 	log("")
 	log(fmt.Sprintf("build-all: %d built, %d failed", built, failed))
-	return built, failed
+	for _, b := range blocks {
+		if len(b) > 0 {
+			access = append(access, b...)
+			access = append(access, "")
+		}
+	}
+	return built, failed, access
 }
 
 // buildOneAppliance is one tile of build-all: spec, build, USB, wait for
-// the port, enroll. Returns false on any failure, having logged why.
-func buildOneAppliance(a Appliance, vm string, log func(string)) bool {
+// the port, enroll. Returns ok=false on any failure, having logged why, and
+// on success the tile's access block for the closing report.
+func buildOneAppliance(a Appliance, vm string, log func(string)) (bool, []string) {
 	log("building " + a.Name)
-	spec, err := a.Spec(vm, "admin", "", "", a.Defaults())
+	// Resolved here, not inside Spec, so the generated secrets are known to
+	// this side and can be reported at the end; Render resolves again and
+	// keeps every value it is given.
+	vals, err := a.resolve(a.Defaults())
 	if err != nil {
 		log("  spec: " + err.Error())
-		return false
+		return false, nil
+	}
+	spec, err := a.Spec(vm, "admin", "", "", vals)
+	if err != nil {
+		log("  spec: " + err.Error())
+		return false, nil
 	}
 	if KldloadTier() == "kldload" {
 		if k := hostOpsPubkey(); k != "" {
@@ -463,16 +489,73 @@ func buildOneAppliance(a Appliance, vm string, log func(string)) bool {
 	parent := zfsParentForBuild()
 	if err := BuildNewVM(spec, parent, log); err != nil {
 		log("  build FAILED: " + err.Error())
-		return false
+		return false, nil
 	}
 	AttachUSBDevices(vm, a.USB, log)
-	if _, err := WaitAppliance(vm, a.Port, log); err != nil {
+	url, err := waitAppliance(vm, a.Port, a.ProbeTCP, log)
+	if err != nil {
 		log("  came up but did not answer: " + err.Error())
-		return false
+		return false, nil
 	}
 	EnrollAppliance(vm, applianceSlug(a.Name), log)
-	log("  " + a.Name + " ready on " + a.LandsOn)
-	return true
+	if a.ProbeTCP {
+		url = "rdp://" + url // the one TCP tile today; the scheme is what a client wants
+	}
+	log("  " + a.Name + " ready on " + url)
+	return true, applianceAccess(a, spec, vals, url)
+}
+
+// ipOf strips a probe URL (http://h:p/, rdp://h:p, h:p) down to its host.
+func ipOf(url string) string {
+	ip := strings.TrimPrefix(url, "http://")
+	ip = strings.TrimPrefix(ip, "rdp://")
+	if i := strings.IndexAny(ip, ":/"); i >= 0 {
+		ip = ip[:i]
+	}
+	return ip
+}
+
+// applianceAccess renders one tile's block for the closing report: the
+// URL it serves on, the guest login, root over ssh when the host's ops key
+// was seeded, and every secret field with its value — the ones the
+// recipe generated are the ones nobody has seen yet.
+func applianceAccess(a Appliance, spec NewVMSpec, vals map[string]string, url string) []string {
+	// The tile's own landing line, with the address filled in, when it has
+	// one: the probe URL is the health port, and for the VDI tile that is
+	// nginx's 404 root while the desktop is on :8889 — the operator opened
+	// the reported URL and got nothing (onyx, 2026-09-04).
+	where := url
+	if strings.Contains(a.LandsOn, "<vm-ip>") {
+		where = strings.ReplaceAll(a.LandsOn, "<vm-ip>", ipOf(url))
+	}
+	out := []string{fmt.Sprintf("%s  (%s)", a.Name, spec.Name), "  " + where}
+	for _, h := range a.ClientHint {
+		out = append(out, "  "+strings.ReplaceAll(h, "<vm-ip>", ipOf(url)))
+	}
+	pw := spec.Password
+	if pw == "" && spec.SSHKey == "" {
+		pw = DefaultGuestPassword // the same rule BuildNewVM applies
+	}
+	switch {
+	case pw != "" && spec.SSHKey != "":
+		out = append(out, fmt.Sprintf("  guest login: %s / %s  (or your ssh key)", spec.User, pw))
+	case pw != "":
+		out = append(out, fmt.Sprintf("  guest login: %s / %s", spec.User, pw))
+	default:
+		out = append(out, fmt.Sprintf("  guest login: %s with your ssh key", spec.User))
+	}
+	if len(spec.RootSSHKeys) > 0 {
+		out = append(out, "  root: ssh root@<ip> with the host's ops key")
+	}
+	for _, f := range a.Fields {
+		if !f.Secret && !f.Generate {
+			continue
+		}
+		if v := vals[f.Key]; v != "" {
+			out = append(out, fmt.Sprintf("  %s (%s): %s", f.Label, f.Key, v))
+		}
+	}
+	return out
 }
 
 // ExistingApplianceVMs lists the VMs this tool built that libvirt still knows

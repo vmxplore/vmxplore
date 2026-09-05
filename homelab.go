@@ -1742,3 +1742,400 @@ cat <<EOM
 EOM
 app_summary
 `
+
+// ─── VDI Desktop: a headless Wayland desktop, streamed to a browser ─────────
+//
+// The kldload.com "VDI Desktop" design (pages/build-vdi) as a tile: a
+// compositor renders a virtual monitor nobody is sitting at, wf-recorder
+// encodes it to H.264, mediamtx republishes it as WebRTC, HLS and SRT, and
+// nginx fronts the lot. No client, a browser.
+//
+// One deliberate departure from the page and from kldload-firstboot's
+// setup_vdi: the compositor is sway, not mutter. wf-recorder captures
+// through wlr-screencopy, a wlroots protocol mutter has never implemented,
+// so mutter --headless plus wf-recorder produces a compositor and a
+// recorder that cannot see each other. sway's headless backend
+// (WLR_BACKENDS=headless) exposes exactly that protocol on a virtual
+// output named HEADLESS-1, needs no GPU and no seat, and renders with
+// pixman. The stream is the same; the capture path is one that exists.
+//
+// Scope of this first cut, stated so nobody looks for what is not here:
+// video only. Keyboard, mouse, audio and clipboard are the WireGuard back
+// plane on the page, and none of that is in this recipe yet.
+
+var vdiDesktop = Appliance{
+	Name:     "VDI Desktop",
+	Summary:  "A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client",
+	Homepage: "https://kldload.com/pages/build-vdi",
+	License:  "GPL-2.0 (labwc, XFCE), MIT (wf-recorder, mediamtx), BSD-2-Clause (nginx)",
+
+	Distro: "debian",
+	VCPUs:  2,
+	RAMMB:  2048,
+	DiskGB: 16,
+
+	Needs: NeedsKVM,
+
+	Port: 80,
+	LandsOn: "http://<vm-ip>:8889/session1 (WebRTC, lowest latency) · " +
+		"http://<vm-ip>:8888/session1 (HLS) · srt://<vm-ip>:8890?streamid=read:session1",
+	ClientHint: []string{
+		"sound: the browser starts the WebRTC player muted — click its speaker; VLC: vlc srt://<vm-ip>:8890?streamid=read:session1",
+	},
+
+	Notes: "Each session is its own virtual 1080p XFCE desktop running as " +
+		"the unprivileged vdi user on labwc, a headless Wayland compositor, " +
+		"with PipeWire and a virtual sound sink inside the session. " +
+		"wf-recorder encodes video with libx264 at ultrafast/zerolatency " +
+		"and the desktop's audio as Opus, and publishes to mediamtx over " +
+		"SRT. Sessions are systemd template units, vdi-session@N — " +
+		"`systemctl start vdi-session@2` adds a second desktop at " +
+		"/session2. Budget about two CPU cores and 700 MB per session.\n\n" +
+		"Picture and sound go out; keyboard and mouse do not come back yet. " +
+		"The WebRTC page plays the desktop with audio; input rides the " +
+		"WireGuard back plane in the kldload design and is the next step " +
+		"for this tile.\n\n" +
+		"mediamtx is fetched from its GitHub release at build time, so this " +
+		"tile needs the network once; the distro packages come from the " +
+		"guest's own repositories. mediamtx's API is on 127.0.0.1:9997 " +
+		"inside the guest for diagnosis: curl -s localhost:9997/v3/paths/list.",
+
+	Fields: []ApplianceField{
+		{Key: "VDI_ALLOW_CIDR", Label: "allowed source",
+			Default: "192.168.0.0/16", Required: true},
+		{Key: "VDI_RESOLUTION", Label: "virtual monitor (WxH)",
+			Default: "1920x1080", Required: true},
+		{Key: "VDI_SESSIONS", Label: "sessions to start at boot",
+			Default: "1", Required: true},
+	},
+	Validate: func(v map[string]string) error {
+		if !regexp.MustCompile(`^[0-9]{3,4}x[0-9]{3,4}$`).MatchString(v["VDI_RESOLUTION"]) {
+			return fmt.Errorf("resolution must look like 1920x1080")
+		}
+		n, err := strconv.Atoi(v["VDI_SESSIONS"])
+		if err != nil || n < 1 || n > 32 {
+			return fmt.Errorf("sessions must be a number from 1 to 32")
+		}
+		return nil
+	},
+
+	Script: vdiDesktopScript,
+}
+
+const vdiDesktopScript = `
+# ─── packages ───────────────────────────────────────────────────────────────
+# labwc is the compositor: wlroots, so wf-recorder can capture it, and the
+# one XFCE 4.20 runs its Wayland session on. XFCE is the desktop the
+# operator picked ("xfce is great", 2026-09-04). PipeWire runs inside each
+# session with a virtual sink, so the desktop's sound has somewhere to go
+# and the recorder has something to take it from. xwayland keeps X11 apps
+# working on the desktop.
+if [ "$APP_FAMILY" = rpm ]; then
+    app_log "installing the XFCE desktop group (minutes)"
+    dnf -y group install xfce-desktop-environment >/dev/null ||
+        app_die "the XFCE desktop group did not install"
+    app_pkg chromium
+    app_pkg labwc xorg-x11-server-Xwayland wlr-randr wf-recorder ffmpeg-free nginx \
+        pipewire pipewire-pulseaudio pipewire-utils wireplumber \
+        dejavu-sans-mono-fonts wireguard-tools curl tar
+else
+    export DEBIAN_FRONTEND=noninteractive
+    app_log "installing XFCE (minutes)"
+    apt-get install -y -qq --no-install-recommends \
+        xfce4 xfce4-terminal dbus-user-session fonts-dejavu-core >/dev/null ||
+        app_die "XFCE did not install"
+    # A desktop with a browser launcher and no browser is a desk with a
+    # phone that is not plugged in ("the VDI can't open a Chromium",
+    # operator, 2026-09-04). Chromium: packaged on both families.
+    app_pkg chromium chromium-sandbox
+    app_pkg labwc xwayland wlr-randr wf-recorder ffmpeg nginx \
+        pipewire pipewire-pulse pulseaudio-utils wireplumber \
+        wireguard-tools curl ca-certificates
+fi
+
+# ─── mediamtx ───────────────────────────────────────────────────────────────
+# No distro packages it. The GitHub API answer is pretty-printed, so the
+# key and the value are separated by a space — the pattern allows for it;
+# a pattern that did not was how kldload-firstboot once found "no URL".
+_api=https://api.github.com/repos/bluenviron/mediamtx/releases/latest
+_dl="$(curl -fsSL "$_api" | grep -oE '"browser_download_url": *"[^"]*linux_amd64\.tar\.gz"' |
+    head -1 | sed -E 's/.*"(https?:[^"]*)"/\1/')"
+[ -n "$_dl" ] || app_die "could not find the mediamtx linux_amd64 release on GitHub (no network?)"
+app_log "mediamtx: $_dl"
+curl -fsSL "$_dl" | tar -xz -C /usr/local/bin mediamtx || app_die "mediamtx did not download"
+chmod 0755 /usr/local/bin/mediamtx
+app_log "mediamtx $(/usr/local/bin/mediamtx --version 2>&1 | head -1)"
+
+install -d -m 0755 /etc/mediamtx
+# Regex paths carry a leading ~ in mediamtx; the API on loopback is what
+# the checks below and an operator's curl read.
+cat >/etc/mediamtx/mediamtx.yml <<'MCONF'
+logLevel: info
+logDestinations: [stdout]
+api: yes
+apiAddress: 127.0.0.1:9997
+srt: yes
+srtAddress: :8890
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+# Low-latency HLS refuses fewer than seven segments — mediamtx tears the
+# muxer down on every request with "requires at least 7 segments" and the
+# playlist is a 500. kldload-firstboot's three is what shipped that.
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+paths:
+  "~^session[0-9]+$":
+    source: publisher
+MCONF
+
+cat >/etc/systemd/system/mediamtx.service <<'UNIT'
+[Unit]
+Description=mediamtx media server (kldload VDI)
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+app_enable mediamtx
+
+# ─── the session: one headless desktop, streamed ────────────────────────────
+id vdi >/dev/null 2>&1 || useradd -r -m -d /var/lib/vdi -s /usr/sbin/nologin vdi
+install -d -m 0750 -o vdi -g vdi /var/lib/vdi
+
+cat >/usr/local/sbin/kldload-vdi-session <<'SESS'
+#!/usr/bin/env bash
+# kldload-vdi-session <n> — one headless XFCE desktop, streamed to mediamtx
+# as session<n> with sound. Run by vdi-session@<n>.service as the vdi user.
+#
+# labwc is started last and runs xfce4-session as its startup command;
+# everything else is in labwc's autostart, so it inherits the
+# WAYLAND_DISPLAY the compositor actually chose (setting the variable
+# before launching a compositor tells it nothing). Order in autostart:
+# the virtual monitor gets its size, PipeWire comes up with a null sink
+# as the default output so the desktop's audio lands in it, then the
+# recorder takes the monitor of that sink as its audio source.
+set -Eeuo pipefail
+SID="${1:?session number required}"
+RES="${VDI_RESOLUTION:-1920x1080}"
+: "${XDG_RUNTIME_DIR:=/run/vdi-$SID}"
+export XDG_RUNTIME_DIR HOME="${HOME:-/var/lib/vdi}"
+export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=XFCE XDG_SESSION_DESKTOP=xfce
+CFGDIR="$XDG_RUNTIME_DIR/labwc"
+install -d -m 0700 "$CFGDIR"
+# -p, not --params: Debian's wf-recorder 0.5 knows only the short form,
+# and mpegts is the muxer SRT carries, which cannot be guessed from a URL.
+# -D -r 30: screencopy hands over a frame only when the output repaints,
+# and an idle desktop repaints rarely — mediamtx saw a publisher with an
+# H264 track and zero bytes, and HLS had nothing to segment ("muxer
+# instance not available", onyx 2026-09-04). No-damage capture at a fixed
+# rate is what a stream needs; g=30 is a keyframe a second, which is what
+# one-second HLS segments cut on. Opus, not AAC: WebRTC readers can only
+# take Opus, and HLS takes either.
+cat >"$CFGDIR/autostart" <<AUTO
+wlr-randr --output HEADLESS-1 --custom-mode $RES
+pipewire &
+sleep 1
+wireplumber &
+pipewire-pulse &
+sleep 2
+pactl load-module module-null-sink sink_name=vdi sink_properties=device.description=VDI
+pactl set-default-sink vdi
+sh -c 'while true; do wf-recorder -y -D -r 30 -o HEADLESS-1 --codec libx264 -p preset=ultrafast -p tune=zerolatency -p g=30 --audio=vdi.monitor -C libopus --muxer mpegts --file "srt://127.0.0.1:8890?streamid=publish:session$SID&pkt_size=1316"; sleep 2; done' &
+AUTO
+exec dbus-run-session -- labwc -C "$CFGDIR" -s "xfce4-session"
+SESS
+chmod 0755 /usr/local/sbin/kldload-vdi-session
+
+cat >/etc/systemd/system/vdi-session@.service <<UNIT
+[Unit]
+Description=kldload VDI session %i (headless desktop, streamed as session%i)
+After=mediamtx.service
+Wants=mediamtx.service
+[Service]
+User=vdi
+Group=vdi
+RuntimeDirectory=vdi-%i
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/vdi-%i
+Environment=HOME=/var/lib/vdi
+Environment=VDI_RESOLUTION=${VDI_RESOLUTION}
+ExecStart=/usr/local/sbin/kldload-vdi-session %i
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+_n=1
+while [ "$_n" -le "$VDI_SESSIONS" ]; do
+    app_enable "vdi-session@$_n"
+    _n=$((_n + 1))
+done
+
+# ─── nginx in front ─────────────────────────────────────────────────────────
+install -d -m 0755 /etc/nginx/conf.d
+cat >/etc/nginx/conf.d/kldload-vdi.conf <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name _;
+    location /hls/    { proxy_pass http://127.0.0.1:8888/;
+                        add_header Access-Control-Allow-Origin *;
+                        add_header Cache-Control no-cache; }
+    location /webrtc/ { proxy_pass http://127.0.0.1:8889/;
+                        proxy_http_version 1.1;
+                        proxy_set_header Upgrade $http_upgrade;
+                        proxy_set_header Connection "upgrade"; }
+    location /health  { return 200 "ok\n"; add_header Content-Type text/plain; }
+}
+NGINX
+# Debian ships a default site that also claims :80 default_server.
+rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+if command -v setsebool >/dev/null 2>&1; then
+    setsebool -P httpd_can_network_connect 1 2>/dev/null || true
+fi
+app_enable nginx
+systemctl restart nginx 2>/dev/null || true
+
+app_firewall vdi "$VDI_ALLOW_CIDR" 80/tcp 8888/tcp 8889/tcp 8189/udp 8890/udp
+
+# ─── verify ─────────────────────────────────────────────────────────────────
+echo
+app_check "mediamtx active"            systemctl is-active mediamtx
+app_check "nginx health answers"       app_wait_http http://127.0.0.1/health 30
+app_check "session 1 unit active"      systemctl is-active vdi-session@1
+app_check "session 1 publishing"       bash -c 'i=0; while [ $i -lt 30 ]; do curl -fsS http://127.0.0.1:9997/v3/paths/get/session1 2>/dev/null | grep -qE "\"ready\": *true" && exit 0; sleep 2; i=$((i+1)); done; exit 1'
+app_check "session 1 carries audio"    bash -c 'curl -fsS http://127.0.0.1:9997/v3/paths/get/session1 2>/dev/null | grep -q Opus'
+app_check "XFCE desktop up in session 1" bash -c 'pgrep -u vdi -x xfce4-panel >/dev/null && pgrep -u vdi -x xfdesktop >/dev/null'
+app_check "browser present"            command -v chromium
+app_check "HLS playlist for session 1" app_wait_http http://127.0.0.1:8888/session1/index.m3u8 90
+`
+
+// ─── RDP Desktop: an XFCE desktop over RDP ──────────────────────────────────
+//
+// The other VDI shape: a plain desktop reached with any RDP client — mstsc,
+// Remmina, FreeRDP — with keyboard, mouse, clipboard and audio the way the
+// protocol already does them. xrdp with the xorgxrdp backend runs Xorg with
+// no hardware behind it, so the Debian cloud kernel, which carries no DRM
+// at all, is fine here where it was not for the writing desktop.
+//
+// XFCE because it is the desktop that costs the least to render over a
+// wire, and because it runs under Xorg, which is what xrdp sessions are.
+// The RDP login is the guest account this tile was built with.
+
+var rdpDesktop = Appliance{
+	Name:     "RDP Desktop",
+	Summary:  "An XFCE desktop over RDP — mstsc, Remmina or FreeRDP; keyboard, mouse, clipboard and sound",
+	Homepage: "https://www.xrdp.org",
+	License:  "Apache-2.0 (xrdp), GPL-2.0 (XFCE)",
+
+	Distro: "debian",
+	VCPUs:  2,
+	RAMMB:  2048,
+	DiskGB: 16,
+
+	Needs: NeedsKVM,
+
+	Port:     3389,
+	ProbeTCP: true,
+	LandsOn:  "rdp://<vm-ip>:3389 — log in as the guest account you gave this build",
+	// Sound is negotiated by the CLIENT at connect time. mstsc asks for it
+	// by default; Remmina and FreeRDP do not, and a session started without
+	// it stays silent no matter what plays in it.
+	ClientHint: []string{
+		"sound: Remmina → edit the connection → Advanced → Audio output mode: Local (it defaults to off)",
+		"       FreeRDP: xfreerdp /v:<vm-ip> /u:admin /sound /dynamic-resolution +clipboard /cert:tofu",
+		"       Windows mstsc: on by default (Local Resources → Remote audio → Play on this computer)",
+	},
+
+	Notes: "xrdp on 3389 with the xorgxrdp backend, XFCE as the session. Connect " +
+		"with any RDP client and log in as the guest user (admin unless you " +
+		"changed it); the session starts XFCE through the user's .xsession " +
+		"on Debian and .Xclients on Fedora, both written here.\n\n" +
+		"SOUND IS THE CLIENT'S CHOICE: xrdp only opens the audio channel when " +
+		"the client asks at connect time. mstsc asks by default. Remmina does " +
+		"not — edit the connection, Advanced, Audio output mode: Local, then " +
+		"reconnect. FreeRDP needs /sound. A session connected without it is " +
+		"silent however loud the desktop is.\n\n" +
+		"Clone it five times and you have five desktops. Each clone gets its " +
+		"own login from its reseed, so the credentials are per machine.\n\n" +
+		"Sound reaches the client through xrdp's PipeWire module on Debian; " +
+		"Fedora has no package for it yet, so an rpm build of this tile is " +
+		"silent.\n\n" +
+		"No GPU is involved: xorgxrdp renders in software, which is plenty " +
+		"for a desktop and is why this tile boots on the cloud kernel.",
+
+	Fields: []ApplianceField{
+		{Key: "RDP_ALLOW_CIDR", Label: "allowed source",
+			Default: "192.168.0.0/16", Required: true},
+	},
+
+	Script: rdpDesktopScript,
+}
+
+const rdpDesktopScript = `
+# The RDP login is the guest account cloud-init created: uid 1000, whatever
+# it was named. Fall back to admin, the builder's default.
+_rdp_user="$(getent passwd 1000 | cut -d: -f1)"
+[ -n "$_rdp_user" ] || _rdp_user="admin"
+_rdp_home="$(getent passwd "$_rdp_user" | cut -d: -f6)"
+[ -d "$_rdp_home" ] || app_die "no home directory for $_rdp_user"
+
+if [ "$APP_FAMILY" = rpm ]; then
+    app_log "installing the XFCE desktop group (minutes)"
+    dnf -y group install xfce-desktop-environment >/dev/null ||
+        app_die "the XFCE desktop group did not install"
+    app_pkg chromium xrdp xorgxrdp dejavu-sans-mono-fonts
+else
+    export DEBIAN_FRONTEND=noninteractive
+    app_log "installing XFCE (minutes)"
+    apt-get install -y -qq --no-install-recommends \
+        xfce4 xfce4-terminal dbus-x11 xfonts-base fonts-dejavu-core >/dev/null ||
+        app_die "XFCE did not install"
+    # The dock's browser launcher needs a browser behind it (operator,
+    # 2026-09-04, first login).
+    app_pkg chromium chromium-sandbox
+    # pipewire-module-xrdp is what carries the desktop's sound to the RDP
+    # client; it drops a config into the user's PipeWire and loads when the
+    # session's PipeWire starts. Fedora carries no such package yet, so the
+    # rpm side of this tile is silent, and the tile says so.
+    app_pkg xrdp xorgxrdp pipewire pipewire-pulse wireplumber pipewire-module-xrdp \
+        pulseaudio-utils sound-theme-freedesktop
+    # xrdp's TLS key is group-readable by ssl-cert; without membership the
+    # daemon logs "cannot open key" and clients get a reset after the hello.
+    adduser xrdp ssl-cert >/dev/null 2>&1 || true
+fi
+
+# Both session hooks, because the two families read different files:
+# Debian's xrdp startwm.sh runs Xsession, which honours ~/.xsession;
+# Fedora's runs xinit's Xsession, which honours ~/.Xclients.
+printf '#!/bin/sh\nexec startxfce4\n' >"$_rdp_home/.xsession"
+cp "$_rdp_home/.xsession" "$_rdp_home/.Xclients"
+chmod 0755 "$_rdp_home/.xsession" "$_rdp_home/.Xclients"
+chown "$_rdp_user:" "$_rdp_home/.xsession" "$_rdp_home/.Xclients"
+
+app_enable xrdp
+[ "$APP_FAMILY" = deb ] && app_enable xrdp-sesman
+systemctl restart xrdp 2>/dev/null || true
+
+app_firewall rdp "$RDP_ALLOW_CIDR" 3389/tcp
+
+echo
+app_check "xrdp active"              systemctl is-active xrdp
+app_check "xrdp listening on :3389"  bash -c 'i=0; while [ $i -lt 20 ]; do ss -ltn 2>/dev/null | grep -q ":3389 " && exit 0; sleep 2; i=$((i+1)); done; exit 1'
+app_check "XFCE session present"     command -v startxfce4
+app_check "browser present"          command -v chromium
+app_check "session hook for $_rdp_user" test -x "$_rdp_home/.xsession"
+if [ "$APP_FAMILY" = deb ]; then
+    app_check "xrdp sound module present" test -e /usr/lib/x86_64-linux-gnu/pipewire-0.3/libpipewire-module-xrdp.so
+fi
+`

@@ -160,6 +160,10 @@ still reads.
 restricts the run to a comma-separated list of tile names or
 .Ql app-
 VM names.
+The run ends with a report on standard output, one block per tile that
+came up: its URL, the guest login, root over ssh where the host's ops key
+was seeded, and every secret the recipe was given or generated.
+In the console the same report is the last thing in the Build all window.
 .It Fl -destroy-all
 Remove every VM this tool built \(em the
 .Ql app-*
@@ -362,13 +366,15 @@ key, because a console that fills a window-sized window is not what
 .Dq fullscreen
 means to anybody.
 .Pp
-.Sy Caveat on multi-head :
-the toolkit picks the target monitor itself and picks it badly \[u2014] under
-Wayland it skips the geometry search outright, and on X11 a miss falls back
-to the primary monitor \[u2014] so on a multi-head desktop the console may land
-on the wrong head.
-If that bites, use the window manager's own fullscreen key for the frame:
-the two compose, and a compositor never picks the wrong head.
+.Sy Multi-head :
+the window goes fullscreen on the monitor it is on.
+Under Wayland that takes a one-line change to GLFW that
+.Nm
+is built with, since the stock library can only name the primary monitor
+there; see
+.Ev VMX_FULLSCREEN_WINDOW
+under ENVIRONMENT.
+On X11 the toolkit's own geometry search finds the right head.
 .Pp
 It is bound twice, once on the window and once inside the console widget,
 because a focused console forwards the whole keyboard to the guest: without
@@ -857,6 +863,22 @@ creates a snapshot-isolated dataset for a new folder.
 A minimalist federated blog whose VM boots straight into the editor,
 signed in, in the Screen tab.
 .Dl vmx --appliance \(dqWriteFreely Desktop\(dq --vm blog
+.It Sy VDI Desktop Pq :8889 WebRTC, :8888 HLS, :8890 SRT
+A headless XFCE desktop streamed with sound to any browser, the
+kldload.com VDI design as a tile: XFCE on labwc driving a virtual
+monitor, PipeWire with a virtual sink inside the session, encoded by
+wf-recorder as H.264 and Opus, republished by mediamtx, nginx in front on
+:80.
+Sessions are
+.Ql vdi-session@N
+units; the first starts at boot.
+Picture and sound go out; keyboard and mouse do not come back yet.
+.Dl vmx --appliance \(dqVDI Desktop\(dq --vm vdi --set VDI_SESSIONS=2
+.It Sy RDP Desktop Pq :3389
+An XFCE desktop over RDP with keyboard, mouse, clipboard and sound as the
+protocol does them; the login is the guest account the build was given.
+Clone it five times for five desktops.
+.Dl vmx --appliance \(dqRDP Desktop\(dq --vm desk --password s3cret
 .El
 .Ss Build, audit and destroy the whole catalog
 .Fl -selftest
@@ -1059,17 +1081,17 @@ or
 whether the fullscreen chord also puts the window itself fullscreen, as well
 as collapsing the panes.
 .Pp
-Defaults to on under X11 and off under Wayland.
-The toolkit chooses the target monitor itself, and under Wayland it cannot
-choose correctly \[u2014] the protocol never tells a client where its own window
-is, so the geometry search is skipped and the primary monitor is used.
-On a multi-head Wayland desktop that sends the console to a screen the
-operator was not working on.
+Defaults to on everywhere, on the monitor the window is on.
+Under Wayland the protocol never tells a client where its own window is and
+stock GLFW fullscreens onto the primary monitor instead, so
+.Nm
+is built against a copy of GLFW with a one-line change that lets the
+compositor pick the output; see
+.Pa third_party/glfw/VMXPLORE-PATCH.md
+in the source tree.
 Set
-.Ql always
-on a single-monitor Wayland desktop, where there is no wrong head to pick.
-Where it is off, use the window manager's own fullscreen key for the frame:
-it always uses the head the window is on, and the two compose.
+.Ql never
+to keep the window frame as it is and collapse only the panes.
 .It Ev VMX_THEME
 .Ql dark
 or

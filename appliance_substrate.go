@@ -325,7 +325,11 @@ app_snapshot() {
 app_enable() {
     local _u _ok=0
     for _u in "$@"; do
-        systemctl list-unit-files "${_u}.service" >/dev/null 2>&1 || continue
+        # systemctl cat, not list-unit-files: an instance of a template
+        # (vdi-session@1) is never in the unit-file list, so the VDI tile's
+        # sessions were skipped here and stayed disabled while every check
+        # after them failed (onyx, 2026-09-04). cat resolves the template.
+        systemctl cat "${_u}.service" >/dev/null 2>&1 || continue
         systemctl enable --now "${_u}.service" >/dev/null 2>&1 || true
         if systemctl is-enabled "${_u}.service" >/dev/null 2>&1; then
             app_log "enabled: ${_u}"
