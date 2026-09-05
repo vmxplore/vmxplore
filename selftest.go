@@ -553,49 +553,61 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string),
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, jobs)
 	blocks := make([][]string, len(todo)) // catalog order, not finish order
 	landing := make([]string, len(todo))
 	cancelled := 0
-	for i, a := range todo {
-		wg.Add(1)
-		go func(i int, a Appliance) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			vm := applianceVMName(a.Name)
-			tlog := func(l string) {
-				if l == "" {
-					return
-				}
-				log("[" + vm + "] " + l)
-			}
-			if ctx.Err() != nil {
-				mu.Lock()
-				cancelled++
-				mu.Unlock()
+	// jobs workers pull from one queue fed in catalog order, so a serial run
+	// builds the catalog top to bottom. The previous shape — one goroutine
+	// per tile racing for a semaphore — started whichever tile won the race
+	// (the VDI desktop before the web stack, onyx 2026-09-04), which is not
+	// what "one at a time" reads as.
+	queue := make(chan int)
+	work := func(i int, a Appliance) {
+		vm := applianceVMName(a.Name)
+		tlog := func(l string) {
+			if l == "" {
 				return
 			}
+			log("[" + vm + "] " + l)
+		}
+		if ctx.Err() != nil {
 			mu.Lock()
-			prog(finished, len(todo), a.Name)
+			cancelled++
 			mu.Unlock()
-			res, lines, url := buildOneAppliance(ctx, a, vm, jobs, tlog)
-			mu.Lock()
-			finished++
-			prog(finished, len(todo), "")
-			switch res {
-			case tileBuilt:
-				built++
-				blocks[i] = lines
-				landing[i] = url
-			case tileFailed:
-				failed++
-			case tileCancelled:
-				cancelled++
-			}
-			mu.Unlock()
-		}(i, a)
+			return
+		}
+		mu.Lock()
+		prog(finished, len(todo), a.Name)
+		mu.Unlock()
+		res, lines, url := buildOneAppliance(ctx, a, vm, jobs, tlog)
+		mu.Lock()
+		finished++
+		prog(finished, len(todo), "")
+		switch res {
+		case tileBuilt:
+			built++
+			blocks[i] = lines
+			landing[i] = url
+		case tileFailed:
+			failed++
+		case tileCancelled:
+			cancelled++
+		}
+		mu.Unlock()
 	}
+	for j := 0; j < jobs; j++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range queue {
+				work(i, todo[i])
+			}
+		}()
+	}
+	for i := range todo {
+		queue <- i
+	}
+	close(queue)
 	wg.Wait()
 	log("")
 	sum := fmt.Sprintf("build-all: %d built, %d failed", built, failed)

@@ -833,6 +833,12 @@ func runGUI(rs *Ruleset) {
 	var openAppliance func(name string)
 	var openSelfTest func()
 	var openBuildAll func()
+	// buildAllStatus is what the Build all tile itself says while a run is
+	// going and after it ends — the acknowledgement at the point of the
+	// click. The log window can open behind a fullscreen main window, and
+	// "I press Build all and nothing happens" was said twice in one evening
+	// (onyx, 2026-09-04); the row the operator is looking at now changes.
+	var buildAllStatus string
 	var openDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
@@ -974,6 +980,9 @@ func runGUI(rs *Ruleset) {
 					row.title.Text = "▶ Build all"
 					row.title.Color = acBrand.at()
 					row.detail.Text = "one of everything, kept and shut off — tiles that already exist are skipped"
+					if buildAllStatus != "" {
+						row.detail.Text = buildAllStatus
+					}
 					open = &openBuildAll
 				default:
 					row.title.Text = "✕ Destroy all"
@@ -2406,9 +2415,23 @@ func runGUI(rs *Ruleset) {
 	// forty-minute run was ("no real indicator or progress indicator",
 	// operator, 2026-09-04). A job that never calls prog (destroy-all)
 	// shows the clock and the step alone.
+	//
+	// One window per verb. A second press while one is open focuses it
+	// instead of opening another: two presses a second apart opened two
+	// windows and started two runs in one process, each on a different
+	// tile, heading for a name clash (onyx, 2026-09-04). While a run is
+	// going the window refuses to close — the run would carry on unseen.
+	batchOpen := map[string]fyne.Window{}
 	batchLogWindow := func(title, intro, button string, auto bool,
 		job func(ctx context.Context, log func(string), prog func(done, total int, tile string)) string) {
+		if prev, ok := batchOpen[title]; ok {
+			prev.RequestFocus()
+			return
+		}
 		bw := fyne.CurrentApp().NewWindow(title)
+		batchOpen[title] = bw
+		bw.SetOnClosed(func() { delete(batchOpen, title) })
+		busy := false
 		out := widget.NewLabel(intro)
 		out.Wrapping = fyne.TextWrapWord
 		out.TextStyle = fyne.TextStyle{Monospace: true}
@@ -2422,6 +2445,7 @@ func runGUI(rs *Ruleset) {
 		run = widget.NewButton(button, func() {
 			run.Disable()
 			cancel.Enable()
+			busy = true
 			var ctx context.Context
 			ctx, stop = context.WithCancel(context.Background())
 			var (
@@ -2498,9 +2522,17 @@ func runGUI(rs *Ruleset) {
 					out.SetText(out.Text + "\n" + sum + "\n")
 					run.Enable()
 					cancel.Disable()
+					busy = false
 					stop()
 				})
 			}()
+		})
+		bw.SetCloseIntercept(func() {
+			if busy {
+				status.SetText("still running — Cancel first, or leave it open")
+				return
+			}
+			bw.Close()
 		})
 		cancel = widget.NewButton("Cancel", func() {
 			cancel.Disable()
@@ -2513,6 +2545,7 @@ func runGUI(rs *Ruleset) {
 			container.NewVBox(container.NewHBox(run, cancel), status, bar), nil, nil, nil, sc))
 		bw.Resize(fyne.NewSize(720, 560))
 		bw.Show()
+		bw.RequestFocus() // in front of a fullscreen main window, not behind it
 		if auto {
 			run.OnTapped()
 		}
@@ -2538,7 +2571,22 @@ func runGUI(rs *Ruleset) {
 				"Cancel starts nothing more and removes the tile in flight, so\n"+
 				"the next run rebuilds it.\n",
 			"Build all", true, func(ctx context.Context, log func(string), prog func(int, int, string)) string {
-				built, failed, access, urls := BuildAllAppliances(ctx, "", log, prog)
+				// The tile the operator clicked says what the run is doing.
+				tileSays := func(text string) {
+					fyne.Do(func() {
+						buildAllStatus = text
+						tree.Refresh()
+					})
+				}
+				tileSays("running — starting")
+				built, failed, access, urls := BuildAllAppliances(ctx, "", log,
+					func(done, total int, tile string) {
+						if tile != "" {
+							tileSays(fmt.Sprintf("running — tile %d of %d · %s", done+1, total, tile))
+						}
+						prog(done, total, tile)
+					})
+				tileSays(fmt.Sprintf("last run %s — %d built, %d failed", time.Now().Format("15:04"), built, failed))
 				// One button, then the login pages: every tile that came up
 				// opens in its own browser tab, the RDP one in Remmina via
 				// its rdp:// handler. Spaced so the browser keeps them in
