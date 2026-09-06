@@ -174,3 +174,27 @@ func TestFCInstancesLocal(t *testing.T) {
 		t.Error("a broken record must be an error, so kfire answers instead")
 	}
 }
+
+// A tile that passes USB hardware through cannot be a microVM; every other
+// tile can. Checked against the live catalog so a new USB tile is covered
+// the day it lands.
+func TestFCGoldenEligible(t *testing.T) {
+	usb, plain := 0, 0
+	for _, a := range Appliances() {
+		ok, why := fcGoldenEligible(a)
+		if len(a.USB) > 0 {
+			usb++
+			if ok || why == "" {
+				t.Errorf("%s passes USB through but was called eligible", a.Name)
+			}
+			continue
+		}
+		plain++
+		if !ok || why != "" {
+			t.Errorf("%s has no USB passthrough but was refused: %q", a.Name, why)
+		}
+	}
+	if usb == 0 || plain == 0 {
+		t.Fatalf("catalog shape changed: %d USB tiles, %d plain — the test no longer exercises both branches", usb, plain)
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -737,8 +738,54 @@ func buildOneAppliance(ctx context.Context, a Appliance, vm string, jobs int, lo
 		return tileBuilt, access, landingURL(a, url)
 	}
 	powerOff(vm, log)
+	if fcGoldenAfterBuild(vm, a, log) {
+		access = append(access, "  Firecracker golden: kfire clone "+vm+"  (microVMs in ~200 ms)")
+	}
 	access = append(access, "  state: shut off — start it from the estate when wanted")
 	return tileBuilt, access, "" // nothing to open: the page is not being served
+}
+
+// fcGoldenEligible says whether a tile can be a Firecracker golden, and why
+// not when it cannot. Firecracker has no USB, so a tile that passes host
+// hardware through (SDR Station, Tvheadend) would boot to a radio with no
+// antenna; everything else in the catalog is a service on a disk, which is
+// exactly what a microVM is for.
+func fcGoldenEligible(a Appliance) (bool, string) {
+	if len(a.USB) > 0 {
+		return false, a.Name + " passes USB hardware through, which a microVM cannot"
+	}
+	return true, ""
+}
+
+// fcGoldenAfterBuild snapshots a finished, shut-off tile as a Firecracker
+// golden, so a build ends with goldens and not only VMs. Returns true when
+// the golden exists afterwards.
+//
+// fiend, 2026-09-05: "Build all images" ticked at install, thirteen tiles
+// built and powered off, `kfire goldens` empty and /var/lib/kfire absent.
+// Nothing in either project ever ran `kfire golden` unprompted — it was a
+// right-click verb and a dialog, both of which assume someone is watching.
+//
+// Best-effort and loud: a golden that fails does not fail a tile the
+// operator can still start, but the reason goes in the log. Skipped without
+// comment on a host with no kfire (plain KVM), since there is nothing to
+// clone it with there.
+func fcGoldenAfterBuild(vm string, a Appliance, log func(string)) bool {
+	if !kfireAvailable() {
+		return false
+	}
+	if ok, why := fcGoldenEligible(a); !ok {
+		log("  Firecracker golden: skipped — " + why)
+		return false
+	}
+	argv := kfireArgv("golden", vm)
+	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	if err != nil {
+		log("  Firecracker golden FAILED: " + strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0])
+		return false
+	}
+	log("  Firecracker golden: " + vm + " — clone with: kfire clone " + vm)
+	return true
 }
 
 // keepRunning is VMX_BUILD_KEEP_RUNNING=1: leave every built tile up and
