@@ -93,6 +93,23 @@ func destroyApplianceVM(vm string) {
 	for _, f := range []string{vm + ".qcow2", vm + "-data.qcow2", vm + "-seed.iso"} {
 		sudoMutate("rm", "-f", "/var/lib/libvirt/images/"+f)
 	}
+	// The Firecracker golden of this VM, if one was taken, has just lost
+	// its snapshot to the `zfs destroy -r` above and would sit under
+	// /var/lib/kfire as a record that clones nothing: onyx 2026-09-05,
+	// two goldens taken at 10:18, both VMs rebuilt before noon, the GUI's
+	// ten-clone run dying in `zfs clone`. Retire the record with the VM.
+	// kfire refuses while clones of it still run — then the record must
+	// stay, and kfire says so in the log.
+	if kfireAvailable() {
+		if _, err := os.Stat("/var/lib/kfire/goldens/" + vm + "/golden.json"); err == nil {
+			argv := kfireArgv("golden-destroy", vm)
+			out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+			auditLog(strings.Join(argv, " "), map[bool]int{true: 0, false: 1}[err == nil])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kfire golden-destroy "+vm+": "+strings.TrimSpace(string(out)))
+			}
+		}
+	}
 	if haveHostCmd("kvm-mesh") {
 		sudoMutate("kvm-mesh", "down", enrollMeshName(vm))
 	}
