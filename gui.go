@@ -881,6 +881,36 @@ func runGUI(rs *Ruleset) {
 	var openFCCloneFor func(golden string)
 	var openInBrowser func()
 	var vdiWallAct func() // vdiwall.go; declared here so the clone batch can call it
+
+	// showCloneDetails: the machines a clone batch just made, in a window
+	// that STAYS. The batch log closes itself three seconds after the last
+	// clone answers, which is exactly when the operator has three Remmina
+	// windows open and wants to know which is which ("you need to use the
+	// details window so you can see all 3 IPs and machine info", 2026-09-05).
+	// One row per clone: name, address, size, and the address to open.
+	showCloneDetails := func(golden string, rows []Row) {
+		var b strings.Builder
+		fmt.Fprintf(&b, "%-20s %-16s %5s %8s   %s\n", "NAME", "ADDRESS", "vCPU", "RAM MB", "OPEN")
+		for _, r := range rows {
+			ip := firstIPv4(r.D.IPs)
+			open := fmt.Sprintf("http://%s:%d/", ip, r.FC.Port)
+			switch r.FC.Port {
+			case 80:
+				open = "http://" + ip + "/"
+			case 3389:
+				open = "rdp://" + ip + ":3389"
+			}
+			fmt.Fprintf(&b, "%-20s %-16s %5d %8d   %s\n", r.D.Name, ip, r.FC.VCPUs, r.FC.RAMMB, open)
+		}
+		table := widget.NewLabel(b.String())
+		table.TextStyle = fyne.TextStyle{Monospace: true}
+		dw := fyne.CurrentApp().NewWindow(fmt.Sprintf("%d clone(s) of %s", len(rows), golden))
+		dw.SetContent(container.NewVBox(
+			widget.NewLabel("Each row is a machine on the substrate. Log in with the golden's guest account.\nThis window stays until you close it; Delete a clone from the estate when done."),
+			table))
+		dw.Resize(fyne.NewSize(820, float32(140+24*len(rows))))
+		dw.Show()
+	}
 	var openFCMakeGolden, openFCDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
@@ -2947,7 +2977,17 @@ func runGUI(rs *Ruleset) {
 						if len(fresh) == 0 {
 							return "done — but no new instance has an address yet; open them from the estate"
 						}
-						opened, failed := 0, ""
+						opened, failed, note := 0, "", ""
+						if followUp == "rdp" {
+							// one window per seat, not one tabbed window;
+							// a Remmina already open keeps the old setting
+							// until it is restarted, so say that
+							if p := remminaPrefPath(); p != "" {
+								if changed, err := remminaOneWindowPerSeat(p); err == nil && changed && remminaRunning() {
+									note = " — Remmina was already open in tab mode: quit it (remmina -q) and the next batch gets one window per seat"
+								}
+							}
+						}
 						for _, r := range fresh {
 							ip := firstIPv4(r.D.IPs)
 							if followUp == "rdp" {
@@ -2972,11 +3012,13 @@ func runGUI(rs *Ruleset) {
 							}
 							opened++
 						}
+						list := fresh
+						fyne.Do(func() { showCloneDetails(sel.Selected, list) })
 						if failed != "" {
 							return fmt.Sprintf("done — opened %d, then stopped: %s", opened, failed)
 						}
 						if followUp == "rdp" {
-							return fmt.Sprintf("done — %d RDP session(s) opening; log in with the tile's guest account", opened)
+							return fmt.Sprintf("done — %d RDP session(s) opening; log in with the tile's guest account%s", opened, note)
 						}
 						return fmt.Sprintf("done — %d browser tab(s) opening", opened)
 					}

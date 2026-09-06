@@ -11,7 +11,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -83,4 +85,68 @@ func fcInstanceNames(rows []Row) map[string]bool {
 		}
 	}
 	return m
+}
+
+// remminaOneWindowPerSeat makes Remmina open each connection in its own
+// window. Remmina is one process and, with its default tab_mode=0, every
+// `remmina -c` lands as a tab in the one window — three seats became three
+// tabs ("doesn't seem to allow me to use more than 1 window", operator,
+// 2026-09-05). tab_mode=3 is "no tabs". The file is Remmina's own
+// remmina.pref; the key is rewritten in place or added, and a missing file
+// is created with just that key. Returns whether anything changed — a
+// running Remmina keeps its old setting in memory, so the caller says so.
+func remminaOneWindowPerSeat(prefPath string) (changed bool, err error) {
+	b, rerr := os.ReadFile(prefPath)
+	if rerr != nil && !os.IsNotExist(rerr) {
+		return false, rerr
+	}
+	lines := strings.Split(string(b), "\n")
+	seenSection, seenKey := false, false
+	for i, l := range lines {
+		switch {
+		case strings.TrimSpace(l) == "[remmina_pref]":
+			seenSection = true
+		case strings.HasPrefix(l, "tab_mode="):
+			seenKey = true
+			if l != "tab_mode=3" {
+				lines[i] = "tab_mode=3"
+				changed = true
+			}
+		}
+	}
+	if !seenKey {
+		if !seenSection {
+			lines = append([]string{"[remmina_pref]"}, lines...)
+		}
+		// after the section header, so the key belongs to it
+		for i, l := range lines {
+			if strings.TrimSpace(l) == "[remmina_pref]" {
+				lines = append(lines[:i+1], append([]string{"tab_mode=3"}, lines[i+1:]...)...)
+				break
+			}
+		}
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(prefPath), 0o700); err != nil {
+		return false, err
+	}
+	return true, os.WriteFile(prefPath, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+// remminaPrefPath is where Remmina keeps its preferences for this user.
+func remminaPrefPath() string {
+	d, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(d, "remmina", "remmina.pref")
+}
+
+// remminaRunning reports whether a Remmina instance is already up — the one
+// that would swallow new connections as tabs under its old setting.
+func remminaRunning() bool {
+	return exec.Command("pgrep", "-x", "remmina").Run() == nil
 }

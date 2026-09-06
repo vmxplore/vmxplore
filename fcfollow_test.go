@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestCloneFollowUp(t *testing.T) {
 	cases := []struct {
@@ -45,5 +50,37 @@ func TestFCGoldenArgs(t *testing.T) {
 	}
 	if got := fcGoldenArgs("handmade", appliancePortFor("handmade")); len(got) != 2 {
 		t.Errorf("unknown VM must get no --port: %v", got)
+	}
+}
+
+// tab_mode is rewritten in place, added under the section when absent, the
+// file created when missing, and left alone when already 3.
+func TestRemminaOneWindowPerSeat(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "remmina", "remmina.pref")
+	changed, err := remminaOneWindowPerSeat(p)
+	if err != nil || !changed {
+		t.Fatalf("missing file: changed=%v err=%v", changed, err)
+	}
+	b, _ := os.ReadFile(p)
+	if !strings.HasPrefix(string(b), "[remmina_pref]\ntab_mode=3") {
+		t.Errorf("created file = %q", b)
+	}
+	os.WriteFile(p, []byte("[remmina_pref]\nfoo=1\ntab_mode=0\nbar=2\n"), 0o600)
+	if changed, err = remminaOneWindowPerSeat(p); err != nil || !changed {
+		t.Fatalf("rewrite: changed=%v err=%v", changed, err)
+	}
+	b, _ = os.ReadFile(p)
+	if string(b) != "[remmina_pref]\nfoo=1\ntab_mode=3\nbar=2\n" {
+		t.Errorf("rewritten = %q", b)
+	}
+	if changed, err = remminaOneWindowPerSeat(p); err != nil || changed {
+		t.Errorf("already 3 must be a no-op: changed=%v err=%v", changed, err)
+	}
+	os.WriteFile(p, []byte("[remmina_pref]\nfoo=1\n"), 0o600)
+	remminaOneWindowPerSeat(p)
+	b, _ = os.ReadFile(p)
+	if string(b) != "[remmina_pref]\ntab_mode=3\nfoo=1\n" {
+		t.Errorf("added under section = %q", b)
 	}
 }
