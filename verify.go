@@ -83,8 +83,52 @@ func expectedSum(manifest, name string) (string, error) {
 			}
 		}
 	}
+	// Not a manifest line anywhere. Two more shapes vendors actually use:
+	//
+	// Oracle publishes its checksums as a web page. Each release row lists
+	// the images as <a class="kvm-image" href=".../NAME"> and the hashes as
+	// <tt class="kvm-sha256">HEX</tt>, the class prefix (olvm, kvm, vmdk)
+	// pairing link with hash. Pair by that class, never by position: the
+	// first hash in the row belongs to the OVA, and "first hash after the
+	// name" would have paired the KVM image with it — proven wrong by
+	// hashing the 1 GB OL10U1 b291 image on 2026-09-05 (kvm-sha256 matched,
+	// olvm-sha256 did not).
+	// The search for the hash is scoped to the image's OWN row — from its
+	// link to the next </tr> — because every release row uses the same
+	// class names: page-wide, OL9's kvm-sha256 lookup found OL10's hash
+	// first (live check, 2026-09-05, both entries reporting one digest).
+	if loc := htmlImageLinkRE(name).FindStringSubmatchIndex(manifest); loc != nil {
+		prefix := manifest[loc[2]:loc[3]]
+		row := manifest[loc[1]:]
+		if end := strings.Index(row, "</tr>"); end >= 0 {
+			row = row[:end]
+		}
+		if h := htmlSumForClassRE(prefix).FindStringSubmatch(row); h != nil {
+			return strings.ToLower(h[1]), nil
+		}
+	}
+	// Alpine's per-image .sha512 is the bare hash and nothing else. A
+	// document that IS one hash is that image's hash; there is nothing to
+	// name-match against, so it is accepted only when that is all there is.
+	if bareSumRE.MatchString(strings.TrimSpace(manifest)) {
+		return strings.ToLower(strings.TrimSpace(manifest)), nil
+	}
 	return "", fmt.Errorf("%s is not listed in the vendor's checksum manifest", name)
 }
+
+// htmlImageLinkRE matches Oracle's image link for name and captures the
+// class prefix ("kvm" from class="kvm-image").
+func htmlImageLinkRE(name string) *regexp.Regexp {
+	return regexp.MustCompile(`<a class="([a-z0-9]+)-image" href="[^"]*/` + regexp.QuoteMeta(name) + `"`)
+}
+
+// htmlSumForClassRE matches the hash carried under the same class prefix.
+func htmlSumForClassRE(prefix string) *regexp.Regexp {
+	return regexp.MustCompile(`class="` + regexp.QuoteMeta(prefix) + `-sha(?:256|512)">\s*([0-9a-fA-F]{64}(?:[0-9a-fA-F]{64})?)\s*<`)
+}
+
+// bareSumRE is a document that is exactly one SHA256 or SHA512.
+var bareSumRE = regexp.MustCompile(`^[0-9a-fA-F]{64}(?:[0-9a-fA-F]{64})?$`)
 
 // fileSum hashes a file with the named algorithm, streaming so a 3GB image
 // never lands in memory.

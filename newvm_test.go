@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -170,5 +171,77 @@ func TestUserDataQuotesOperatorValues(t *testing.T) {
 		if strings.HasPrefix(line, "hostname:") && !strings.Contains(line, `"`) {
 			t.Errorf("hostname must be quoted: %q", line)
 		}
+	}
+}
+
+// A preset with NameRE takes its filename from the vendor document: beside
+// the manifest for a directory listing (Amazon), from the full href when the
+// document carries one (Oracle's page). A preset without NameRE is untouched.
+func TestResolveCloudImageFrom(t *testing.T) {
+	am := cloudImages["amazon"]
+	got, err := resolveCloudImageFrom(am,
+		"fd28073d294d4145e6a45ba4039b8e4405ec6f188758418a0a9155a8d5fe1c3f  al2023-kvm-2023.12.20260831.0-kernel-6.1-x86_64.xfs.gpt.qcow2\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://cdn.amazonlinux.com/al2023/os-images/latest/kvm/al2023-kvm-2023.12.20260831.0-kernel-6.1-x86_64.xfs.gpt.qcow2"; got.URL != want {
+		t.Errorf("amazon URL = %s, want %s", got.URL, want)
+	}
+	ol := cloudImages["oracle"]
+	// the shape of Oracle's templates page: three images, three hashes,
+	// paired by class prefix — the KVM hash is the SECOND one
+	page := `<tr><td><ul>` +
+		`<li><a class="olvm-image" href="https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-olvm-b291.ova">OL10U1_x86_64-olvm-b291.ova</a></li>` +
+		`<li><a class="kvm-image" href="https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2">OL10U1_x86_64-kvm-b291.qcow2</a></li>` +
+		`<li><a class="vmdk-image" href="https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-aws-b292.vmdk">OL10U1_x86_64-aws-b292.vmdk</a></li>` +
+		`</ul></td><td><ul>` +
+		`<li><small><tt class="olvm-sha256">c2f0bcac24a67417560d22a3e121b64cea33e6cfe79eb23dba1bfb51ddf1d692</tt></small></li>` +
+		`<li><small><tt class="kvm-sha256">8e59326c4bf7cfa58a6cac404db8ed583fe3a5f4c460e2b73c64988785bb4f0f</tt></small></li>` +
+		`<li><small><tt class="vmdk-sha256">ea6f8f4d88b08e0ebb7373d386f8bedf1b08b2228143a17b1d15aad7576f6a49</tt></small></li>` +
+		`</ul></td></tr>` +
+		// a second release row with the same class names: the lookup must
+		// stay inside the first image's row and never reach these
+		`<tr><td><ul>` +
+		`<li><a class="kvm-image" href="https://yum.oracle.com/templates/OracleLinux/OL9/u8/x86_64/OL9U8_x86_64-kvm-b293.qcow2">OL9U8_x86_64-kvm-b293.qcow2</a></li>` +
+		`</ul></td><td><ul>` +
+		`<li><small><tt class="kvm-sha256">b12103391327abee8090686759c0d62dac9a7af2bf0f45fdf6b0d085a0fbb52b</tt></small></li>` +
+		`</ul></td></tr>`
+	got, err = resolveCloudImageFrom(ol, page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://yum.oracle.com/templates/OracleLinux/OL10/u1/x86_64/OL10U1_x86_64-kvm-b291.qcow2"; got.URL != want {
+		t.Errorf("oracle URL = %s, want %s", got.URL, want)
+	}
+	// and the HTML fallback pairs that name with the hash that follows it
+	sum, err := expectedSum(page, path.Base(got.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum != "8e59326c4bf7cfa58a6cac404db8ed583fe3a5f4c460e2b73c64988785bb4f0f" {
+		t.Errorf("html pairing took the wrong hash: %s (that is the OVA's if it starts c2f0)", sum)
+	}
+	// and the second row resolves to ITS hash, not the first row's
+	got9, err := resolveCloudImageFrom(cloudImages["oracle9"], page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum9, err := expectedSum(page, path.Base(got9.URL)); err != nil || sum9 != "b12103391327abee8090686759c0d62dac9a7af2bf0f45fdf6b0d085a0fbb52b" {
+		t.Errorf("oracle9 took a hash from another row: %v %s", err, sum9)
+	}
+	// Alpine: the per-image .sha512 is the bare hash, nothing to name-match
+	bare := "d0ddf1faae4d44aee3ad6621f166bd414c2f99b6974fb455408612d59cbb31a5390ca259800ac0c6b60505493880ed6de8beb986f6d0883b26c8e84ce75a266c\n"
+	if got, err := expectedSum(bare, "nocloud_alpine-3.22.4-x86_64-bios-cloudinit-r0.qcow2"); err != nil || got != strings.TrimSpace(bare) {
+		t.Errorf("bare-hash document: %v %q", err, got)
+	}
+	if _, err := expectedSum("not a hash at all\n", "x.qcow2"); err == nil {
+		t.Error("a document that is neither a manifest nor a hash must be an error")
+	}
+	if _, err := resolveCloudImageFrom(am, "nothing here\n"); err == nil {
+		t.Error("a document without a matching name must be an error, not a guess")
+	}
+	plain, err := resolveCloudImageFrom(cloudImages["fedora"], "")
+	if err != nil || plain != cloudImages["fedora"] {
+		t.Errorf("a pinned preset must pass through unchanged: %v %+v", err, plain)
 	}
 }

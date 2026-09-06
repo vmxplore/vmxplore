@@ -122,7 +122,7 @@ New VM builds from a vendor cloud image and cloud-init. What it can do:
 
 | | |
 |---|---|
-| **Nine cloud images** | Fedora · Debian · Ubuntu · CentOS Stream · Rocky · AlmaLinux · Amazon Linux · openSUSE Leap · Arch. Each verified against its vendor's own checksum manifest before it touches a disk. Plus RHEL, entitled with your portal login or activation key. |
+| **Eighteen cloud presets, twelve distributions** | Fedora · Debian 13 and 12 · Ubuntu 24.04 and 22.04 · CentOS Stream 10 and 9 · Rocky 10 and 9 · AlmaLinux 10 and 9 · Oracle Linux 10 and 9 · Amazon Linux 2023 · openSUSE Leap and Tumbleweed · Alpine · Arch. Each verified against its vendor's own checksum before it touches a disk; the ones whose filenames move (Amazon, Oracle) are resolved from the vendor's manifest at build time. Plus RHEL, entitled with your portal login or activation key. |
 | **Optional desktop** | GNOME, KDE or XFCE — installed on first boot and rebooted into. Fifteen verified combinations, every package group read off the distribution's own repository rather than guessed. |
 | **Application presets** | Pick an app, fill in two or three fields, get a VM already running it. The catalogue encodes the four moves every "how to self-host X" post makes — pinned artifact, config, database, unit file — so a weekend becomes a click. |
 | **Custom first-boot script** | Paste a first-boot script and it runs as root. Build the machine you actually want, then seal it into a golden. |
@@ -297,11 +297,14 @@ normal way — any ISO, incl. an Arch live ISO or a RHEL DVD). Paste a
 **post-install script** and it runs as root on first boot: build your own
 appliance, then seal it into a golden.
 
-**Nine cloud images**, each verified against its vendor's own checksum
-manifest before it is written to disk — Fedora, Debian, Ubuntu, CentOS
-Stream, Rocky, AlmaLinux, Amazon Linux, openSUSE Leap, Arch. RHEL takes a
-downloaded image plus your portal login or activation key, and entitles the
-guest on first boot.
+**Eighteen cloud presets across twelve distributions**, each verified
+against its vendor's own checksum before it is written to disk — Fedora,
+Debian 13 and 12, Ubuntu 24.04 and 22.04, CentOS Stream 10 and 9, Rocky 10
+and 9, AlmaLinux 10 and 9, Oracle Linux 10 and 9, Amazon Linux 2023,
+openSUSE Leap and Tumbleweed, Alpine, Arch. Amazon and Oracle number their
+filenames per build, so those two are resolved from the vendor's manifest at
+build time rather than pinned. RHEL takes a downloaded image plus your
+portal login or activation key, and entitles the guest on first boot.
 
 **And a desktop, if you want one.** Cloud images are headless by design, so
 pick GNOME, KDE or XFCE and it installs on first boot and reboots into the
