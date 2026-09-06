@@ -335,13 +335,6 @@ estate CA, a row in the Ansible inventory and metrics in Grafana. Type a pool
 name in the tile and the blank data disk becomes that pool with every dataset
 laid out; name a pool you already have and it is reused.</em></sub>
 
-<img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely appliance — the VM boots straight into the editor, signed in" width="100%"/>
-<sub><em>WriteFreely: power on, write. No login prompt, no desktop to
-navigate — the Screen tab <strong>is</strong> the application. It signs itself
-in as the admin you set up, at 2560x1440, and narrates its own first boot on
-both consoles while it builds.</em></sub>
-
-
 Pick an entry, answer its handful of app-specific questions, and the ordinary
 New VM pipeline builds it: cloud image, cloud-init, a fixed post-install script,
 then a wait until the app actually answers on its port — at which point you are
