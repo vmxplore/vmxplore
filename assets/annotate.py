@@ -26,7 +26,7 @@ Usage:
 Notes: coordinates are in PIXELS of the source image, origin top-left. They
 are deliberately not fractions — a callout must point at a widget, and
 widgets do not move proportionally when a window is resized. Re-take shots
-at the same size (1400x773 historically) or update the numbers.
+at the same size (1400x764 today; 1400x773 historically) or update the numbers.
 """
 
 from __future__ import annotations
@@ -85,17 +85,24 @@ def _font(size: int, bold: bool = False):
 # Each entry: (box_x, box_y, anchor_x, anchor_y, title, subtitle).
 # box_* is the callout's top-left; anchor_* is the pixel it points at.
 SHOTS: dict[str, list[tuple]] = {
+    # Re-taken 2026-09-05 on fiend at 1920x1080 (vmxplore 0.5.0), GNOME bar
+    # cropped and scaled to 1400x764 so the callout type stays the size the
+    # README has always shown. Coordinates are in THAT image.
     "estate": [
-        (80, 225, 205, 105, "Estate tree",
-         "grouped — off groups fold away"),
-        (25, 320, 130, 125, "Two-line rows + batch",
-         "state·CPU·IP·zvol·snaps — dot-click to select"),
-        (625, 125, 590, 60, "Three consoles",
-         "Serial · Graphics (native VNC) · kldload"),
-        (680, 315, 580, 615, "Full dossier",
-         "disks · IPs · dataset · lineage · snaps"),
-        (935, 420, 880, 735, "Every verb — audited",
-         "shows its exact virsh/zfs command first"),
+        (120, 230, 51, 82, "Estate, grouped",
+         "apps · goldens · k8s · klab — off groups fold away"),
+        (120, 330, 57, 150, "Firecracker microVMs",
+         "goldens and clones beside the domains — 195 ms a clone"),
+        (120, 430, 61, 183, "Apps + kldload tools",
+         "13 appliances, 25 tools — menus of things to build, kept last"),
+        (70, 600, 29, 704, "Details, on demand",
+         "disks · IPs · dataset · lineage · snaps — drag the split up"),
+        (360, 150, 370, 71, "Two consoles",
+         "Serial · Screen — a native VNC client, no bridge"),
+        (660, 240, 588, 47, "Every verb — audited",
+         "shows its exact virsh / zfs / kfire command first"),
+        (1000, 130, 1305, 47, "sysdiag · Manual",
+         "diagnose the host · the man page, in-app"),
     ],
     # New VM now carries the desktop selector, which is the thing worth
     # pointing at — it is the feature nothing else in this space has.

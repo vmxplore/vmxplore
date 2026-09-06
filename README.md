@@ -17,7 +17,7 @@
 
 **The family:** [kldload](https://github.com/kldload/kldload) — the substrate &middot; [zxplore](https://github.com/zxplore/zxplore) — the ZFS console &middot; [wgxplore](https://github.com/wgxplore/wgxplore) — the WireGuard console &middot; **vmxplore** — the VM console
 
-<img src="assets/screenshots/estate-annotated.png" width="960" alt="vmxplore annotated — the estate tree and the selected machine's dossier on the left, a live console with the verb row above it on the right"/>
+<img src="assets/screenshots/estate-annotated.png" width="960" alt="vmxplore 0.5.0 annotated — the estate tree on the left grouped into apps, goldens, k8s, klab and Firecracker with the appliance catalog and kldload tools last; the console on the right with Serial and Screen tabs, the audited verb row, and sysdiag and Manual"/>
 
 <sub><em>One window, two panes: the estate with its dossier, the console with its verbs — annotated.</em></sub>
 
