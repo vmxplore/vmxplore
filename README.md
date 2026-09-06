@@ -31,13 +31,78 @@ commands it runs.
 ## Three ways to run it
 
 Features appear based on what the host can do, detected at runtime. Each row
-below adds capability to the one above it.
+below adds capability to the one above it, and the app tells you which row
+you are on: **sysdiag**, top right of the window, or `vmx --sysdiag` in a
+terminal.
 
 | Host has | Available in vmxplore | Setup |
 |---|---|---|
-| KVM + libvirt | estate tree, serial and VNC consoles, lifecycle verbs, New VM | [a few packages →](#1--stock-linux--kvm) |
-| + OpenZFS | clone lineage, snapshot classes, rollback, zero-copy clones | [one repo + a pool →](#2--add-openzfs) |
-| [kldload](https://kldload.com) | the above, plus Kubernetes, Windows goldens, offline install, WireGuard mesh, eBPF | [already configured →](#3--on-kldload) |
+| **bare KVM** — KVM + libvirt, virt-install | estate tree, serial and VNC consoles, lifecycle verbs, New VM, every appliance tile with its in-guest tuning (recordsize, quotas, per-title media datasets, USB radio/tuner passthrough) | [a few packages →](#1--stock-linux--kvm) |
+| **KVM + ZFS** — + OpenZFS and a pool, virt-clone | the above on sparse zvols: instant whole-VM clones, whole-VM snapshot and rollback, clone lineage, snapshot classes | [one repo + a pool →](#2--add-openzfs) |
+| **kldloadOS** — [kldload](https://kldload.com) | the above, plus every guest enrolled: a WireGuard management mesh per appliance, a TLS leaf from the estate CA, an automatic Ansible inventory; and Kubernetes, Windows goldens, Firecracker microVMs, offline install, eBPF | [already configured →](#3--on-kldload) |
+
+### sysdiag — what to expect from this host, and why
+
+The catalog colours tiles by what the host can do. sysdiag is the page that
+says *why*: every probe with its verdict and the sentence behind it, the
+versions actually installed, the three tiers side by side with the one this
+host meets marked, and the capability ladder those tiers light up. It is
+the first thing to open on a new box, and the thing to paste when asking
+for help. This is onyx, a kldload desktop:
+
+```
+$ vmx --sysdiag
+sysdiag — onyx
+tier: kldloadOS — kldload (KVM + ZFS + klab) — everything available
+
+  host       onyx
+  os         kldload (fedora 44)
+  kernel     7.2.2-300.fc44.x86_64
+  cpu        AMD Ryzen 9 5900X 12-Core Processor · 24 threads · svm
+  memory     31.2 GiB
+  libvirt    12.0.0
+  qemu       10.2.2 (qemu-10.2.2-1.fc44)
+  zfs        zfs-2.4.4-1
+  pool       rpool — 1.52T free
+  wireguard  wireguard-tools v1.0.20260223
+  kldload    free edition, desktop profile
+
+probes
+  ✓ KVM           /dev/kvm readable — hardware virtualisation
+  ✓ libvirt       qemu:///system — 39 domains
+  ✓ virt-install  builds new VMs
+  ✓ ZFS           zvol-backed VMs under rpool/vms
+  ✓ virt-clone    clones a domain onto a zvol
+  ✓ kvm-mesh      per-appliance WireGuard mesh
+  ✓ kldload-ca    estate TLS leaf per VM
+  ✓ kldload-db    /usr/local/bin/kldload-db — the Ansible inventory reads it
+  ✓ klab          golden image lineages
+  ✓ wg            WireGuard on the host — the mesh's other half
+
+requirements
+  bare KVM    ✓KVM  ✓libvirt  ✓virt-install
+  KVM + ZFS   ✓KVM  ✓libvirt  ✓virt-install  ✓ZFS  ✓virt-clone
+  kldloadOS   ✓KVM  ✓libvirt  ✓virt-install  ✓ZFS  ✓virt-clone  ✓kvm-mesh  ✓kldload-ca  ✓kldload-db  ✓klab   ▲ this host
+
+  capabilities                  bare KVM    KVM + ZFS   kldloadOS
+  tuned in-guest datasets           ✓           ✓           ✓
+  recordsize / quota tuning         ✓           ✓           ✓
+  per-title media datasets          ✓           ✓           ✓
+  USB radio/tuner passthrough       ✓           ✓           ✓
+  zvol backing (sparse, fast)       —           ✓           ✓
+  instant whole-VM clones           —           ✓           ✓
+  whole-VM snapshot/rollback        —           ✓           ✓
+  WireGuard management mesh         —           —           ✓
+  estate CA: trusted TLS            —           —           ✓
+  Ansible inventory, automatic      —           —           ✓
+```
+
+A failed probe is a red card with the reason — a missing `/dev/kvm`, a
+libvirt socket that does not answer, no pool — and the requirements block
+shows which tier that failure holds you at. Every probe runs with a
+deadline, so a wedged libvirt cannot hang the screen that is meant to
+explain it. The same report, drawn as a page, is the **sysdiag** button in
+the window.
 
 Sections 1 and 2 below are setup guides. Section 3 lists what kldload
 configures by default.
