@@ -61,6 +61,7 @@ const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--ve
        vmx --build-all [--only A,B]
        vmx --destroy-all [--yes]
        vmx --sysdiag
+       vmx --vdi-wall [--open]
 
   (no flags)   native GUI — the estate frame (list · console · details);
                static/terminal-only builds start the TUI instead
@@ -136,6 +137,11 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           data disks, mesh and inventory rows. Lists them and
                           exits 2 unless --yes is given. Never touches a VM
                           it did not build.
+  --vdi-wall [--open]     the all-seeing eye: one HTML page tiling every VDI
+                          desktop that is streaming on the estate — the VDI
+                          appliance, its Firecracker clones, anything named
+                          vdi — one tile per session, muted and live. Prints
+                          the page's path; --open hands it to the browser.
   --sysdiag               the requirements screen, as text: what this host
                           is (OS, kernel, CPU, memory, versions), every
                           capability probe with its reason, and the three
@@ -308,6 +314,41 @@ func main() {
 			return
 		case "--sysdiag":
 			PrintSysdiag(os.Stdout, RunSysdiag(nil))
+			return
+		case "--vdi-wall":
+			// The all-seeing eye: one page, every VDI desktop that is
+			// streaming. The path is the result (stdout); the list of
+			// what it found is narration (stderr); --open hands it to
+			// the desktop's browser.
+			open := false
+			for j := i + 1; j < len(args); j++ {
+				if args[j] == "--open" {
+					open = true
+				}
+			}
+			rows, err := wallRowsFromLibvirt()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
+				os.Exit(1)
+			}
+			streams := VDIWallStreams(rows, whepProbe)
+			for _, st := range streams {
+				fmt.Fprintf(os.Stderr, "  %-20s %-16s session%d\n", st.Host, st.IP, st.Session)
+			}
+			if len(streams) == 0 {
+				fmt.Fprintln(os.Stderr, "vdi-wall: no VDI desktop is streaming — start the VDI appliance or clone its Firecracker golden")
+			}
+			p, err := WriteVDIWall(streams)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println(p)
+			if open {
+				if err := exec.Command("xdg-open", p).Start(); err != nil {
+					fmt.Fprintf(os.Stderr, "vmx: xdg-open: %v\n", err)
+				}
+			}
 			return
 		case "--appliance":
 			i++

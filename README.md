@@ -416,7 +416,7 @@ how to log in:
 | **[Tvheadend DVR](https://tvheadend.org)** | 2 vCPU / 2 GB. Over-the-air + satellite DVR — tuners in, recordings on a tuned dataset, streams out |
 | **[AdGuard Home](https://adguard.com/adguard-home.html)** | 1 vCPU / 1 GB. Network-wide DNS ad and tracker blocking, with DoH/DoT |
 | **[Syncthing](https://syncthing.net)** | 1 vCPU / 1 GB. Continuous file sync between your own machines — no server, no cloud |
-| **[VDI Desktop](https://kldload.com/pages/build-vdi)** | 2 vCPU / 2 GB. A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client |
+| **[VDI Desktop](https://kldload.com/pages/build-vdi)** | 2 vCPU / 2 GB. A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client. Clone it as Firecracker microVMs and the **VDI wall** opens with every desktop on one page (`vmx --vdi-wall`) |
 | **[RDP Desktop](https://www.xrdp.org)** | 2 vCPU / 2 GB. An XFCE desktop over RDP — mstsc, Remmina or FreeRDP; keyboard, mouse, clipboard and sound |
 
 From the terminal, no GUI needed:

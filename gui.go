@@ -880,6 +880,7 @@ func runGUI(rs *Ruleset) {
 	var openFCClone func()
 	var openFCCloneFor func(golden string)
 	var openInBrowser func()
+	var vdiWallAct func() // vdiwall.go; declared here so the clone batch can call it
 	var openFCMakeGolden, openFCDestroyAll func()
 	// openTool is wired once the tools pane exists (it needs the pty host);
 	// the groups are probed once because the tree repaints constantly and
@@ -2901,6 +2902,13 @@ func runGUI(rs *Ruleset) {
 					if err != nil {
 						return "clone FAILED — " + err.Error()
 					}
+					// A batch of desktops ends with the desktops on screen:
+					// the wall opens itself, one tile per clone ("the last
+					// step would bring up the viewer", operator, 2026-09-05).
+					if strings.HasPrefix(sel.Selected, "app-vdi") {
+						fyne.Do(vdiWallAct)
+						return "done — opening the VDI wall, one tile per desktop"
+					}
 					return "done — the instances are under \"firecracker\" in the estate"
 				})
 		}, w)
@@ -3112,6 +3120,39 @@ func runGUI(rs *Ruleset) {
 				dialog.ShowError(err, w)
 			}
 		}
+	}
+
+	// VDI wall: the all-seeing eye (vdiwall.go) over the rows the window
+	// already has — every group's domains plus the microVMs — written to
+	// one page and handed to the browser. On the context menu of any row
+	// so it is one right-click away from the VDI golden or any clone.
+	vdiWallAct = func() {
+		var rows []Row
+		for _, g := range st.groups {
+			rows = append(rows, g.Rows...)
+		}
+		// fcRowsCached, not fcRowsNow: called at the end of a clone batch
+		// the instances are seconds old and the 2 s tick may not have
+		// picked them up yet; the cache was just invalidated, so this
+		// asks kfire.
+		rows = append(rows, fcRowsCached()...)
+		auditLog("gui: VDI wall", 0)
+		go func() {
+			streams := VDIWallStreams(rows, whepProbe)
+			p, err := WriteVDIWall(streams)
+			fyne.Do(func() {
+				if err != nil {
+					dialog.ShowError(err, w)
+					return
+				}
+				status.SetText(fmt.Sprintf("VDI wall: %d desktop%s — %s", len(streams), plural(len(streams)), p))
+				if u, err := url.Parse("file://" + p); err == nil {
+					if err := fyne.CurrentApp().OpenURL(u); err != nil {
+						dialog.ShowError(err, w)
+					}
+				}
+			})
+		}()
 	}
 
 	// Enroll on the substrate: the enrollment a built appliance gets —
@@ -3755,6 +3796,7 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItem("Firecracker golden", verb(planFCGolden)),
 			fyne.NewMenuItem("Enroll on the substrate", enrollAct),
 			fyne.NewMenuItem("Open in browser", openInBrowser),
+			fyne.NewMenuItem("VDI wall — every desktop", vdiWallAct),
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("vCPU / memory…", specsDialog),
 			fyne.NewMenuItem("Resize disk…", resizeDialog),

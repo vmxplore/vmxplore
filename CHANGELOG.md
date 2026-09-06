@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **VDI wall — the all-seeing eye.** `vmx --vdi-wall` (and "VDI wall —
+  every desktop" on any row's menu) finds every VDI desktop that is
+  streaming — the appliance VM, its Firecracker clones, anything named vdi —
+  asks each host which sessions it has, and writes one page that tiles them
+  all live, muted, with a click-through to sound and controls. Four
+  desktops are a 2×2, ten are a 4×3; nothing runs on the host but a
+  browser. A Clone microVMs batch from the VDI golden ends by opening it.
 - **Sixteen cloud presets, all answering today.** Amazon Linux 403'd
   because its filename carries the build number; it is now resolved from the
   vendor's own manifest at build time instead of pinned. New: CentOS Stream
