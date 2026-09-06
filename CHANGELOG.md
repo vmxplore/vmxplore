@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Build all ends with Firecracker goldens.** Every tile that finishes and
+  powers off is snapshotted with `kfire golden` on a kldload host, so
+  "Build all images" at install leaves a catalog of goldens to clone, not
+  only VMs to start. Tiles that pass USB hardware through (SDR Station,
+  Tvheadend) are skipped and say so; a golden that fails is logged and does
+  not fail the tile.
+- **The first group header no longer lights up on its own.** Fyne highlights
+  the first root item whenever the tree takes focus with no highlight, and
+  a header tap parks the highlight on the header; both are now steered to
+  the selected VM's row.
+- README: the thirteen appliances on one card; two stale screenshots gone.
+
 ## 0.5.0 — 5 September 2026
 
 104 commits since 0.4.0: 38 features, 49 fixes, 219 files changed.
