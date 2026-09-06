@@ -182,3 +182,10 @@ func vncEndpoint(port int) (string, func(), error) {
 		"console tunnel to %s never came up — is the guest's VNC port %d open on its loopback?",
 		target.SSHHost, port)
 }
+
+// hasGUI marks the build that carries the window. --version prints it, and
+// `make install` refuses a vmxplore binary without it: the nogui build of
+// the same module writes a 13 MB terminal-only binary under the GUI's name,
+// and one was installed over the 39 MB GUI on 2026-09-05 — "why is vmxplore
+// not working". The marker turns that into a refused install.
+const hasGUI = true

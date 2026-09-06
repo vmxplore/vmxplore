@@ -19,3 +19,6 @@ func runGUI(rs *Ruleset) {
 			"     For the native GUI, build with:  make gui   (or: go build -tags gui)")
 	runTUIMain(rs)
 }
+
+// hasGUI: see gui_only.go — this is the build without the window.
+const hasGUI = false

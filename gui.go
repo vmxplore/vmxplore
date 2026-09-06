@@ -2904,7 +2904,7 @@ func runGUI(rs *Ruleset) {
 		// it: the label says what will open for THIS golden (fcfollow.go)
 		// and follows the golden and count fields as they change.
 		portOf := func(name string) int {
-			for _, g := range gs {
+			for _, g := range goldens {
 				if g.Name == name {
 					return g.Port
 				}

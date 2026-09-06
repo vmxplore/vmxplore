@@ -132,6 +132,8 @@ clean:
 install:
 	@test -x $(BIN_GUI) && test -x $(BIN_TUI) || \
 		{ echo "make install: build first — $(BIN_GUI)/$(BIN_TUI) not in the tree" >&2; exit 1; }
+	@./$(BIN_GUI) --version 2>/dev/null | grep -q '(gui)' || \
+		{ echo "make install: ./$(BIN_GUI) is not the GUI build (a bare 'go build' writes the terminal binary under its name) — run: make build" >&2; exit 1; }
 	install -d $(BINDIR) $(MANDIR) $(APPDIR) $(ICONDIR) $(DOCDIR)
 	install -m 0755 $(BIN_GUI) $(BINDIR)/$(BIN_GUI)
 	install -m 0755 $(BIN_TUI) $(BINDIR)/$(BIN_TUI)

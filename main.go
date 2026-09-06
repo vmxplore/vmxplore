@@ -179,7 +179,12 @@ func main() {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--version", "-V":
-			fmt.Println("vmxplore " + versionFull())
+			// "(gui)" is the marker make install checks for (gui_only.go)
+			if hasGUI {
+				fmt.Println("vmxplore " + versionFull() + " (gui)")
+			} else {
+				fmt.Println("vmxplore " + versionFull())
+			}
 			return
 		case "--help", "-h":
 			fmt.Println(usage)
