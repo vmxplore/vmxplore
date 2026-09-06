@@ -41,32 +41,33 @@ terminal.
 | **KVM + ZFS** — + OpenZFS and a pool, virt-clone | the above on sparse zvols: instant whole-VM clones, whole-VM snapshot and rollback, clone lineage, snapshot classes | [one repo + a pool →](#2--add-openzfs) |
 | **kldloadOS** — [kldload](https://kldload.com) | the above, plus every guest enrolled: a WireGuard management mesh per appliance, a TLS leaf from the estate CA, an automatic Ansible inventory; and Kubernetes, Windows goldens, Firecracker microVMs, offline install, eBPF | [already configured →](#3--on-kldload) |
 
-### sysdiag — what to expect from this host, and why
+**What each tier lights up** — the same ladder sysdiag draws, so the app and
+this page can never disagree:
 
-The catalog colours tiles by what the host can do. sysdiag is the page that
-says *why*: every probe with its verdict and the sentence behind it, the
-versions actually installed, the three tiers side by side with the one this
-host meets marked, and the capability ladder those tiers light up. It is
-the first thing to open on a new box, and the thing to paste when asking
-for help. This is onyx, a kldload desktop:
+| Capability | bare KVM | KVM + ZFS | kldloadOS |
+|---|:---:|:---:|:---:|
+| Tuned in-guest datasets | ✓ | ✓ | ✓ |
+| Recordsize / quota tuning | ✓ | ✓ | ✓ |
+| Per-title media datasets | ✓ | ✓ | ✓ |
+| USB radio / tuner passthrough | ✓ | ✓ | ✓ |
+| zvol backing (sparse, fast) | — | ✓ | ✓ |
+| Instant whole-VM clones | — | ✓ | ✓ |
+| Whole-VM snapshot / rollback | — | ✓ | ✓ |
+| WireGuard management mesh | — | — | ✓ |
+| Estate CA: trusted TLS | — | — | ✓ |
+| Ansible inventory, automatic | — | — | ✓ |
+
+**Which row am I on?** Open **sysdiag**, top right of the window, or run
+`vmx --sysdiag`. It is a requirements screen: the versions actually
+installed, every probe with its verdict and the sentence behind it, the three
+tiers with the one this host meets marked, and the chart above filled in for
+this machine. A failed probe is a red card with the reason — no `/dev/kvm`, a
+libvirt socket that does not answer, no pool — and the requirements block
+shows which tier that holds you at. Every probe runs with a deadline, so a
+wedged libvirt cannot hang the screen meant to explain it. The tail of the
+report on a kldload desktop:
 
 ```
-$ vmx --sysdiag
-sysdiag — onyx
-tier: kldloadOS — kldload (KVM + ZFS + klab) — everything available
-
-  host       onyx
-  os         kldload (fedora 44)
-  kernel     7.2.2-300.fc44.x86_64
-  cpu        AMD Ryzen 9 5900X 12-Core Processor · 24 threads · svm
-  memory     31.2 GiB
-  libvirt    12.0.0
-  qemu       10.2.2 (qemu-10.2.2-1.fc44)
-  zfs        zfs-2.4.4-1
-  pool       rpool — 1.52T free
-  wireguard  wireguard-tools v1.0.20260223
-  kldload    free edition, desktop profile
-
 probes
   ✓ KVM           /dev/kvm readable — hardware virtualisation
   ✓ libvirt       qemu:///system — 39 domains
@@ -83,26 +84,7 @@ requirements
   bare KVM    ✓KVM  ✓libvirt  ✓virt-install
   KVM + ZFS   ✓KVM  ✓libvirt  ✓virt-install  ✓ZFS  ✓virt-clone
   kldloadOS   ✓KVM  ✓libvirt  ✓virt-install  ✓ZFS  ✓virt-clone  ✓kvm-mesh  ✓kldload-ca  ✓kldload-db  ✓klab   ▲ this host
-
-  capabilities                  bare KVM    KVM + ZFS   kldloadOS
-  tuned in-guest datasets           ✓           ✓           ✓
-  recordsize / quota tuning         ✓           ✓           ✓
-  per-title media datasets          ✓           ✓           ✓
-  USB radio/tuner passthrough       ✓           ✓           ✓
-  zvol backing (sparse, fast)       —           ✓           ✓
-  instant whole-VM clones           —           ✓           ✓
-  whole-VM snapshot/rollback        —           ✓           ✓
-  WireGuard management mesh         —           —           ✓
-  estate CA: trusted TLS            —           —           ✓
-  Ansible inventory, automatic      —           —           ✓
 ```
-
-A failed probe is a red card with the reason — a missing `/dev/kvm`, a
-libvirt socket that does not answer, no pool — and the requirements block
-shows which tier that failure holds you at. Every probe runs with a
-deadline, so a wedged libvirt cannot hang the screen that is meant to
-explain it. The same report, drawn as a page, is the **sysdiag** button in
-the window.
 
 Sections 1 and 2 below are setup guides. Section 3 lists what kldload
 configures by default.
