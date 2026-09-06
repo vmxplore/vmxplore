@@ -328,6 +328,13 @@ guest until it is on.
 
 ## Apps — preconfigured application VMs
 
+<img src="assets/screenshots/appliances-0.5.0.jpg" alt="The thirteen appliances that ship with vmxplore 0.5.0 — Web Stack, LAMP, WriteFreely, Jellyfin, Plex, Seedbox, Icecast, SDR, Tvheadend, AdGuard Home, Syncthing, VDI and RDP desktops — each on its own VM and its own ZFS pool" width="100%"/>
+<sub><em>Thirteen appliances, one card. Each boots as its own VM on its own
+ZFS pool, enrolled on its own WireGuard mesh with a certificate from the
+estate CA, a row in the Ansible inventory and metrics in Grafana. Type a pool
+name in the tile and the blank data disk becomes that pool with every dataset
+laid out; name a pool you already have and it is reused.</em></sub>
+
 <img src="assets/screenshots/appliance-writefreely.png" alt="WriteFreely appliance — the VM boots straight into the editor, signed in" width="100%"/>
 <sub><em>WriteFreely: power on, write. No login prompt, no desktop to
 navigate — the Screen tab <strong>is</strong> the application. It signs itself
