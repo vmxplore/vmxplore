@@ -107,7 +107,7 @@ SHOTS: dict[str, list[tuple]] = {
     # New VM now carries the desktop selector, which is the thing worth
     # pointing at — it is the feature nothing else in this space has.
     "new-vm": [
-        (520, 150, 300, 150, "Eighteen cloud presets",
+        (520, 150, 300, 150, "Sixteen cloud presets",
          "each verified against its vendor's checksum"),
         (520, 260, 300, 250, "…or a desktop",
          "GNOME · KDE · XFCE, installed on first boot"),

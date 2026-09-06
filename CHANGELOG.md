@@ -2,15 +2,13 @@
 
 ## Unreleased
 
-- **Eighteen cloud presets, all answering today.** Amazon Linux 403'd
-  because its filename carries the build number; it and Oracle Linux are now
-  resolved from the vendor's own manifest at build time instead of pinned.
-  Oracle Linux 10 and 9 join the catalog (their SHA256 lives on Oracle's
-  templates page, paired to the image by class, proven by hashing the image),
-  along with CentOS Stream 10, Rocky 10, AlmaLinux 9, Ubuntu 22.04, openSUSE
-  Tumbleweed and Alpine 3.22. The live catalogue check now also asks for
-  every image, not only its manifest. Checked and left out, with reasons in
-  newvm.go: Leap 16, Kali, FreeBSD, Gentoo, NixOS.
+- **Sixteen cloud presets, all answering today.** Amazon Linux 403'd
+  because its filename carries the build number; it is now resolved from the
+  vendor's own manifest at build time instead of pinned. New: CentOS Stream
+  10, Rocky 10, AlmaLinux 9, Ubuntu 22.04, openSUSE Tumbleweed and Alpine
+  3.22. The live catalogue check now also asks for every image, not only its
+  manifest. Checked and left out, with reasons in newvm.go: Oracle Linux
+  (buildable, not wanted), Leap 16, Kali, FreeBSD, Gentoo, NixOS.
 - **Build all ends with Firecracker goldens.** Every tile that finishes and
   powers off is snapshotted with `kfire golden` on a kldload host, so
   "Build all images" at install leaves a catalog of goldens to clone, not

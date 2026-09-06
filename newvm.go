@@ -53,9 +53,8 @@ type CloudImage struct {
 	// whatever entry in the SumURL document matches this pattern, resolved
 	// at build time by resolveCloudImage. URL then only needs to be right
 	// up to its directory (or may be empty when the document carries full
-	// hrefs, as Oracle's page does). For vendors with no stable "latest"
-	// alias — Amazon's build-numbered filenames, Oracle's b-numbered
-	// ones — this is the difference between a preset that works and one
+	// hrefs). For a vendor with no stable "latest" alias — Amazon's
+	// build-numbered filenames — this is the difference between a preset that works and one
 	// that 404s the week after it is written (amazon, 2026-09-05).
 	NameRE string
 }
@@ -135,26 +134,6 @@ var cloudImages = map[string]CloudImage{
 		SumURL:  "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM",
 		SumAlgo: "sha256",
 	},
-	// Oracle publishes no checksum file beside the image; the SHA256 of each
-	// image is on the templates page, in a <tt> beside the image's link.
-	// That page is the manifest here: the filename is resolved from it (the
-	// b-number changes with every rebuild) and the checksum is the <tt>
-	// whose class matches the link's — kvm-image ↔ kvm-sha256 — see
-	// expectedSum. Proven by hashing the OL10U1 b291 image on 2026-09-05:
-	// the row's FIRST hash is the OVA's, not the KVM image's. Fail-closed
-	// still holds — a wrong pairing fails the download, never ships it.
-	"oracle": {
-		Variant: "ol9.4", // osinfo has no ol10 yet; same family, same defaults
-		SumURL:  "https://yum.oracle.com/oracle-linux-templates.html",
-		SumAlgo: "sha256",
-		NameRE:  `OL10U[0-9]+_x86_64-kvm-b[0-9]+\.qcow2`,
-	},
-	"oracle9": {
-		Variant: "ol9.4",
-		SumURL:  "https://yum.oracle.com/oracle-linux-templates.html",
-		SumAlgo: "sha256",
-		NameRE:  `OL9U[0-9]+_x86_64-kvm-b[0-9]+\.qcow2`,
-	},
 	// Amazon's "latest" directory is stable, its filenames are not: the
 	// pinned build 403'd within a month (2026-09-05). SHA256SUMS in that
 	// directory names the current file, so the name is read from there.
@@ -208,6 +187,11 @@ var cloudImages = map[string]CloudImage{
 //	          preset. RHEL guests are built from a local ImagePath plus
 //	          subscription-manager registration in the post-installer —
 //	          see rhelPostInstall.
+//	oracle    Left out on purpose (operator, 2026-09-05). It is buildable:
+//	          the image is public and its SHA256 is on the templates page,
+//	          paired to the image by the page's class names; ac3e86c carried
+//	          working oracle/oracle9 presets and the page parser, proven by
+//	          hashing the OL10U1 b291 image, if it is ever wanted back.
 //	leap 16   No NoCloud/Cloud qcow2 published yet, in either the
 //	          Cloud:/Images:/Leap_16.0 project or distribution/leap/16.0.
 //	kali      Ships its cloud image as a tar.xz around a raw disk, not a
@@ -223,9 +207,9 @@ var cloudImages = map[string]CloudImage{
 // resolveCloudImage fills in a preset whose filename is not pinned
 // (NameRE set): it reads the SumURL document, takes the first name that
 // matches, and returns a copy with URL pointing at that file. A full href
-// ending in the name wins when the document carries one (Oracle's page);
-// otherwise the name goes beside the manifest, which is where every
-// directory-manifest vendor puts it. Presets without NameRE come back as
+// ending in the name wins when the document carries one; otherwise the
+// name goes beside the manifest, which is where every directory-manifest
+// vendor puts it. Presets without NameRE come back as
 // they are, so every caller can use this unconditionally.
 func resolveCloudImage(ci CloudImage) (CloudImage, error) {
 	if ci.NameRE == "" {
@@ -268,7 +252,7 @@ func resolveCloudImageFrom(ci CloudImage, doc string) (CloudImage, error) {
 func CloudDistros() []string {
 	return []string{
 		"fedora", "debian", "debian-bookworm", "ubuntu", "ubuntu-jammy",
-		"centos", "centos10", "rocky", "rocky10", "alma", "alma9", "oracle", "oracle9",
+		"centos", "centos10", "rocky", "rocky10", "alma", "alma9",
 		"amazon", "opensuse", "opensuse-tumbleweed", "alpine", "arch",
 	}
 }
