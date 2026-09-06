@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **VDI desktops name themselves.** The top panel carries hostname,
+  address and session number, refreshed every 5 s, so ten clones are ten
+  visibly different machines; seeded into the panel layout before first
+  login. VDI_MAXRATE caps the encoder at a chosen ceiling (capped CRF,
+  default 4000 kbit/s) so a wall of clones has knowable bandwidth.
 - **VDI wall — the all-seeing eye.** `vmx --vdi-wall` (and "VDI wall —
   every desktop" on any row's menu) finds every VDI desktop that is
   streaming — the appliance VM, its Firecracker clones, anything named vdi —

@@ -1765,9 +1765,9 @@ app_summary
 
 var vdiDesktop = Appliance{
 	Name:     "VDI Desktop",
-	Summary:  "A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client",
+	Summary:  "A headless XFCE desktop streamed with sound to any browser — WebRTC, HLS or SRT, no client; every clone names itself on screen",
 	Homepage: "https://kldload.com/pages/build-vdi",
-	License:  "GPL-2.0 (labwc, XFCE), MIT (wf-recorder, mediamtx), BSD-2-Clause (nginx)",
+	License:  "GPL-2.0 (labwc, XFCE, genmon), MIT (wf-recorder, mediamtx), BSD-2-Clause (nginx)",
 
 	Distro: "debian",
 	VCPUs:  2,
@@ -1791,6 +1791,12 @@ var vdiDesktop = Appliance{
 		"SRT. Sessions are systemd template units, vdi-session@N — " +
 		"`systemctl start vdi-session@2` adds a second desktop at " +
 		"/session2. Budget about two CPU cores and 700 MB per session.\n\n" +
+		"Every desktop names itself: the top panel carries hostname, address " +
+		"and session number, so a wall of clones reads as a wall of machines. " +
+		"VDI_MAXRATE caps the encoder (capped CRF, default 4000 kbit/s); an " +
+		"idle desktop costs ~250 kbit/s regardless. Clone this tile as " +
+		"Firecracker microVMs and the VDI wall opens with every desktop on one " +
+		"page; vmx --vdi-wall rebuilds it any time.\n\n" +
 		"Picture and sound go out; keyboard and mouse do not come back yet. " +
 		"The WebRTC page plays the desktop with audio; input rides the " +
 		"WireGuard back plane in the kldload design and is the next step " +
@@ -1807,6 +1813,14 @@ var vdiDesktop = Appliance{
 			Default: "1920x1080", Required: true},
 		{Key: "VDI_SESSIONS", Label: "sessions to start at boot",
 			Default: "1", Required: true},
+		// A ceiling, not a target: the encoder stays at CRF quality and
+		// spends what a still desktop needs (~250 kbit/s measured on onyx,
+		// 2026-09-05), and this is the most it may burst to when the screen
+		// moves, so a phone on a poor link is never handed 20 Mbit/s of
+		// scrolling terminal. Ten clones on one host share the uplink; the
+		// cap is what makes that arithmetic knowable.
+		{Key: "VDI_MAXRATE", Label: "video bitrate ceiling (kbit/s)",
+			Default: "4000", Required: true},
 	},
 	Validate: func(v map[string]string) error {
 		if !regexp.MustCompile(`^[0-9]{3,4}x[0-9]{3,4}$`).MatchString(v["VDI_RESOLUTION"]) {
@@ -1815,6 +1829,10 @@ var vdiDesktop = Appliance{
 		n, err := strconv.Atoi(v["VDI_SESSIONS"])
 		if err != nil || n < 1 || n > 32 {
 			return fmt.Errorf("sessions must be a number from 1 to 32")
+		}
+		r, err := strconv.Atoi(v["VDI_MAXRATE"])
+		if err != nil || r < 500 || r > 50000 {
+			return fmt.Errorf("bitrate ceiling must be 500 to 50000 kbit/s")
 		}
 		return nil
 	},
@@ -1836,7 +1854,7 @@ if [ "$APP_FAMILY" = rpm ]; then
         app_die "the XFCE desktop group did not install"
     app_pkg chromium
     app_pkg labwc xorg-x11-server-Xwayland wlr-randr wf-recorder ffmpeg-free nginx \
-        pipewire pipewire-pulseaudio pipewire-utils wireplumber \
+        pipewire pipewire-pulseaudio pipewire-utils wireplumber xfce4-genmon-plugin \
         dejavu-sans-mono-fonts wireguard-tools curl tar
 else
     export DEBIAN_FRONTEND=noninteractive
@@ -1849,7 +1867,7 @@ else
     # operator, 2026-09-04). Chromium: packaged on both families.
     app_pkg chromium chromium-sandbox
     app_pkg labwc xwayland wlr-randr wf-recorder ffmpeg nginx \
-        pipewire pipewire-pulse pulseaudio-utils wireplumber \
+        pipewire pipewire-pulse pulseaudio-utils wireplumber xfce4-genmon-plugin \
         wireguard-tools curl ca-certificates
 fi
 
@@ -1927,6 +1945,56 @@ Exec=xfce4-terminal --title=top --geometry=100x28 --execute top -d 2
 DESK
 chown -R vdi:vdi /var/lib/vdi/.config
 
+# ─── the desktop names itself ─────────────────────────────────────────────
+# Ten clones of this golden are ten identical desktops until one of them
+# says who it is. A genmon item in the top panel prints hostname, address
+# and session number, refreshed every 5 s, so a wall of them reads as a
+# wall of machines and a clone that took the wrong address shows it in
+# the picture. The panel, not the wallpaper: xfdesktop 4.20 on labwc's
+# headless output ignored every backdrop property it was given —
+# monitorHEADLESS-1, monitorUnknown, monitor0 — through two hours of
+# trying (onyx, 2026-09-05), while a panel plugin took on the first try.
+#
+# The panel layout is seeded before the first login: xfce4-session copies
+# the distro's default.xml into the user's xfconf on first start and,
+# with the file already there, uses ours instead — the same eighteen
+# plugins plus plugin-99, the identity, placed after the separator that
+# precedes the clock. Sessions share this HOME, so the plugin reads its
+# session number from XDG_RUNTIME_DIR (/run/vdi-N), not from a file.
+cat >/usr/local/bin/vdi-identity <<'ID'
+#!/bin/sh
+# vdi-identity — one panel line: this desktop's name, address and session.
+# Output is xfce4-genmon-plugin's format: <txt>…</txt> and a <tool>tip.
+sid=$(printf '%s' "${XDG_RUNTIME_DIR:-}" | grep -oE '[0-9]+$')
+ip=$(hostname -I 2>/dev/null | cut -d' ' -f1)
+printf '<txt><span weight="bold" foreground="#c77dff">%s</span>  %s  <span foreground="#8b93a7">session %s</span></txt>\n' \
+    "$(hostname)" "${ip:-no address}" "${sid:-?}"
+printf '<tool>kldload VDI desktop %s (%s), session %s</tool>\n' "$(hostname)" "${ip:-no address}" "${sid:-?}"
+ID
+chmod 0755 /usr/local/bin/vdi-identity
+install -d -m 0700 -o vdi -g vdi /var/lib/vdi/.config/xfce4/panel /var/lib/vdi/.config/xfce4/xfconf/xfce-perchannel-xml
+cat >/var/lib/vdi/.config/xfce4/panel/genmon-99.rc <<'RC'
+Command=/usr/local/bin/vdi-identity
+UseLabel=0
+Text=
+UpdatePeriod=5000
+Font=DejaVu Sans 11
+RC
+_panel_default=/etc/xdg/xfce4/panel/default.xml
+_panel_user=/var/lib/vdi/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+if [ -f "$_panel_default" ]; then
+    # plugin 7 is the separator before the clock in panel-1; 99 goes after it.
+    # First match only: panel-2's ids start at 11 and never carry a 7.
+    sed -e '0,/<value type="int" value="7"\/>/s//<value type="int" value="7"\/>\n        <value type="int" value="99"\/>/' \
+        -e 's|<property name="plugins" type="empty">|<property name="plugins" type="empty">\n    <property name="plugin-99" type="string" value="genmon"/>|' \
+        "$_panel_default" >"$_panel_user"
+    grep -q 'plugin-99' "$_panel_user" && grep -q 'value="99"' "$_panel_user" ||
+        app_warn "panel layout seeded but the identity plugin did not land in it — the desktop will not name itself"
+else
+    app_warn "no $_panel_default on this image — the panel will not carry the identity line"
+fi
+chown -R vdi:vdi /var/lib/vdi/.config
+
 cat >/usr/local/sbin/kldload-vdi-session <<'SESS'
 #!/usr/bin/env bash
 # kldload-vdi-session <n> — one headless XFCE desktop, streamed to mediamtx
@@ -1942,6 +2010,10 @@ cat >/usr/local/sbin/kldload-vdi-session <<'SESS'
 set -Eeuo pipefail
 SID="${1:?session number required}"
 RES="${VDI_RESOLUTION:-1920x1080}"
+# crf + maxrate/bufsize is capped-CRF: quality-driven, with a VBV ceiling
+# the stream never exceeds. Checked through wf-recorder's -p on 2026-09-05:
+# both options are accepted and an idle desktop still encodes at ~260 kbit/s.
+MAXRATE="${VDI_MAXRATE:-4000}"
 : "${XDG_RUNTIME_DIR:=/run/vdi-$SID}"
 export XDG_RUNTIME_DIR HOME="${HOME:-/var/lib/vdi}"
 export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
@@ -1966,7 +2038,7 @@ pipewire-pulse &
 sleep 2
 pactl load-module module-null-sink sink_name=vdi sink_properties=device.description=VDI
 pactl set-default-sink vdi
-sh -c 'while true; do wf-recorder -y -D -r 30 -o HEADLESS-1 --codec libx264 -p preset=ultrafast -p tune=zerolatency -p g=30 --audio=vdi.monitor -C libopus --muxer mpegts --file "srt://127.0.0.1:8890?streamid=publish:session$SID&pkt_size=1316"; sleep 2; done' &
+sh -c 'while true; do wf-recorder -y -D -r 30 -o HEADLESS-1 --codec libx264 -p preset=ultrafast -p tune=zerolatency -p g=30 -p crf=23 -p maxrate=${MAXRATE}k -p bufsize=$((MAXRATE * 2))k --audio=vdi.monitor -C libopus --muxer mpegts --file "srt://127.0.0.1:8890?streamid=publish:session$SID&pkt_size=1316"; sleep 2; done' &
 AUTO
 exec dbus-run-session -- labwc -C "$CFGDIR" -s "xfce4-session"
 SESS
@@ -1985,6 +2057,7 @@ RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run/vdi-%i
 Environment=HOME=/var/lib/vdi
 Environment=VDI_RESOLUTION=${VDI_RESOLUTION}
+Environment=VDI_MAXRATE=${VDI_MAXRATE}
 ExecStart=/usr/local/sbin/kldload-vdi-session %i
 Restart=on-failure
 RestartSec=5
@@ -2004,10 +2077,17 @@ cat >/etc/nginx/conf.d/kldload-vdi.conf <<'NGINX'
 server {
     listen 80 default_server;
     server_name _;
+    # mediamtx answers the first playlist request with a 302 to
+    # /sessionN/index.m3u8?cookieCheck=1 on the HOST it was asked through,
+    # which drops the /hls/ prefix and 404s here; the same for the WebRTC
+    # page's trailing-slash redirect. proxy_redirect puts the prefix back
+    # (onyx, 2026-09-05: every HLS URL on :80 was a 404 while :8888 worked).
     location /hls/    { proxy_pass http://127.0.0.1:8888/;
+                        proxy_redirect ~^(https?://[^/]+)?/(.*)$ /hls/$2;
                         add_header Access-Control-Allow-Origin *;
                         add_header Cache-Control no-cache; }
     location /webrtc/ { proxy_pass http://127.0.0.1:8889/;
+                        proxy_redirect ~^(https?://[^/]+)?/(.*)$ /webrtc/$2;
                         proxy_http_version 1.1;
                         proxy_set_header Upgrade $http_upgrade;
                         proxy_set_header Connection "upgrade"; }
@@ -2034,6 +2114,10 @@ app_check "session 1 carries audio"    bash -c 'curl -fsS http://127.0.0.1:9997/
 app_check "XFCE desktop up in session 1" bash -c 'pgrep -u vdi -x xfce4-panel >/dev/null && pgrep -u vdi -x xfdesktop >/dev/null'
 app_check "browser present"            command -v chromium
 app_check "HLS playlist for session 1" app_wait_http http://127.0.0.1:8888/session1/index.m3u8 90
+app_check "identity script present"    test -x /usr/local/bin/vdi-identity
+app_check "identity plugin in the panel layout" grep -q 'plugin-99' /var/lib/vdi/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+app_check "identity script answers"    bash -c '/usr/local/bin/vdi-identity | grep -q "<txt>"'
+app_check "HLS playlist through nginx"  bash -c 'curl -fsSL --max-time 4 http://127.0.0.1/hls/session1/index.m3u8 >/dev/null'
 `
 
 // ─── RDP Desktop: an XFCE desktop over RDP ──────────────────────────────────
