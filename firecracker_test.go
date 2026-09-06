@@ -108,7 +108,9 @@ func TestPlanFCGoldenGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(p.cmds[0], " "); got != "kfire golden app-web-stack" {
+	// --port 80: the Web Stack's catalog port rides along so kfire's wait
+	// probes the right one (fcGoldenArgs)
+	if got := strings.Join(p.cmds[0], " "); got != "kfire golden app-web-stack --port 80" {
 		t.Errorf("cmd = %q", got)
 	}
 	fcAsRoot = false

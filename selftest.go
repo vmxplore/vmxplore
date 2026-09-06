@@ -795,7 +795,7 @@ func fcGoldenAfterBuild(vm string, a Appliance, log func(string)) bool {
 		log("  Firecracker golden: skipped — " + why)
 		return false
 	}
-	argv := kfireArgv("golden", vm)
+	argv := kfireArgv(fcGoldenArgs(vm, a.Port)...)
 	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
 	if err != nil {
 		log("  Firecracker golden FAILED: " + strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0])

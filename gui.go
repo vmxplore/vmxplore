@@ -2870,11 +2870,36 @@ func runGUI(rs *Ruleset) {
 		cpu.SetPlaceHolder("the golden's")
 		ram := widget.NewEntry()
 		ram.SetPlaceHolder("the golden's, in MB")
+		// The follow-up is a question on the form, not a surprise after
+		// it: the label says what will open for THIS golden (fcfollow.go)
+		// and follows the golden and count fields as they change.
+		portOf := func(name string) int {
+			for _, g := range gs {
+				if g.Name == name {
+					return g.Port
+				}
+			}
+			return 0
+		}
+		open := widget.NewCheck("", nil)
+		open.SetChecked(true)
+		relabel := func() {
+			n, _ := strconv.Atoi(strings.TrimSpace(count.Text))
+			if n < 1 {
+				n = 1
+			}
+			open.Text = cloneFollowUpLabel(sel.Selected, portOf(sel.Selected), n)
+			open.Refresh()
+		}
+		relabel()
+		sel.OnChanged = func(string) { relabel() }
+		count.OnChanged = func(string) { relabel() }
 		form := widget.NewForm(
 			widget.NewFormItem("Golden", sel),
 			widget.NewFormItem("How many", count),
 			widget.NewFormItem("vCPU", cpu),
-			widget.NewFormItem("RAM", ram))
+			widget.NewFormItem("RAM", ram),
+			widget.NewFormItem("", open))
 		dialog.ShowCustomConfirm("Clone Firecracker microVMs", "Clone", "Cancel", form, func(ok bool) {
 			if !ok {
 				return
@@ -2884,6 +2909,11 @@ func runGUI(rs *Ruleset) {
 				dialog.ShowError(fmt.Errorf("how many: a positive number"), w)
 				return
 			}
+			followUp := ""
+			if open.Checked {
+				followUp = cloneFollowUp(sel.Selected, portOf(sel.Selected))
+			}
+			before := fcInstanceNames(fcRowsCached())
 			args := []string{"clone", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
 			if c := strings.TrimSpace(cpu.Text); c != "" {
 				args = append(args, "--cpu", c)
@@ -2902,12 +2932,53 @@ func runGUI(rs *Ruleset) {
 					if err != nil {
 						return "clone FAILED — " + err.Error()
 					}
-					// A batch of desktops ends with the desktops on screen:
-					// the wall opens itself, one tile per clone ("the last
-					// step would bring up the viewer", operator, 2026-09-05).
-					if strings.HasPrefix(sel.Selected, "app-vdi") {
+					// A batch ends with the clones on screen when the
+					// operator asked for it ("the last step would bring up
+					// the viewer", 2026-09-05): the wall for streamed
+					// desktops, an RDP session per seat, a browser tab per
+					// page. Only the clones this batch made — not the ones
+					// that were already there.
+					switch followUp {
+					case "wall":
 						fyne.Do(vdiWallAct)
 						return "done — opening the VDI wall, one tile per desktop"
+					case "rdp", "browser":
+						fresh := newInstancesOf(sel.Selected, before, fcRowsCached())
+						if len(fresh) == 0 {
+							return "done — but no new instance has an address yet; open them from the estate"
+						}
+						opened, failed := 0, ""
+						for _, r := range fresh {
+							ip := firstIPv4(r.D.IPs)
+							if followUp == "rdp" {
+								argv := rdpClientArgv(ip)
+								if argv == nil {
+									failed = "no RDP client on this host (remmina or xfreerdp)"
+									break
+								}
+								if err := exec.Command(argv[0], argv[1:]...).Start(); err != nil {
+									failed = argv[0] + ": " + err.Error()
+									break
+								}
+								auditLog(strings.Join(argv, " "), 0)
+							} else {
+								u := fmt.Sprintf("http://%s:%d/", ip, r.FC.Port)
+								if r.FC.Port == 80 {
+									u = "http://" + ip + "/"
+								}
+								if parsed, err := url.Parse(u); err == nil {
+									fyne.Do(func() { _ = fyne.CurrentApp().OpenURL(parsed) })
+								}
+							}
+							opened++
+						}
+						if failed != "" {
+							return fmt.Sprintf("done — opened %d, then stopped: %s", opened, failed)
+						}
+						if followUp == "rdp" {
+							return fmt.Sprintf("done — %d RDP session(s) opening; log in with the tile's guest account", opened)
+						}
+						return fmt.Sprintf("done — %d browser tab(s) opening", opened)
 					}
 					return "done — the instances are under \"firecracker\" in the estate"
 				})

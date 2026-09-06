@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Clone, then look.** The Clone microVMs dialog asks, with a checkbox
+  whose label says what will happen for the chosen golden: the VDI wall for
+  streamed desktops, one RDP session per seat for the RDP desktop, one
+  browser tab per instance for anything that serves a page. Only the clones
+  the batch made are opened. Goldens now carry the tile's port, so kfire
+  waits on 3389 for an RDP seat instead of declaring it dead at 180 s.
 - **VDI desktops name themselves.** The top panel carries hostname,
   address and session number, refreshed every 5 s, so ten clones are ten
   visibly different machines; seeded into the panel layout before first

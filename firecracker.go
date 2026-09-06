@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -329,9 +330,32 @@ func planFCGolden(r Row) (verbPlan, error) {
 	}
 	return verbPlan{
 		title: "Firecracker golden from " + r.D.Name,
-		cmds:  [][]string{kfireArgv("golden", r.D.Name)},
+		cmds:  [][]string{kfireArgv(fcGoldenArgs(r.D.Name, appliancePortFor(r.D.Name))...)},
 		warn:  "snapshots " + r.DS.Name + "@kfire (and -data); the VM stays as it is",
 	}, nil
+}
+
+// fcGoldenArgs is kfire's golden argv for vm, with the port its clones
+// must answer on when the appliance is known. Without it kfire assumes 80
+// and `clone --wait` declared every RDP seat dead at 180 s while xrdp had
+// been listening on 3389 since second twenty (onyx, 2026-09-05).
+func fcGoldenArgs(vm string, port int) []string {
+	args := []string{"golden", vm}
+	if port > 0 {
+		args = append(args, "--port", strconv.Itoa(port))
+	}
+	return args
+}
+
+// appliancePortFor is the catalog port of the tile whose VM name is vm, or
+// 0 for a VM this tool did not build.
+func appliancePortFor(vm string) int {
+	for _, a := range Appliances() {
+		if applianceVMName(a.Name) == vm {
+			return a.Port
+		}
+	}
+	return 0
 }
 
 // fcTouched reports whether a plan ran kfire, so the caller can drop the
