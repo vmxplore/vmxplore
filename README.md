@@ -222,10 +222,6 @@ extra open port, and nothing on the wire that a passer-by can type into.
 
 ### kldload — tool launcher
 
-<img src="assets/screenshots/kldload-tools.png" width="900" alt="a kldload tool's verb page, running in the console pane"/>
-
-<sub><em>A kldload tool on a kernel-loaded substrate: pick it in the estate tree, its verbs and its terminal open right in the console pane.</em></sub>
-
 On a plain libvirt host the tree's last branch pitches the OS. On a
 **kldload** host it becomes a command center — the whole kernel-loaded
 toolset, grouped, one click away (see [Enhanced on kldload](#3--on-kldload)).
