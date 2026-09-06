@@ -3889,6 +3889,33 @@ func runGUI(rs *Ruleset) {
 		widget.NewSeparator(),
 		pad(mStorage), pad(mConfig), pad(mBuild), pad(mEstate), endGap)))
 
+	// highlightHome is where the tree's keyboard highlight belongs when it
+	// must not sit on a group header: the selected VM's row, else the first
+	// leaf in the estate, else nothing. Fyne 2.8 paints the highlighted item
+	// like a hovered one whenever the tree has focus, and two of its own
+	// rules park that highlight on a header: Select() highlights whatever
+	// was tapped BEFORE OnSelected runs, so a header tap leaves it there;
+	// and FocusGained() with no highlight yet picks the FIRST root child —
+	// which is the first group, "apps" on every kldload host. Dropping focus
+	// on a header tap (cb9fd5f) was not enough: the next tap anywhere in the
+	// tree refocuses it (treeNode.Tapped → canvas.Focus) and the header lit
+	// up again ("keeps selecting the apps category", fiend 2026-09-05, on a
+	// binary that already carried cb9fd5f). Highlight() moves the mark
+	// without touching the selection, so no dossier or console churn.
+	highlightHome := func() string {
+		if st.selName != "" {
+			if _, ok := rowByUID("vm/" + st.selName); ok {
+				return "vm/" + st.selName
+			}
+		}
+		for _, g := range viewGroups {
+			if len(g.Rows) > 0 {
+				return "vm/" + g.Rows[0].D.Name
+			}
+		}
+		return ""
+	}
+
 	// ── selection → panes ────────────────────────────────────────────────
 	// A branch (group header) toggles its own fold; a leaf drives the panes.
 	tree.OnSelected = func(uid string) {
@@ -3899,14 +3926,13 @@ func runGUI(rs *Ruleset) {
 				tree.OpenBranch(uid)
 			}
 			tree.Unselect(uid)
-			// Unselect leaves the tree's keyboard-focus mark on the header,
-			// and Fyne paints the focused item like a hovered one whenever
-			// the tree has focus — so "Apps" lit up every time a window
-			// closed and focus came back ("it keeps selecting the apps
-			// tab", operator, 2026-09-05, right after the batch windows
-			// began closing themselves). Dropping focus clears it; the
-			// next click on a row takes focus back as before.
+			// Drop focus so the header is not painted now, and move the
+			// highlight off it so it is not painted the next time the tree
+			// takes focus either (see highlightHome).
 			w.Canvas().Unfocus()
+			if home := highlightHome(); home != "" {
+				tree.Highlight(home)
+			}
 			return
 		}
 		// A catalog leaf is an action, not a selection: opening the build
@@ -3966,6 +3992,11 @@ func runGUI(rs *Ruleset) {
 		if !didFold && len(viewGroups) > 0 {
 			foldOffGroups()
 			didFold = true
+			// Seed the highlight once, on a leaf: FocusGained() only
+			// invents one (the first header) while there is none.
+			if home := highlightHome(); home != "" {
+				tree.Highlight(home)
+			}
 		}
 		// selection follows the DOMAIN across refreshes (Select on the
 		// already-selected id is a no-op, so no event loop)
