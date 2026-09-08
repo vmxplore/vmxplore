@@ -904,7 +904,11 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	var dataDiskArg string
 	if s.DataGB > 0 {
 		if zfsParent != "" {
-			dds := zfsParent + "/" + s.Name + "-data"
+			// The data disk may live on a different pool from the root disk:
+			// the OS stays on the NVMe that boots fast, the 50-500 GB media
+			// volume goes where the terabytes are. dataDiskParent says where,
+			// and beside the root disk when nothing does.
+			dds := dataDiskParent(zfsParent, progress) + "/" + s.Name + "-data"
 			if err := run(true, zfsArgv("create", "-s", "-V",
 				fmt.Sprintf("%dG", s.DataGB), dds)...); err != nil {
 				return err
@@ -1125,6 +1129,41 @@ func waitZvolNodeFor(dev string, timeout time.Duration,
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// dataDiskParent is the dataset under which an appliance's DATA disk is
+// created. Precedence: $VMX_DATA_PARENT, then the one line of
+// /etc/vmxplore/data-parent, then the root disk's own parent. A named parent
+// that does not exist on this host is reported and ignored rather than
+// failing the build — a setting copied from another machine must not stop a
+// tile from building here.
+//
+// fiend, 2026-09-06: rpool is a 1.8 TB NVMe and fireball is six 8 TB disks in
+// three mirrors. Every tile's data disk had landed beside its root on rpool;
+// the Plex and Jellyfin libraries, the seedbox and the DVR belong on fireball.
+func dataDiskParent(rootParent string, progress func(string)) string {
+	want := strings.TrimSpace(os.Getenv("VMX_DATA_PARENT"))
+	if want == "" {
+		if b, err := os.ReadFile("/etc/vmxplore/data-parent"); err == nil {
+			want = strings.TrimSpace(strings.SplitN(string(b), "\n", 2)[0])
+		}
+	}
+	if want == "" || want == rootParent {
+		return rootParent
+	}
+	if _, err := sudoRun(zfsArgv("list", "-H", "-o", "name", want)...); err != nil {
+		progress("data disk parent " + want + " does not exist on this host — using " + rootParent)
+		return rootParent
+	}
+	progress("data disk on " + want + " (from " + dataParentSource() + ")")
+	return want
+}
+
+func dataParentSource() string {
+	if os.Getenv("VMX_DATA_PARENT") != "" {
+		return "$VMX_DATA_PARENT"
+	}
+	return "/etc/vmxplore/data-parent"
 }
 
 // ZFSVMParent derives where VM zvols live on this host from the estate

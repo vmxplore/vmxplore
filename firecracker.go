@@ -90,6 +90,27 @@ func kfireJSON(v any, args ...string) error {
 // `kfire list --json` (a sudo, a shell, jq, virsh) only on a remote target
 // or when the directory is not there to read. The local path is what
 // makes a refresh cost the same at a hundred instances as at one.
+// FCGolden is one kfire golden as `kfire goldens --json` reports it. The
+// type and its fetch live here, in the engine: the CLI's --demo needs them
+// as much as the tree does, and only the CACHE below them is a GUI lifecycle
+// concern (moved out of firecracker_gui.go, 2026-09-06).
+type FCGolden struct {
+	Name     string `json:"name"`
+	VCPUs    int    `json:"vcpus"`
+	RAMMB    int    `json:"ram_mb"`
+	Port     int    `json:"port"`
+	DataZvol string `json:"data_zvol"`
+	Clones   int    `json:"clones"`
+}
+
+func fcGoldens() ([]FCGolden, error) {
+	var out []FCGolden
+	if err := kfireJSON(&out, "goldens", "--json"); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func fcInstances() ([]FCInstance, error) {
 	if target.SSHHost == "" {
 		if insts, err := fcInstancesLocal(fcInstanceDir); err == nil {

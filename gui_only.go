@@ -23,8 +23,8 @@ import (
 
 // nvidiaGuestScript makes a Debian guest ready to drive an NVIDIA card.
 // It is a LAYER: composed onto whatever post-install the operator or an
-// appliance already supplies, exactly as the writing desktop is composed
-// onto the WriteFreely server script.
+// appliance already supplies, the way the writing desktop was once composed
+// onto the WriteFreely server script (that tile left the catalog 2026-09-06).
 //
 // The order matters and each step earned its place:
 //

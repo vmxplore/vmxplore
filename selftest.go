@@ -580,6 +580,7 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string),
 	// (the VDI desktop before the web stack, onyx 2026-09-04), which is not
 	// what "one at a time" reads as.
 	queue := make(chan int)
+	started := 0 // tiles handed to a worker; the "tile N of M" a start event reports
 	work := func(i int, a Appliance) {
 		vm := applianceVMName(a.Name)
 		tlog := func(l string) {
@@ -594,8 +595,12 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string),
 			mu.Unlock()
 			return
 		}
+		// The start event carries how many tiles have STARTED, not how many
+		// have finished: with four workers the first four all reported
+		// "tile 1 of 13" (fiend, 2026-09-06) because none had finished yet.
 		mu.Lock()
-		prog(finished, len(todo), a.Name)
+		started++
+		prog(started-1, len(todo), a.Name)
 		mu.Unlock()
 		res, lines, url := buildOneAppliance(ctx, a, vm, jobs, tlog)
 		mu.Lock()

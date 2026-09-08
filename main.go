@@ -98,6 +98,11 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                                           other branch, for proving it
                           By default it waits for the first boot to finish
                           and prints the appliance's real URL on stdout.
+                          The data disk goes under the dataset named in
+                          /etc/vmxplore/data-parent (or $VMX_DATA_PARENT)
+                          when that dataset exists here; otherwise beside
+                          the root disk. Roots on the fast pool, media on
+                          the big one.
   --appliance-script N    print the post-install script instead of building.
                           The output is a standalone bash installer: it needs
                           no vmxplore, no libvirt and no kldload, so it also
@@ -132,6 +137,16 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           appliance is: mesh, estate cert, inventory row.
                           For a guest with no libvirt domain; kfire calls
                           this for each microVM once it answers.
+  --demo                  one touch, twelve machines: four streamed desktops,
+                          four RDP seats and four LAMP servers cloned AT ONCE
+                          from their goldens, then the VDI wall, the RDP seats
+                          tiled in one window already signed in, and the LAMP
+                          servers in Firefox — each showing its own hostname,
+                          address and its own MariaDB visit count.
+                          VMX_DEMO_COUNT=N deploys N of each instead of 4
+                          (1-12; VMX_DEMO_COUNT=6 is eighteen machines). Undo with --destroy-all-microvms
+                          (or kfire destroy --all). Exits with the number of
+                          lanes that failed.
   --destroy-all           remove every VM this tool built — the app-* builds
                           and any st-* self-test leftover — with their disks,
                           data disks, mesh and inventory rows. Lists them and
@@ -148,10 +163,10 @@ Appliances — push-button self-hosted apps (Build ▸ Appliance… in the GUI):
                           substrates — bare KVM, KVM + ZFS, kldloadOS — with
                           their requirements ticked for this host.
 
-    vmx --appliance WriteFreely --vm blog \
-        WF_SITE_NAME='My Blog' WF_ADMIN_USER=matt
+    vmx --appliance "Icecast Stations" --vm radio \
+        IC_POOL=tank IC_STATIONS=4
 
-    vmx --appliance-script WriteFreely WF_DOMAIN=blog.example.com
+    vmx --appliance-script "Icecast Stations" IC_STATIONS=2
 
 Environment:
   VMX_SSH_USER   user for the TUI's ssh-to-guest verb
@@ -227,6 +242,11 @@ func main() {
 			}
 			os.Exit(SelfTestAppliances(only, keep,
 				func(l string) { fmt.Fprintln(os.Stderr, l) }))
+		case "--demo":
+			// The one-touch demo from a script, for recording: three lanes
+			// at once, then the three surfaces. Exit status is the number of
+			// lanes that failed, so `vmx --demo && say-it-worked` is honest.
+			os.Exit(RunDemoCLI())
 		case "--build-all":
 			// One of everything, kept. Same exit convention as --selftest:
 			// the count of tiles that did not come up.

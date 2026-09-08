@@ -17,23 +17,6 @@ import (
 )
 
 // FCGolden is one row of `kfire goldens --json`.
-type FCGolden struct {
-	Name     string `json:"name"`
-	VCPUs    int    `json:"vcpus"`
-	RAMMB    int    `json:"ram_mb"`
-	Port     int    `json:"port"`
-	DataZvol string `json:"data_zvol"`
-	Clones   int    `json:"clones"`
-}
-
-func fcGoldens() ([]FCGolden, error) {
-	var out []FCGolden
-	if err := kfireJSON(&out, "goldens", "--json"); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 var (
 	fcGoldenC  []FCGolden
 	fcGoldenAt time.Time // the fcAt the goldens were read at

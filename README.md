@@ -373,12 +373,18 @@ guest until it is on.
 
 ## Apps — preconfigured application VMs
 
-<img src="assets/screenshots/appliances-0.5.0.jpg" alt="The thirteen appliances that ship with vmxplore 0.5.0 — Web Stack, LAMP, WriteFreely, Jellyfin, Plex, Seedbox, Icecast, SDR, Tvheadend, AdGuard Home, Syncthing, VDI and RDP desktops — each on its own VM and its own ZFS pool" width="100%"/>
-<sub><em>Thirteen appliances, one card. Each boots as its own VM on its own
+<img src="assets/screenshots/appliances-0.5.0.jpg" alt="The twelve appliances that ship with vmxplore — Web Stack, LAMP, Jellyfin, Plex, Seedbox, Icecast, SDR, Tvheadend, AdGuard Home, Syncthing, VDI and RDP desktops — each on its own VM and its own ZFS pool" width="100%"/>
+<sub><em>Twelve appliances, one card. Each boots as its own VM on its own
 ZFS pool, enrolled on its own WireGuard mesh with a certificate from the
 estate CA, a row in the Ansible inventory and metrics in Grafana. Type a pool
 name in the tile and the blank data disk becomes that pool with every dataset
 laid out; name a pool you already have and it is reused.</em></sub>
+
+The data disk does not have to sit beside the root disk. Put a dataset name in
+`/etc/vmxplore/data-parent` (or set `VMX_DATA_PARENT`) and every appliance's
+data disk is created there — the OS on the NVMe pool that boots fast, the
+Plex library on the pool with the terabytes. kfire follows: a microVM's data
+clone lands beside its data golden, whichever pool that is.
 
 Pick an entry, answer its handful of app-specific questions, and the ordinary
 New VM pipeline builds it: cloud image, cloud-init, a fixed post-install script,
@@ -407,7 +413,6 @@ how to log in:
 |---|---|
 | **[Web Stack](https://nginx.org)** | 2 vCPU / 2 GB. nginx + PHP-FPM in front of PostgreSQL and Valkey on their own pool, with a live example page |
 | **[LAMP Stack](https://httpd.apache.org)** | 2 vCPU / 2 GB. Apache, MariaDB and PHP — the classic, on its own pool, with a live example page |
-| **[WriteFreely](https://writefreely.org)** | 2 vCPU / 3 GB. A writing machine: the blog plus a full-screen editor, booting straight into it |
 | **[Jellyfin on ZFS](https://jellyfin.org)** | 2 vCPU / 2 GB. Free-software media server on tuned datasets — per-title media, 16K library, throwaway cache |
 | **[Plex on ZFS](https://www.plex.tv)** | 2 vCPU / 2 GB. Plex media server on tuned ZFS datasets — per-title datasets, 8K-record library, throwaway transcodes |
 | **[Seedbox](https://www.qbittorrent.org)** | 2 vCPU / 2 GB. qBittorrent on tuned datasets, with a VPN kill switch that fails closed |
@@ -423,10 +428,10 @@ From the terminal, no GUI needed:
 
 ```bash
 vmx --appliances                       # the catalog, with each entry's fields
-vmx --appliance-script WriteFreely   # print the installer, build nothing
+vmx --appliance-script "Icecast Stations"   # print the installer, build nothing
 
-vmx --appliance WriteFreely --vm blog \
-    WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
+vmx --appliance "Icecast Stations" --vm radio \
+    IC_POOL=tank IC_STATIONS=4
 
 vmx --selftest                         # build + audit every tile, keep the failures
 vmx --build-all                        # one of everything, kept as app-<tile>

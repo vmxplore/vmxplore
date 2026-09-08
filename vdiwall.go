@@ -176,7 +176,11 @@ func plural(n int) string {
 
 // WriteVDIWall writes the page and returns its path.
 func WriteVDIWall(streams []wallStream) (string, error) {
-	p := filepath.Join(os.TempDir(), "vmx-vdi-wall.html")
+	// Per-user path. A fixed /tmp/vmx-vdi-wall.html is one file two accounts
+	// fight over: the second one to open the wall gets "permission denied"
+	// on a file the first one owns, which is exactly how the demo's wall
+	// failed on onyx (2026-09-06) while everything else worked.
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("vmx-vdi-wall-%d.html", os.Getuid()))
 	if err := os.WriteFile(p, []byte(VDIWallHTML(streams)), 0o644); err != nil {
 		return "", fmt.Errorf("writing the wall page: %w", err)
 	}

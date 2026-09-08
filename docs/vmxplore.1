@@ -898,10 +898,6 @@ on one machine into a five-second rollback rather than a restore.
 .Ql add-share photos
 creates a snapshot-isolated dataset for a new folder.
 .Dl vmx --appliance Syncthing --vm sync
-.It Sy WriteFreely Pq :80
-A minimalist federated blog whose VM boots straight into the editor,
-signed in, in the Screen tab.
-.Dl vmx --appliance WriteFreely --vm blog
 .It Sy VDI Desktop Pq :8889 WebRTC, :8888 HLS, :8890 SRT
 A headless XFCE desktop streamed with sound to any browser, the
 kldload.com VDI design as a tile: XFCE on labwc driving a virtual
@@ -1121,6 +1117,9 @@ and add
 lines to teach it your convention.
 .Sh ENVIRONMENT
 .Bl -tag -width "VMX_FULLSCREEN_KEY"
+.It Ev VMX_DATA_PARENT
+Where appliance data disks are created; overrides
+.Pa /etc/vmxplore/data-parent .
 .It Ev VMX_BUILD_KEEP_RUNNING
 Set to
 .Ql 1 ,
@@ -1204,6 +1203,14 @@ Audit log: when, who, the exact command, and its exit code.
 The same, when the system path is not writable.
 .It Pa /etc/vmxplore/rules
 Grouping and classification rules.
+.It Pa /etc/vmxplore/data-parent
+One line: the dataset under which appliance
+.Em data
+disks are created, when it exists on this host
+.Pq for example Ql fireball/apps .
+The root disk stays beside the other VMs; only the second, blank disk the
+recipe turns into the app's pool moves.
+A parent that is not present is reported in the build log and ignored.
 .It Pa /var/lib/vmxplore/images
 Downloaded cloud images.
 .El
@@ -1236,13 +1243,13 @@ List the catalog with every entry's fields, then build one and wait for
 its URL:
 .Bd -literal -offset indent
 vmx --appliances
-vmx --appliance WriteFreely --vm blog \e
-    WF_SITE_NAME="My Blog" WF_ADMIN_USER=matt
+vmx --appliance "Icecast Stations" --vm radio \e
+    IC_POOL=tank IC_STATIONS=4
 .Ed
 .Pp
 Read the installer an entry would run, without building anything:
 .Bd -literal -offset indent
-vmx --appliance-script WriteFreely > writefreely-install.sh
+vmx --appliance-script "Icecast Stations" > icecast-install.sh
 .Ed
 .Pp
 Prove the whole catalog, keep one of everything, then clear it all away:

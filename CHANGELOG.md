@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **WriteFreely is gone from the catalog.** Both the server tile and the
+  writing desktop built on it. Not a workload the operator would run, and
+  upstream never answered the request to include it. Twelve tiles remain;
+  the generic appliance tests now own a fixture instead of leaning on a
+  catalog entry.
+- **Data disks where the terabytes are.** `/etc/vmxplore/data-parent` (or
+  `VMX_DATA_PARENT`) names the dataset appliance data disks are created
+  under; the root disk stays with the other VMs. A parent that does not
+  exist on the host is reported and ignored. fiend, 2026-09-06: rpool is a
+  1.8 TB NVMe, fireball is 21.8 TB of mirrors; every data disk had landed on
+  the NVMe.
+- **Icecast Stations builds on Fedora again.** The unit's NoNewPrivileges=
+  stopped SELinux from moving icecast into its confined domain, so it ran
+  as init_t, was denied the stylesheets, and every station answered "404 -
+  Could not parse XSLT file". The unit drops that line, log directories are
+  labelled icecast_log_t, and ports 8001-8064 are labelled for the domain.
 - **Clone, then look.** The Clone microVMs dialog asks, with a checkbox
   whose label says what will happen for the chosen golden: the VDI wall for
   streamed desktops, one RDP session per seat for the RDP desktop, one
