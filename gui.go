@@ -406,6 +406,7 @@ const (
 	fcBranchUID       = "firecracker"
 	fcGoldenUIDPrefix = "fcg/"
 	fcCloneUID        = "fc-clone"       // clone a golden N times
+	fcDemoUID         = "fc-demo"        // one touch: 12 machines and three windows
 	fcMakeGoldenUID   = "fc-make-golden" // pick a shut-off appliance → kfire golden
 	fcDestroyAllUID   = "fc-destroy-all" // kfire destroy --all, confirmed
 	// The kldload tool launcher, also a tree branch: one sub-branch per
@@ -878,6 +879,7 @@ func runGUI(rs *Ruleset) {
 	var buildAllStatus string
 	var openDestroyAll func()
 	var openFCClone func()
+	var openFCDemo func()
 	var openFCCloneFor func(golden string)
 	var openInBrowser func()
 	var vdiWallAct func() // vdiwall.go; declared here so the clone batch can call it
@@ -937,15 +939,22 @@ func runGUI(rs *Ruleset) {
 		if uid == fcBranchUID {
 			gs := fcGoldensCached()
 			out := make([]string, 0, len(gs)+len(fcRowsNow)+3)
-			out = append(out, fcMakeGoldenUID, fcCloneUID)
+			// Destroy all first, above the verbs that make more: it is the
+			// undo for everything below it, and after a demo the operator
+			// reaches for it before anything else (operator, 2026-09-06).
+			//
+			// ALWAYS present, not only when instances exist. It used to
+			// appear and disappear with the fleet, and the operator went
+			// looking for it on an empty estate and could not find it
+			// ("where did the delete all microvms button go", same day). A
+			// landmark that moves is not a landmark; the row carries the
+			// count instead, and says so when there is nothing to remove.
+			out = append(out, fcDestroyAllUID, fcDemoUID, fcMakeGoldenUID, fcCloneUID)
 			for _, g := range gs {
 				out = append(out, fcGoldenUIDPrefix+g.Name)
 			}
 			for _, r := range fcRowsNow {
 				out = append(out, "vm/"+r.D.Name)
-			}
-			if len(fcRowsNow) > 0 {
-				out = append(out, fcDestroyAllUID)
 			}
 			return out
 		}
@@ -1093,6 +1102,7 @@ func runGUI(rs *Ruleset) {
 				return
 			}
 			if uid == selfTestUID || uid == buildAllUID || uid == destroyAllUID || uid == fcCloneUID ||
+				uid == fcDemoUID ||
 				uid == fcMakeGoldenUID || uid == fcDestroyAllUID {
 				// The three catalog-wide verbs. `open` is a pointer because
 				// the window closures are assigned after the tree exists.
@@ -1120,8 +1130,17 @@ func runGUI(rs *Ruleset) {
 				case fcDestroyAllUID:
 					row.title.Text = "✕ Destroy all microVMs"
 					row.title.Color = acGold.at()
-					row.detail.Text = "kfire destroy --all: every instance with its zvols, tap, seed, unit and estate row"
+					if n := len(fcRowsNow); n > 0 {
+						row.detail.Text = fmt.Sprintf("%d running — kfire destroy --all takes each with its zvols, tap, seed, unit and estate row", n)
+					} else {
+						row.detail.Text = "nothing running — the demo tile below makes some"
+					}
 					open = &openFCDestroyAll
+				case fcDemoUID:
+					row.title.Text = "★ Deploy the demo estate"
+					row.title.Color = acBrand.at()
+					row.detail.Text = demoTileDetail()
+					open = &openFCDemo
 				case fcCloneUID:
 					row.title.Text = "⚡ Clone microVMs"
 					row.title.Color = acBrand.at()
@@ -2580,8 +2599,33 @@ func runGUI(rs *Ruleset) {
 		bw := fyne.CurrentApp().NewWindow(title)
 		batchOpen[title] = bw
 		bw.SetOnClosed(func() { delete(batchOpen, title) })
-		busy := false
+		// busy is read by the close intercept on the UI thread and written by
+		// the job goroutine, so it is atomic, not a plain bool. It also used
+		// to be CLEARED only inside a fyne.Do closure: when the UI thread was
+		// backed up the flag stayed set long after the run had ended and the
+		// window refused to close with nothing left to cancel ("I can't kill
+		// it", fiend 2026-09-06). It is cleared in the goroutine now, before
+		// any UI work is queued.
+		var busy atomic.Bool
+		// The log is a buffer the ticker flushes, not a widget rebuilt per
+		// line. `out.SetText(out.Text + l)` re-read and re-laid-out the whole
+		// text for every line: 45 machines produce ~500 of them, which is
+		// quadratic and is what pinned a core and starved the UI thread.
 		out := widget.NewLabel(intro)
+		var logMu sync.Mutex
+		logBuf := []string{intro}
+		logDirty := false
+		flushLog := func() {
+			logMu.Lock()
+			if !logDirty {
+				logMu.Unlock()
+				return
+			}
+			text := strings.Join(logBuf, "")
+			logDirty = false
+			logMu.Unlock()
+			out.SetText(text)
+		}
 		out.Wrapping = fyne.TextWrapWord
 		out.TextStyle = fyne.TextStyle{Monospace: true}
 		sc := container.NewVScroll(out)
@@ -2594,7 +2638,7 @@ func runGUI(rs *Ruleset) {
 		run = widget.NewButton(button, func() {
 			run.Disable()
 			cancel.Enable()
-			busy = true
+			busy.Store(true)
 			var ctx context.Context
 			ctx, stop = context.WithCancel(context.Background())
 			var (
@@ -2633,10 +2677,16 @@ func runGUI(rs *Ruleset) {
 					bar.Show()
 				}
 			}
-			tick := time.NewTicker(time.Second)
+			// Four times a second: fast enough that the log reads as live,
+			// slow enough that 500 lines are a handful of repaints.
+			tick := time.NewTicker(250 * time.Millisecond)
 			go func() {
 				for range tick.C {
-					fyne.Do(render)
+					fyne.Do(func() {
+						flushLog()
+						sc.ScrollToBottom()
+						render()
+					})
 				}
 			}()
 			go func() {
@@ -2647,11 +2697,13 @@ func runGUI(rs *Ruleset) {
 						pstep = strings.TrimSpace(l[i+2:])
 					}
 					pmu.Unlock()
-					fyne.Do(func() {
-						out.SetText(out.Text + l + "\n")
-						sc.ScrollToBottom()
-						render()
-					})
+					// Append and mark dirty; the ticker paints it. A line no
+					// longer costs a full relayout, and a burst of them costs
+					// one repaint rather than one each.
+					logMu.Lock()
+					logBuf = append(logBuf, l+"\n")
+					logDirty = true
+					logMu.Unlock()
 				}, func(done, total int, tile string) {
 					pmu.Lock()
 					pdone, ptotal, ptile = done, total, tile
@@ -2662,16 +2714,23 @@ func runGUI(rs *Ruleset) {
 					fyne.Do(render)
 				})
 				tick.Stop()
+				// Cleared HERE, in the goroutine, so the window is closable
+				// the instant the work is done however busy the UI thread is.
+				busy.Store(false)
+				logMu.Lock()
+				logBuf = append(logBuf, "\n"+sum+"\n")
+				logDirty = true
+				logMu.Unlock()
 				fyne.Do(func() {
 					pmu.Lock()
 					running = false
 					ptile, pstep = "", ""
 					pmu.Unlock()
 					render()
-					out.SetText(out.Text + "\n" + sum + "\n")
+					flushLog()
+					sc.ScrollToBottom()
 					run.Enable()
 					cancel.Disable()
-					busy = false
 					stop()
 					if autoClose > 0 && !strings.Contains(sum, "FAILED") {
 						status.SetText(status.Text + fmt.Sprintf(" · closing in %ds", int(autoClose.Seconds())))
@@ -2680,9 +2739,19 @@ func runGUI(rs *Ruleset) {
 				})
 			}()
 		})
+		// A window the operator cannot close is a bug, not a safety feature.
+		// The first press of X cancels the run and says so; the second closes
+		// regardless. Cancelling stops the context, which ends the child
+		// process — whatever it already built stays, and "Destroy all
+		// microVMs" is the undo for that.
+		closeAsked := false
 		bw.SetCloseIntercept(func() {
-			if busy {
-				status.SetText("still running — Cancel first, or leave it open")
+			if busy.Load() && !closeAsked {
+				closeAsked = true
+				if stop != nil {
+					stop()
+				}
+				status.SetText("cancelling — press close again to dismiss")
 				return
 			}
 			bw.Close()
@@ -2845,9 +2914,21 @@ func runGUI(rs *Ruleset) {
 			dialog.ShowInformation("Destroy all microVMs", "nothing to remove — no Firecracker instance exists", w)
 			return
 		}
-		dialog.ShowConfirm("Destroy every Firecracker microVM",
+		// The names are SUMMARISED past a dozen. Listing all of them made the
+		// dialog taller than the screen at 45 instances, which put its own
+		// buttons off the bottom edge with no key to dismiss it — the
+		// operator could neither confirm nor cancel (fiend, 2026-09-06).
+		// A confirmation the operator cannot reach is worse than no
+		// confirmation at all.
+		shown := names
+		more := ""
+		if len(names) > 12 {
+			shown = names[:12]
+			more = fmt.Sprintf("\n  …and %d more", len(names)-12)
+		}
+		dialog.ShowConfirm(fmt.Sprintf("Destroy all %d Firecracker microVMs", len(names)),
 			"Removes, with their zvol clones, taps, seeds, units and estate rows:\n\n  "+
-				strings.Join(names, "\n  ")+"\n\nGoldens are kept. There is no undo.",
+				strings.Join(shown, "\n  ")+more+"\n\nGoldens are kept. There is no undo.",
 			func(ok bool) {
 				if !ok {
 					return
@@ -2863,6 +2944,108 @@ func runGUI(rs *Ruleset) {
 					})
 			}, w)
 	}
+	// One touch: the whole argument of the project, deployed while someone
+	// watches. Three lanes at once (fcdemo.go), then the three surfaces —
+	// the VDI wall, a tiled wall of RDP seats already logged in, and the web
+	// servers in Firefox. Everything it makes is a Firecracker clone, so
+	// "Destroy all microVMs" is the undo.
+	openFCDemo = func() {
+		have := make([]string, 0, 8)
+		for _, g := range fcGoldensCached() {
+			have = append(have, g.Name)
+		}
+		if why := DemoBlockers(demoTeardownRunning(), len(fcRowsCached()), have); len(why) > 0 {
+			dialog.ShowInformation("Deploy the demo estate",
+				"Not ready:\n\n  · "+strings.Join(why, "\n  · ")+
+					"\n\nA golden is made by \"Build all\", which takes one of each on the\nway through, or by \"Make a golden…\" on a shut-off appliance.", w)
+			return
+		}
+		lanes := DemoLanes()
+		total := 0
+		for _, l := range lanes {
+			total += l.Count
+		}
+		auditLog("gui: Deploy the demo estate pressed", 0)
+		batchLogWindow("Deploy the demo estate",
+			fmt.Sprintf("Cloning %d microVMs from %d goldens AT THE SAME TIME:\n"+
+				"    "+demoLaneBreakdown(lanes)+"\n\n"+
+				"Each is a ZFS clone of its golden plus a Firecracker process.\n"+
+				"When they answer, three things open: the VDI wall, the RDP\n"+
+				"seats tiled in one window and already signed in as %s, and\n"+
+				"the web servers in Firefox.\n\n"+
+				"Undo is \"Destroy all microVMs\".\n%s", total, len(lanes), DemoGuestUser,
+				func() string {
+					if w := DemoFleetWarning(total, hostAvailableMB()); w != "" {
+						return "\nWARNING: " + w + "\n"
+					}
+					return ""
+				}()),
+			"Deploy", true, 0, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+				before := fcInstanceNames(fcRowsCached())
+				start := time.Now()
+				// The follow-up runs INSIDE the lane, not after all of them:
+				// the web servers take about a minute to answer and the
+				// desktops are up in fifteen seconds, so a shared barrier
+				// would hold the wall shut until the slowest lane landed.
+				// "Open the terminals and clients as soon as the services
+				// are available, all in the same script" (operator,
+				// 2026-09-06). Each lane opens its own, and the counters are
+				// behind a mutex because three goroutines write them.
+				var mu sync.Mutex
+				opened := 0
+				notes := []string{}
+				var everything []Row
+				errs := RunDemoLanes(ctx, lanes, func(ctx context.Context, l demoLane) error {
+					log("── " + l.Label + ": " + fmt.Sprint(l.Count) + " × " + l.Golden)
+					if err := streamCmd(ctx, log, DemoCloneArgv(l)...); err != nil {
+						return err
+					}
+					// This lane's clones are answering NOW; ask kfire for
+					// them rather than waiting on the 2 s estate tick.
+					fcInvalidate()
+					fresh := DemoFreshWithAddresses(l.Golden, before, l.Count,
+						fcRowsCached, fcInvalidate, 45*time.Second)
+					mu.Lock()
+					everything = append(everything, fresh...)
+					mu.Unlock()
+					if len(fresh) == 0 {
+						mu.Lock()
+						notes = append(notes, fmt.Sprintf("%s: %d cloned but none had an address in time — they are running, open them from the estate", l.Label, l.Count))
+						mu.Unlock()
+						return nil
+					}
+					if len(fresh) < l.Count {
+						mu.Lock()
+						notes = append(notes, fmt.Sprintf("%s: %d of %d had an address in time", l.Label, len(fresh), l.Count))
+						mu.Unlock()
+					}
+					n, note := openDemoSurface(l, fresh, vdiWallAct, log)
+					mu.Lock()
+					opened += n
+					if note != "" {
+						notes = append(notes, note)
+					}
+					mu.Unlock()
+					log(fmt.Sprintf("   %s: on screen after %s", l.Label, time.Since(start).Round(time.Second)))
+					return nil
+				})
+				for _, e := range errs {
+					log("FAILED: " + e.Error())
+				}
+				list := everything
+				fyne.Do(func() { showCloneDetails("the demo estate", list) })
+				sum := fmt.Sprintf("%d machines in %s — %d surface(s) opened",
+					len(everything), time.Since(start).Round(time.Second), opened)
+				if len(errs) > 0 {
+					sum = fmt.Sprintf("%d lane(s) FAILED — ", len(errs)) + sum
+				}
+				if len(notes) > 0 {
+					sum += " · " + strings.Join(notes, " · ")
+				}
+				return sum
+			})
+	}
+
 	openFCClone = func() { openFCCloneFor("") }
 	openFCCloneFor = func(preselect string) {
 		auditLog("gui: Clone microVMs tile pressed", 0)
@@ -3259,7 +3442,18 @@ func runGUI(rs *Ruleset) {
 					return
 				}
 				status.SetText(fmt.Sprintf("VDI wall: %d desktop%s — %s", len(streams), plural(len(streams)), p))
-				if u, err := url.Parse("file://" + p); err == nil {
+				// Firefox by name (BrowserArgv), not OpenURL: the wall is a
+				// page of autoplaying WebRTC iframes and the operator asked
+				// for Firefox after a Chrome-family default sat on black
+				// rectangles (2026-09-05, again 2026-09-06). OpenURL is the
+				// last resort when neither firefox nor xdg-open is here.
+				if argv := BrowserArgv("file://" + p); argv != nil {
+					if err := exec.Command(argv[0], argv[1:]...).Start(); err != nil {
+						dialog.ShowError(err, w)
+					} else {
+						auditLog(strings.Join(argv, " "), 0)
+					}
+				} else if u, err := url.Parse("file://" + p); err == nil {
 					if err := fyne.CurrentApp().OpenURL(u); err != nil {
 						dialog.ShowError(err, w)
 					}
