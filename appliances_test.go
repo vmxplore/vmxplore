@@ -1,12 +1,53 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// testAppliance is the generic tests' subject: a free-text field, a domain,
+// a username, a generated secret and a Validate with a message for each —
+// every trait the tests below exercise, owned by the tests. It replaced
+// WriteFreely as the subject when that tile left the catalog (2026-09-06);
+// a test that leans on a catalog entry breaks whenever the catalog moves.
+var testAppliance = Appliance{
+	Name:    "Test Tile",
+	Summary: "fixture for the appliance mechanism tests",
+	Distro:  "debian",
+	VCPUs:   1,
+	RAMMB:   1024,
+	DiskGB:  8,
+	Port:    80,
+	Fields: []ApplianceField{
+		{Key: "TT_SITE_NAME", Label: "site name", Default: "My Site", Required: true},
+		{Key: "TT_DOMAIN", Label: "domain", Placeholder: "site.example.com"},
+		{Key: "TT_ADMIN_USER", Label: "admin user", Default: "editor", Required: true},
+		{Key: "TT_ADMIN_PASS", Label: "admin password", Secret: true, Generate: true, Required: true},
+	},
+	Validate: func(v map[string]string) error {
+		if strings.ContainsAny(v["TT_SITE_NAME"], "\r\n") {
+			return fmt.Errorf("site name must be a single line")
+		}
+		if strings.Contains(v["TT_DOMAIN"], "://") || strings.Contains(v["TT_DOMAIN"], "/") {
+			return fmt.Errorf("domain is a bare hostname, not a URL")
+		}
+		if !testUserRE.MatchString(v["TT_ADMIN_USER"]) {
+			return fmt.Errorf("admin user: 3+ characters, lowercase letters, digits and dashes")
+		}
+		if len(v["TT_ADMIN_PASS"]) < 8 {
+			return fmt.Errorf("admin password must be at least 8 characters")
+		}
+		return nil
+	},
+	Script: "echo \"site ${TT_SITE_NAME} for ${TT_ADMIN_USER}\"\n",
+}
+
+var testUserRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{2,}$`)
 
 // hostileValues are the strings an appliance form must survive. Every one
 // of them is a shell metacharacter sequence that would execute if a value
@@ -106,9 +147,9 @@ func TestRenderKeepsHostileValuesInert(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "pwned")
 	for _, hostile := range hostileValues {
-		vals := writeFreely.Defaults()
-		vals["WF_SITE_NAME"] = hostile
-		script, err := writeFreely.Render(vals)
+		vals := testAppliance.Defaults()
+		vals["TT_SITE_NAME"] = hostile
+		script, err := testAppliance.Render(vals)
 		if err != nil {
 			t.Fatalf("Render(%q): %v", hostile, err)
 		}
@@ -123,7 +164,7 @@ func TestRenderKeepsHostileValuesInert(t *testing.T) {
 			t.Fatal("rendered script lost its substrate marker")
 		}
 		probe := preamble + "\ntouch " + shellSingleQuote(marker) +
-			"_never\nprintf '%s' \"$WF_SITE_NAME\"\n"
+			"_never\nprintf '%s' \"$TT_SITE_NAME\"\n"
 		out, err := exec.Command(bash, "-c", probe).Output()
 		if err != nil {
 			t.Fatalf("preamble for %q did not execute: %v", hostile, err)
@@ -138,12 +179,12 @@ func TestRenderKeepsHostileValuesInert(t *testing.T) {
 }
 
 func TestRenderEmitsEveryFieldInOrder(t *testing.T) {
-	script, err := writeFreely.Render(writeFreely.Defaults())
+	script, err := testAppliance.Render(testAppliance.Defaults())
 	if err != nil {
 		t.Fatal(err)
 	}
 	at := -1
-	for _, f := range writeFreely.Fields {
+	for _, f := range testAppliance.Fields {
 		// Fields render as `export KEY='v'` since 2026-09-04 — checks run
 		// in bash -c children, which never see unexported assignments.
 		i := strings.Index(script, "\nexport "+f.Key+"=")
@@ -156,7 +197,7 @@ func TestRenderEmitsEveryFieldInOrder(t *testing.T) {
 		at = i
 	}
 	// The body must follow the assignments, or the script reads empty vars.
-	if strings.Index(script, "WF_VERSION=") < at {
+	if strings.Index(script, "echo \"site ") < at {
 		t.Error("script body precedes the field preamble")
 	}
 }
@@ -165,20 +206,20 @@ func TestRenderEmitsEveryFieldInOrder(t *testing.T) {
 // each time — a shared default password across appliances is exactly the
 // failure this field type exists to prevent.
 func TestGenerateFieldsProduceFreshSecrets(t *testing.T) {
-	vals := writeFreely.Defaults()
-	vals["WF_ADMIN_PASS"] = ""
-	first, err := writeFreely.resolve(vals)
+	vals := testAppliance.Defaults()
+	vals["TT_ADMIN_PASS"] = ""
+	first, err := testAppliance.resolve(vals)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := writeFreely.resolve(vals)
+	second, err := testAppliance.resolve(vals)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first["WF_ADMIN_PASS"]) < 16 {
-		t.Errorf("generated password too short: %q", first["WF_ADMIN_PASS"])
+	if len(first["TT_ADMIN_PASS"]) < 16 {
+		t.Errorf("generated password too short: %q", first["TT_ADMIN_PASS"])
 	}
-	if first["WF_ADMIN_PASS"] == second["WF_ADMIN_PASS"] {
+	if first["TT_ADMIN_PASS"] == second["TT_ADMIN_PASS"] {
 		t.Error("generated password repeated across renders")
 	}
 }
@@ -190,22 +231,20 @@ func TestResolveRejectsBadInput(t *testing.T) {
 		value string
 		want  string
 	}{
-		// The one that matters: every other appliance defaults to "admin",
-		// and WriteFreely reserves it. Without this the failure surfaces
-		// only in the guest's cloud-init log.
-		{"reserved username", "WF_ADMIN_USER", "admin", "reserves"},
-		{"reserved username uppercase", "WF_ADMIN_USER", "Admin", "reserves"},
-		{"short username", "WF_ADMIN_USER", "ab", "3+ characters"},
-		{"username with space", "WF_ADMIN_USER", "matt jones", "3+ characters"},
-		{"domain as url", "WF_DOMAIN", "https://blog.example.com", "bare hostname"},
-		{"newline in site name", "WF_SITE_NAME", "a\nb", "single line"},
-		{"short password", "WF_ADMIN_PASS", "short", "at least 8"},
+		// Validate runs before Render, so a bad field is an error on the form
+		// and never a failure buried in the guest's cloud-init log.
+		{"short username", "TT_ADMIN_USER", "ab", "3+ characters"},
+		{"uppercase username", "TT_ADMIN_USER", "Admin", "lowercase"},
+		{"username with space", "TT_ADMIN_USER", "matt jones", "3+ characters"},
+		{"domain as url", "TT_DOMAIN", "https://blog.example.com", "bare hostname"},
+		{"newline in site name", "TT_SITE_NAME", "a\nb", "single line"},
+		{"short password", "TT_ADMIN_PASS", "short", "at least 8"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			vals := writeFreely.Defaults()
+			vals := testAppliance.Defaults()
 			vals[tc.key] = tc.value
-			_, err := writeFreely.Render(vals)
+			_, err := testAppliance.Render(vals)
 			if err == nil {
 				t.Fatalf("accepted %s=%q", tc.key, tc.value)
 			}
@@ -268,7 +307,7 @@ func TestSpecProducesValidNewVMSpec(t *testing.T) {
 // The rendered script travels inside a cloud-config YAML block scalar, so
 // it must survive userData()'s indentation with its content intact.
 func TestApplianceScriptSurvivesCloudConfig(t *testing.T) {
-	s, err := writeFreely.Spec("blog", "admin", "guestpass", "", writeFreely.Defaults())
+	s, err := testAppliance.Spec("blog", "admin", "guestpass", "", testAppliance.Defaults())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +381,7 @@ func TestEveryApplianceRendersFromItsOwnDefaults(t *testing.T) {
 		// options the wrapper relies on to fail loudly. Only the FIRST line
 		// is the wrapper's business — a shebang deeper in is a heredoc
 		// writing a script into the guest, which several entries legitimately
-		// do (WriteFreely writes an .xinitrc).
+		// do (a desktop tile writing its session script, for one).
 		if first, _, _ := strings.Cut(strings.TrimLeft(a.Script, "\n"), "\n"); strings.HasPrefix(first, "#!") {
 			t.Errorf("%s: script opens with a shebang — the runcmd wrapper owns that", a.Name)
 		}

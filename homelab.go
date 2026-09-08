@@ -1269,23 +1269,34 @@ Group=${_icuser}
 ExecStart=/usr/bin/icecast -c /etc/icecast-stations/%i.xml
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=yes
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+# No NoNewPrivileges= here, on purpose. With it, SELinux refuses the domain
+# transition init_t -> icecast_t at exec (the policy grants no nnp_transition),
+# so icecast ran as init_t, was denied the httpd_sys_content_t stylesheets,
+# and every station answered "404 - Could not parse XSLT file" — the build's
+# own "station 1 answers" check failed and the tile was reported broken
+# (fiend, 2026-09-06). Confined as icecast_t it reads them fine.
 [ -x /usr/bin/icecast ] || sed -i 's|/usr/bin/icecast |/usr/bin/icecast2 |' /etc/systemd/system/icecast@.service
 
 # ─── SELinux: a station's dataset is born unlabeled_t ─────────────────────
-# A fresh ZFS dataset carries no label, and icecast (init_t under this unit)
-# was denied add_name on every station's log dir: "could not open access
-# logging: Permission denied", 6390 restarts on onyx, 2026-09-04. Register
-# the contexts once; add-station relabels each new tree. var_log_t for the
-# logs was tested in place — the station came up on the next restart.
+# A fresh ZFS dataset carries no label, and icecast was denied add_name on
+# every station's log dir: "could not open access logging: Permission
+# denied", 6390 restarts on onyx, 2026-09-04. Register the contexts once;
+# add-station relabels each new tree.
+#
+# icecast_log_t, not var_log_t: the daemon runs confined as icecast_t now
+# (see the unit above), and that domain writes icecast_log_t, not var_log_t.
+# The port range is the policy's other gap — soundd_port_t is 8000 alone and
+# the stations live on 8000+N. Both verified in place on fiend, 2026-09-06:
+# four stations, icecast_t, status.xsl 200, no denials.
 app_selinux var_t "/srv/stations(/.*)?"
-app_selinux var_log_t "/srv/stations/[0-9]+/log(/.*)?"
+app_selinux icecast_log_t "/srv/stations/[0-9]+/log(/.*)?"
+app_selinux_port soundd_port_t tcp 8001-8064
 
 # ─── add-station: clone the next one ────────────────────────────────────
 cat >/usr/local/bin/add-station <<'ADDST'

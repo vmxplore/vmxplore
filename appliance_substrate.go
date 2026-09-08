@@ -395,6 +395,20 @@ app_selinux() {
         semanage fcontext -m -t "$1" "$2" 2>/dev/null || true
 }
 
+# app_selinux_port <type> <proto> <port|lo-hi> — let a confined daemon bind a
+# port the policy does not already give it. No-op without SELinux. icecast_t
+# may bind soundd_port_t, which is 8000 alone; a rack of stations on
+# 8001-8064 was refused "Could not create listener socket" the moment the
+# daemon actually ran confined (fiend, 2026-09-06).
+app_selinux_port() {
+    selinuxenabled 2>/dev/null || return 0
+    command -v semanage >/dev/null 2>&1 || return 0
+    # -a fails when the range is already defined (a re-run); -m then updates it.
+    semanage port -a -t "$1" -p "$2" "$3" 2>/dev/null ||
+        semanage port -m -t "$1" -p "$2" "$3" 2>/dev/null ||
+        app_warn "could not label $2 port(s) $3 as $1"
+}
+
 app_relabel() {
     command -v restorecon >/dev/null 2>&1 || return 0
     selinuxenabled 2>/dev/null || return 0
