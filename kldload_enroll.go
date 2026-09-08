@@ -34,6 +34,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -156,6 +157,51 @@ func enrollGuestSSH(ip string, cmd string) (string, error) {
 // estate CA keeps a serial index file. Everything else in enrollment is
 // ssh into one guest and needs no ordering.
 var enrollHostMu sync.Mutex
+
+// enrollGate is that same exclusion ACROSS PROCESSES. The mutex above only
+// binds goroutines in one vmxplore; kfire enrolls a batch by running one
+// `vmx --enroll` per machine, and forty of those racing on allocMeshSubnet
+// would hand the same /24 to several guests. A file lock is what two
+// processes can agree on. Held for the pick-and-create pair and for the CA
+// issue, exactly as the mutex was.
+//
+// The lock file carries no data, so its mode is deliberately permissive: any
+// account that may enroll must be able to take it. Falls back through three
+// locations and, failing all of them, degrades to the in-process mutex alone
+// rather than refusing to enroll — a demo that will not run is worse than a
+// subnet collision the operator can see and repair.
+type enrollGate struct{ f *os.File }
+
+func enrollHostLock() *enrollGate {
+	enrollHostMu.Lock()
+	for _, path := range []string{"/run/lock/kldload-enroll.lock", "/run/kldload/enroll.lock", filepath.Join(os.TempDir(), "kldload-enroll.lock")} {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o666)
+		if err != nil {
+			// A directory only root may write: ask sudo to make the file
+			// once, then take it as ourselves.
+			if _, serr := sudoRun("install", "-m", "0666", "/dev/null", path); serr != nil {
+				continue
+			}
+			if f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o666); err != nil {
+				continue
+			}
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			f.Close()
+			continue
+		}
+		return &enrollGate{f: f}
+	}
+	return &enrollGate{}
+}
+
+func (g *enrollGate) unlock() {
+	if g.f != nil {
+		_ = syscall.Flock(int(g.f.Fd()), syscall.LOCK_UN)
+		_ = g.f.Close()
+	}
+	enrollHostMu.Unlock()
+}
 
 // allocMeshSubnet picks the /24 for a mesh: the one it already has when the
 // interface exists (re-enrolling is how an operator repairs), else the first
@@ -286,7 +332,7 @@ func EnrollGuestAt(vmName, ip, role string, log func(string)) error {
 		"command -v wg >/dev/null 2>&1 || dnf -y install wireguard-tools >/dev/null 2>&1 || "+
 			"(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools) >/dev/null 2>&1 || true")
 	mesh := enrollMeshName(vmName)
-	enrollHostMu.Lock()
+	gate := enrollHostLock()
 	if subnet, err := allocMeshSubnet(mesh); err != nil {
 		log("enroll: mesh skipped — " + err.Error())
 	} else if out, err := sudoRun("kvm-mesh", "up", mesh, subnet, vmName); err != nil {
@@ -298,12 +344,12 @@ func EnrollGuestAt(vmName, ip, role string, log func(string)) error {
 	} else {
 		log("enroll: mesh '" + mesh + "' up on " + subnet + ".0/24 — wgxplore picks it up on next sync")
 	}
-	enrollHostMu.Unlock()
+	gate.unlock()
 
 	// ── TLS leaf from the estate CA ──
 	issue := func() (string, error) {
-		enrollHostMu.Lock()
-		defer enrollHostMu.Unlock()
+		g := enrollHostLock()
+		defer g.unlock()
 		return sudoRun("kldload-ca", "issue", vmName, "--dns", vmName, "--ip", ip)
 	}
 	if _, err := sudoRun("test", "-f", "/etc/kldload/ca/root/ca.crt"); err != nil {
