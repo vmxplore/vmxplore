@@ -151,10 +151,23 @@ if [ "$APP_FAMILY" = rpm ]; then
     # Upstream dropped its own RPMs at 10.9 and points Fedora at RPM Fusion.
     app_pkg policycoreutils-python-utils firewalld
     _fedora_ver="$(rpm -E %fedora)"
-    rpm -q rpmfusion-free-release >/dev/null 2>&1 ||
-        app_pkg "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${_fedora_ver}.noarch.rpm"
-    rpm -q rpmfusion-nonfree-release >/dev/null 2>&1 ||
-        app_pkg_optional "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${_fedora_ver}.noarch.rpm"
+    # mirrors.rpmfusion.org is a redirector, and it keeps handing out the same
+    # nearby mirror. fiend 2026-09-13: it sent every request to muug.ca, which
+    # answered ping and refused 80 and 443, and this tile died at "FATAL line
+    # 53: dnf -y install" while 11 others built. download1.rpmfusion.org is the
+    # master: slower, but not a volunteer mirror that can be down.
+    _rpmfusion_release() { # <free|nonfree>
+        _rf="$1/fedora/rpmfusion-$1-release-${_fedora_ver}.noarch.rpm"
+        rpm -q "rpmfusion-$1-release" >/dev/null 2>&1 && return 0
+        app_log "installing: rpmfusion-$1-release"
+        if ! dnf -y install "https://mirrors.rpmfusion.org/$_rf" >/dev/null 2>&1; then
+            app_warn "mirrors.rpmfusion.org failed for rpmfusion-$1-release — trying the RPM Fusion master"
+            dnf -y install "https://download1.rpmfusion.org/$_rf" >/dev/null || return 1
+        fi
+        rpm -q "rpmfusion-$1-release" >/dev/null 2>&1
+    }
+    _rpmfusion_release free || app_die "rpmfusion-free-release did not install from the mirror or the master"
+    _rpmfusion_release nonfree || app_warn "optional not installed: rpmfusion-nonfree-release"
     # The NVIDIA cuda repo fights RPM Fusion over driver packages; keep it out
     # of this one transaction rather than editing the operator's repo files.
     _dnf_excl=""
