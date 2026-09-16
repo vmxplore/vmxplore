@@ -1018,6 +1018,14 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		argv = append(argv, audioArgs(target)...)
 		return append(argv, "--noautoconsole")
 	}
+	// virt-install auto-defines a dir pool named after the directory that
+	// holds the seed ISO ("images") when no pool covers it. Two tiles
+	// building at once both tried, and the second lost: "Could not define
+	// storage pool: pool 'images' already exists with uuid ..." — app-web-
+	// stack on fiend, 2026-09-15, build-all with jobs > 1. Define it once,
+	// first; a pool that is already there is the ordinary case.
+	ensureDirPool(target.LibvirtURI, "images", "/var/lib/libvirt/images", progress)
+
 	// Ask osinfo-db first instead of letting virt-install refuse: the
 	// catalog names the newest Fedora, this host's osinfo-db (20251212)
 	// stops at fedora42, and every Fedora build logged a failing
@@ -1099,6 +1107,30 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 // the guest's whole disk in devtmpfs. Found 2026-08-09 by inspecting a
 // built appliance: lsblk showed 3G (the cloud image) on a 10G request, and
 // /dev/zvol/<ds> was a regular file while the zvol itself had USED=56K.
+// ensureDirPool makes sure a libvirt directory pool of that name exists,
+// is built, running and autostarted, so that nothing later has to define it
+// by accident. Idempotent: an existing pool returns at once, and a pool that
+// appears between the check and the define (a parallel build won the race)
+// is reported, not fatal — virt-install needs the pool to exist, not to be
+// ours.
+func ensureDirPool(uri, name, dir string, progress func(string)) {
+	quiet := func(string) {}
+	if runStep(quiet, false, "virsh", "--connect", uri, "pool-info", name) == nil {
+		return
+	}
+	progress("storage pool " + name + " is not defined — defining it for " + dir)
+	for _, argv := range [][]string{
+		{"virsh", "--connect", uri, "pool-define-as", name, "dir", "--target", dir},
+		{"virsh", "--connect", uri, "pool-build", name},
+		{"virsh", "--connect", uri, "pool-start", name},
+		{"virsh", "--connect", uri, "pool-autostart", name},
+	} {
+		if err := runStep(quiet, false, argv...); err != nil {
+			progress("storage pool " + name + ": " + err.Error())
+		}
+	}
+}
+
 func waitZvolNode(dev string, progress func(string)) error {
 	return waitZvolNodeFor(dev, 30*time.Second, progress)
 }
