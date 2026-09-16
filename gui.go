@@ -3435,18 +3435,34 @@ func runGUI(rs *Ruleset) {
 		auditLog("gui: VDI wall", 0)
 		go func() {
 			streams := VDIWallStreams(rows, whepProbe)
-			p, err := WriteVDIWall(streams)
+			paths, err := WriteVDIWallPages(streams)
+			var p string
+			if len(paths) > 0 {
+				p = paths[0]
+			}
 			fyne.Do(func() {
 				if err != nil {
 					dialog.ShowError(err, w)
 					return
 				}
-				status.SetText(fmt.Sprintf("VDI wall: %d desktop%s — %s", len(streams), plural(len(streams)), p))
+				status.SetText(fmt.Sprintf("VDI wall: %d desktop%s across %d tab%s", len(streams), plural(len(streams)), len(paths), plural(len(paths))))
 				// Firefox by name (BrowserArgv), not OpenURL: the wall is a
 				// page of autoplaying WebRTC iframes and the operator asked
 				// for Firefox after a Chrome-family default sat on black
 				// rectangles (2026-09-05, again 2026-09-06). OpenURL is the
 				// last resort when neither firefox nor xdg-open is here.
+				// Every page as its own tab. Staggered, because a browser
+				// handed several URLs at once drops all but the first, and
+				// each page is autoplaying WebRTC.
+				for i, pp := range paths[1:] {
+					pp := pp
+					go func(n int) {
+						time.Sleep(time.Duration(500+n*400) * time.Millisecond)
+						if a := BrowserArgv("file://" + pp); a != nil {
+							_ = exec.Command(a[0], a[1:]...).Start()
+						}
+					}(i)
+				}
 				if argv := BrowserArgv("file://" + p); argv != nil {
 					if err := exec.Command(argv[0], argv[1:]...).Start(); err != nil {
 						dialog.ShowError(err, w)

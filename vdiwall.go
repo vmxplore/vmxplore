@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -128,6 +129,36 @@ func VDIWallStreams(rows []Row, probe func(string) bool) []wallStream {
 // VDIWallHTML renders the wall. Columns follow the count so four desktops
 // are a 2×2 and ten are a 4×3, each tile 16:9; a tile's caption is a link to
 // the full player with controls.
+// VDIWallHTMLPage is VDIWallHTML plus a page counter and links to the sibling
+// pages, so a fleet split across tabs still says which part of it you are
+// looking at.
+func VDIWallHTMLPage(streams []wallStream, page, pages, total int) string {
+	body := VDIWallHTML(streams)
+	if pages <= 1 {
+		return body
+	}
+	var nav strings.Builder
+	fmt.Fprintf(&nav, `<div class="pg">page %d of %d &middot; %d of %d desktops`,
+		page, pages, len(streams), total)
+	for i := 1; i <= pages; i++ {
+		cls := ""
+		if i == page {
+			cls = ` class="on"`
+		}
+		fmt.Fprintf(&nav, ` <a href="vmx-vdi-wall-%d-%d.html"%s>%d</a>`,
+			os.Getuid(), i, cls, i)
+	}
+	nav.WriteString("</div>")
+	style := `<style>.pg{font:14px system-ui;color:#9aa6b4;padding:6px 18px}` +
+		`.pg a{color:#7fb3ff;text-decoration:none;padding:0 5px}` +
+		`.pg a.on{color:#fff;font-weight:700}</style>`
+	// after <body> so it sits above the grid
+	if i := strings.Index(body, "<main"); i >= 0 {
+		return body[:i] + style + nav.String() + body[i:]
+	}
+	return body + style + nav.String()
+}
+
 func VDIWallHTML(streams []wallStream) string {
 	var b strings.Builder
 	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><title>VDI wall</title>
@@ -175,6 +206,53 @@ func plural(n int) string {
 }
 
 // WriteVDIWall writes the page and returns its path.
+// VDIWallPerPage is how many desktops go on one page.
+//
+// Fifty streams in one grid is four columns and thirteen rows: it scrolls, and
+// every tile is a postage stamp. Twenty is five rows of four, which fills a
+// screen and stays legible, so a fleet opens as several tabs rather than one
+// long scroll (operator, 2026-09-16: "3 tabs 20 on each"). Override with
+// VMX_WALL_PER_PAGE when a bigger screen wants more.
+const VDIWallPerPage = 20
+
+func wallPerPage() int {
+	if v := os.Getenv("VMX_WALL_PER_PAGE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return VDIWallPerPage
+}
+
+// WriteVDIWallPages splits the streams across pages and writes one file each.
+// Returns the paths in order; the caller opens them as tabs. A single page is
+// still a one-element slice, so there is one code path, not two.
+func WriteVDIWallPages(streams []wallStream) ([]string, error) {
+	per := wallPerPage()
+	total := (len(streams) + per - 1) / per
+	if total < 1 {
+		total = 1
+	}
+	var paths []string
+	for i := 0; i < total; i++ {
+		lo := i * per
+		hi := lo + per
+		if hi > len(streams) {
+			hi = len(streams)
+		}
+		// Per-user AND per-page path: a fixed name is one file two accounts
+		// fight over (onyx, 2026-09-06).
+		p := filepath.Join(os.TempDir(),
+			fmt.Sprintf("vmx-vdi-wall-%d-%d.html", os.Getuid(), i+1))
+		body := VDIWallHTMLPage(streams[lo:hi], i+1, total, len(streams))
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			return nil, fmt.Errorf("writing wall page %d: %w", i+1, err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
+}
+
 func WriteVDIWall(streams []wallStream) (string, error) {
 	// Per-user path. A fixed /tmp/vmx-vdi-wall.html is one file two accounts
 	// fight over: the second one to open the wall gets "permission denied"

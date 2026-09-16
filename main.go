@@ -30,6 +30,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -363,15 +364,24 @@ func main() {
 			if len(streams) == 0 {
 				fmt.Fprintln(os.Stderr, "vdi-wall: no VDI desktop is streaming — start the VDI appliance or clone its Firecracker golden")
 			}
-			p, err := WriteVDIWall(streams)
+			paths, err := WriteVDIWallPages(streams)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "vmx: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println(p)
+			for _, p := range paths {
+				fmt.Println(p)
+			}
 			if open {
-				if err := exec.Command("xdg-open", p).Start(); err != nil {
-					fmt.Fprintf(os.Stderr, "vmx: xdg-open: %v\n", err)
+				// One tab per page. Staggered: browsers drop tabs opened in a
+				// tight loop, and the wall is autoplaying video in every one.
+				for i, p := range paths {
+					if i > 0 {
+						time.Sleep(400 * time.Millisecond)
+					}
+					if err := exec.Command("xdg-open", p).Start(); err != nil {
+						fmt.Fprintf(os.Stderr, "vmx: xdg-open: %v\n", err)
+					}
 				}
 			}
 			return
