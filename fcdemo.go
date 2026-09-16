@@ -642,26 +642,6 @@ func DemoBlockers(tearingDown bool, live int, goldens []string) []string {
 	return why
 }
 
-// demoTeardownRunning reports whether a kfire destroy is in flight. pgrep is
-// the probe because the teardown is a child process, not a state file.
-//
-// The pattern is ANCHORED at the start of the command line. A bare
-// `pgrep -f "kfire destroy"` matches any process whose arguments merely
-// contain that text — a shell one-liner about it, an editor with the script
-// open, or the very test that was checking the probe (caught 2026-09-06).
-// A false positive here blocks the demo for no reason, which is worse than
-// the race it exists to prevent.
-func demoTeardownRunning() bool {
-	const pat = `^(sudo( +-[A-Za-z]+)* +)?[^ ]*kfire +(destroy|golden-destroy)\b`
-	out, err := exec.Command("pgrep", "-f", pat).Output()
-	if err != nil {
-		// pgrep exits 1 when nothing matches, which is the common case and
-		// not an error worth reporting.
-		return false
-	}
-	return len(strings.TrimSpace(string(out))) > 0
-}
-
 // demoLaneBreakdown renders the per-lane counts as one line — "15 streamed
 // desktops   15 RDP seats   15 LAMP servers".
 //
