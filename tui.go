@@ -339,7 +339,15 @@ func (m *ui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = styWarn.Render(msg.err.Error())
 		}
-		return m, nil
+		// Refresh both halves, exactly as verbDoneMsg does, and for two
+		// reasons. The screen: coming back from `c` or `S` this returned a nil
+		// command, so nothing drew until the 2 s estate tick happened to fire
+		// — the console's last frame just sat there and the TUI looked hung
+		// (operator, 2026-09-20: "ctrl d to exit .. it doesnt return you to
+		// vmx"). The data: a console session is a session, and a guest that
+		// was shut down or rebooted from inside it has a state the table is
+		// now wrong about.
+		return m, tea.Batch(m.fetchEstate(), m.fetchZFS())
 
 	case verbDoneMsg:
 		if msg.err != nil {
@@ -809,10 +817,34 @@ func (m *ui) execConsole() tea.Cmd {
 		m.status = styWarn.Render("virsh not found — install libvirt-client")
 		return nil
 	}
-	m.status = "→ virsh console " + r.D.Name + "   (exit: ctrl+])"
+	// The escape sequence, and why this is worth a paragraph.
+	//
+	// virsh console leaves on ctrl+] — NOT ctrl+d. ctrl+d is end-of-file: it
+	// goes through to the guest's shell, which logs out, and getty hands back
+	// a fresh login prompt while virsh stays attached. From the outside that
+	// is indistinguishable from "the console will not let me out", which is
+	// exactly how it was reported.
+	//
+	// virsh's own -e takes the escape character, so it is configurable rather
+	// than a thing to memorise. Default stays ^] because ctrl+d is genuinely
+	// useful INSIDE a guest — ending a here-doc, closing a pipe, logging out
+	// — and an escape character is stolen from the guest, not shared with it.
+	// Set VMX_CONSOLE_ESCAPE=^D if leaving matters more than sending EOF.
+	esc := os.Getenv("VMX_CONSOLE_ESCAPE")
+	if esc == "" {
+		esc = "^]"
+	}
+	m.status = "→ virsh console " + r.D.Name + "   (exit: " + esc + ")"
 	// pinned URI: bare virsh as a group member lands in qemu:///session
-	v := virsh("console", r.D.Name)
-	c := exec.Command(v[0], v[1:]...)
+	v := virsh("-e", esc, "console", r.D.Name)
+	// The hint goes on the terminal the console is about to take over, because
+	// the status line above is the first thing the guest's output covers. sh
+	// gets the text and the argv as ARGUMENTS, never interpolated into the
+	// script: a domain name reaching a shell is the injection this project
+	// does not do.
+	hint := "vmxplore: attached to " + r.D.Name + " — press " + esc + " to return to vmx (ctrl+d only logs the guest out)"
+	args := append([]string{"-c", `printf '%s\n\n' "$1"; shift; exec "$@"`, "_", hint}, v...)
+	c := exec.Command("/bin/sh", args...)
 	return tea.ExecProcess(c, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
