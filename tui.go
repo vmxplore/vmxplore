@@ -626,8 +626,34 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = styWarn.Render(err.Error())
 		return m, nil
 	}
+	// Verbs that only ADD state run immediately — no confirm box.
+	//
+	// The box exists to show the exact command before something irreversible
+	// happens, and for force off, delete, rollback or a disk grow that is
+	// worth a keystroke. Starting a VM is none of those: the worst outcome of
+	// a mistaken `u` is a VM that is running, and `d` puts it back. Making the
+	// operator answer "are you sure you want to start it" is the confirmation
+	// habit the project rules already reject, and it is the difference between
+	// a console that feels instant and one that nags.
+	//
+	// Deliberately narrow. `d` and `b` interrupt whatever the guest is doing,
+	// so they keep the box even though they are not destructive.
+	if instantVerb[msg.String()] {
+		m.pending, m.typed, m.overlay = &plan, "", ""
+		return m.firePlan()
+	}
 	m.pending, m.typed, m.overlay = &plan, "", "confirm"
 	return m, nil
+}
+
+// instantVerb — keys that skip the confirmation box, because the action only
+// creates state and the opposite action is one keystroke away.
+// Snapshot is not here on purpose: `p` opens the input overlay for its suffix
+// and confirms from there, so it never reaches the dispatch this map guards.
+var instantVerb = map[string]bool{
+	"u": true, // start   — undo is d
+	"Z": true, // resume  — undo is z
+	"A": true, // autostart toggle — undo is pressing A again
 }
 
 // keyConfirm fires a pending plan: y or enter runs it, esc/q backs out.
@@ -1221,11 +1247,11 @@ func (m *ui) actionsText() string {
 	}
 
 	sect("POWER")
-	verb("u", "start")
+	verb("u", "start "+styStatus.Render("(runs at once)"))
 	verb("d", "shut down (graceful)")
 	verb("b", "reboot")
 	verb("z", "suspend (pause)")
-	verb("Z", "resume")
+	verb("Z", "resume "+styStatus.Render("(runs at once)"))
 	verb("K", "force off "+styWarn.Render("(no undo)"))
 
 	sect("DISK")
@@ -1236,7 +1262,7 @@ func (m *ui) actionsText() string {
 
 	sect("CONFIG")
 	verb("v", "vcpu / memory (next start)")
-	verb("A", "autostart (now: "+auto+")")
+	verb("A", "autostart (now: "+auto+") "+styStatus.Render("(runs at once)"))
 	verb("F", "seal as a firecracker golden")
 
 	sect("ACCESS")
@@ -1328,16 +1354,16 @@ func helpText() string {
 	k("S", "ssh to guest (agent IP; $VMX_SSH_USER)")
 	b.WriteString("\n")
 	section("act — a opens the menu, or press the verb key directly")
-	k("u", "start — microVM rows use the kfire verb")
+	k("u", "start — runs at once, no confirm; microVM rows use kfire")
 	k("d", "shut down (graceful)")
 	k("K", "force off "+styWarn.Render("(no undo)"))
 	k("b", "reboot")
-	k("z/Z", "suspend / resume")
+	k("z/Z", "suspend / resume — resume runs at once")
 	k("p", "snapshot (zfs, manual-*)")
 	k("C", "clone to a new name (from @golden where sealed)")
 	k("+", "grow the disk "+styWarn.Render("(one way)"))
 	k("v", "edit vcpu/mem (next start)")
-	k("A", "autostart toggle")
+	k("A", "autostart toggle — runs at once")
 	k("F", "seal as a firecracker golden")
 	k("D", "delete — or forget an unreconciled row "+styWarn.Render("(zvol + snapshots)"))
 	b.WriteString("\n" + styStatus.Render(
