@@ -48,7 +48,7 @@ type Dom struct {
 	CPUTimeNs  uint64 // cumulative; CPU%% is a delta between two samples
 	Disks      []Disk
 	AgentUp    bool
-	IPs        []string // non-loopback; guest-agent first, DHCP leases if none
+	IPs        []string // non-loopback; agent, then DHCP lease, then host ARP
 	Persistent bool     // transient domains vanish on destroy — verbs.go guards
 	Autostart  bool
 }
@@ -298,9 +298,7 @@ func (lv *LV) Estate() ([]Dom, error) {
 				// one that shows addresses only for guests somebody else
 				// built. AgentUp stays false either way: the badge is about
 				// the agent, not about whether we found an address.
-				if leased, lerr := lv.leaseAddrs(ld); lerr == nil {
-					d.IPs = append(d.IPs, leased...)
-				}
+				d.IPs = lv.fallbackAddrs(ld)
 				return
 			}
 			d.AgentUp = true
@@ -310,6 +308,26 @@ func (lv *LV) Estate() ([]Dom, error) {
 						d.IPs = append(d.IPs, a.Addr)
 					}
 				}
+			}
+			// An agent that ANSWERS but reports only loopback is not the same
+			// as no agent, and until now only the second case fell back to the
+			// leases: the fallback hung off `err != nil`, so a successful call
+			// returning nothing but 127.0.0.1 left the row with no address at
+			// all.
+			//
+			// That is not a corner case. A guest whose agent starts before its
+			// interface finishes DHCP answers exactly like this, and so does
+			// one whose NIC the agent cannot see. On fiend 2026-09-20 every
+			// klab VM was in that state — ten running guests showing no
+			// address in vmx while `virsh net-dhcp-leases` had a lease for
+			// every one of their MACs.
+			//
+			// So the fallback now hangs off the OUTCOME — no usable address —
+			// rather than off which call failed. AgentUp stays true either
+			// way: that badge is about the agent, not about who found the
+			// address.
+			if len(d.IPs) == 0 {
+				d.IPs = lv.fallbackAddrs(ld)
 			}
 		}(ld, d)
 	}
@@ -346,9 +364,47 @@ func (lv *LV) CPUSample() (map[string]uint64, time.Time, error) {
 
 // leaseAddrs is LeaseIPs for a domain handle the caller already has, so the
 // estate sweep does not pay a lookup-by-name per guest.
+// fallbackAddrs tries the hypervisor's own knowledge, best source first, and
+// returns whatever answers. Both callers want the same ladder, and having it
+// in one place is why the no-agent path and the loopback-only path cannot
+// drift apart again — they were already different once, which is the bug this
+// exists to have fixed.
+func (lv *LV) fallbackAddrs(d libvirt.Domain) []string {
+	if a, err := lv.leaseAddrs(d); err == nil && len(a) > 0 {
+		return a
+	}
+	if a, err := lv.arpAddrs(d); err == nil && len(a) > 0 {
+		return a
+	}
+	return nil
+}
+
 func (lv *LV) leaseAddrs(d libvirt.Domain) ([]string, error) {
-	ifs, err := lv.l.DomainInterfaceAddresses(d,
-		uint32(libvirt.DomainInterfaceAddressesSrcLease), 0)
+	return lv.addrsFrom(d, uint32(libvirt.DomainInterfaceAddressesSrcLease))
+}
+
+// arpAddrs reads the HOST's ARP table for this domain's MACs.
+//
+// The third source, and the only one that answers for the VMs this project
+// actually builds. libvirt resolves SrcLease through the NETWORK an interface
+// belongs to, so it works for `--network network=default` and returns nothing
+// for `--network bridge=virbr0` — which is how klab, kube-cluster and the
+// appliance tiles all attach their guests. Measured on fiend 2026-09-20:
+// lease empty for every klab VM while net-dhcp-leases held a lease for every
+// one of their MACs, and k8s-golden — a cloud image with no agent — showed no
+// address anywhere in the TUI as a result.
+//
+// ARP does not care how the interface was declared, only that the guest has
+// spoken on the bridge. It is last because it is the weakest: an address the
+// host has seen recently, not one anybody promised.
+func (lv *LV) arpAddrs(d libvirt.Domain) ([]string, error) {
+	return lv.addrsFrom(d, uint32(libvirt.DomainInterfaceAddressesSrcArp))
+}
+
+// addrsFrom is the shared body of the three lookups — same filtering for all
+// of them, so they cannot disagree about what counts as an address.
+func (lv *LV) addrsFrom(d libvirt.Domain, src uint32) ([]string, error) {
+	ifs, err := lv.l.DomainInterfaceAddresses(d, src, 0)
 	if err != nil {
 		return nil, err
 	}
