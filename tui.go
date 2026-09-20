@@ -3,10 +3,11 @@
 // bubbletea, matching the family. One screen (the headline view from the
 // design doc) with foldable estate groups (←/→, headers are cursor stops)
 // plus overlays: detail (enter), snapshots (s, with rollback), actions
-// (a — the 0.2 verb menu; verbs.go builds and gates the plans),
-// confirm/input for the verb flow, help (?). ← (or q) backs out of any
-// pane — q quits only from the main view — and esc only aborts the
-// confirm/input prompts. Mouse: wheel moves the active cursor, click
+// (a — the verb menu; verbs.go builds and GATES the plans), input for the
+// verbs that need a name or a size, help (?). ← (or q) backs out of any
+// pane — q quits only from the main view — and esc aborts the input prompt.
+// There is no confirmation step: every verb runs on its keystroke, and
+// firePlan writes the exact argv to the status line as it goes. Mouse: wheel moves the active cursor, click
 // selects, a header click folds, re-clicking the selected row opens
 // detail. Interactive externals — `c`
 // attaches `virsh console`, `S` opens ssh to the guest's agent-reported
@@ -51,7 +52,7 @@ var (
 	styStatus  lipgloss.Style // status line, hint prose
 	styKey     lipgloss.Style // key legends (accent, bold)
 	styRule    lipgloss.Style // separator rules
-	styCmd     lipgloss.Style // exact commands in the confirm box
+	styCmd     lipgloss.Style // the exact argv, echoed as a verb runs
 	styOverlay lipgloss.Style // overlay border box
 )
 
@@ -164,11 +165,11 @@ type ui struct {
 	cpu     map[string]float64
 
 	width, height int
-	overlay       string // "" | detail | snaps | help | actions | confirm | input
+	overlay       string // "" | detail | snaps | help | actions | input
 	status        string
 	err           error
 
-	// verb state: a plan awaiting confirmation, the operator's typed buffer
+	// verb state: the plan being run, the operator's typed buffer
 	// (the input field), and the staged specs value between the
 	// two input rounds. snapCursor selects inside the snaps overlay.
 	pending    *verbPlan
@@ -429,7 +430,7 @@ func (m *ui) itemAt(y int) int {
 // out of whatever pane → drilled into, q backs out of panes too and only
 // quits from the main view, panes also close on the key that opened them
 // (enter/?, s, a) — esc is NOT a menu back-out; it survives only as "abort
-// this command prompt" in the confirm/input overlays, where q has to stay
+// this command prompt" in the input overlay, where q has to stay
 // typeable for domain names.
 func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.overlay {
@@ -445,8 +446,6 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keySnaps(msg)
 	case "actions":
 		return m.keyActions(msg)
-	case "confirm":
-		return m.keyConfirm(msg)
 	case "input":
 		return m.keyInput(msg)
 	}
@@ -527,7 +526,7 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // keyActions maps a verb key to a plan (from the actions overlay or directly
 // from the table). Plans that need typed input route through the input
-// overlay first; everything else goes straight to confirm.
+// overlay first; everything else runs on the keystroke.
 func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	r, ok := m.curRow()
 	if !ok {
@@ -626,55 +625,7 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = styWarn.Render(err.Error())
 		return m, nil
 	}
-	// Verbs that only ADD state run immediately — no confirm box.
-	//
-	// The box exists to show the exact command before something irreversible
-	// happens, and for force off, delete, rollback or a disk grow that is
-	// worth a keystroke. Starting a VM is none of those: the worst outcome of
-	// a mistaken `u` is a VM that is running, and `d` puts it back. Making the
-	// operator answer "are you sure you want to start it" is the confirmation
-	// habit the project rules already reject, and it is the difference between
-	// a console that feels instant and one that nags.
-	//
-	// Deliberately narrow. `d` and `b` interrupt whatever the guest is doing,
-	// so they keep the box even though they are not destructive.
-	if instantVerb[msg.String()] {
-		m.pending, m.typed, m.overlay = &plan, "", ""
-		return m.firePlan()
-	}
-	m.pending, m.typed, m.overlay = &plan, "", "confirm"
-	return m, nil
-}
-
-// instantVerb — keys that skip the confirmation box, because the action only
-// creates state and the opposite action is one keystroke away.
-// Snapshot is not here on purpose: `p` opens the input overlay for its suffix
-// and confirms from there, so it never reaches the dispatch this map guards.
-var instantVerb = map[string]bool{
-	"u": true, // start   — undo is d
-	"Z": true, // resume  — undo is z
-	"A": true, // autostart toggle — undo is pressing A again
-}
-
-// keyConfirm fires a pending plan: y or enter runs it, esc/q backs out.
-// One keypress is the whole confirmation — the retype gate that used to
-// stand in front of force off, delete and rollback is gone (see verbs.go's
-// banner for why). q backs out rather than quitting the app: quitting from
-// a prompt was operator-vetoed.
-func (m *ui) keyConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.pending == nil {
-		m.overlay = ""
-		return m, nil
-	}
-	switch msg.String() {
-	case "esc", "ctrl+c", "q":
-		m.pending, m.overlay = nil, ""
-		m.status = "cancelled"
-		return m, nil
-	case "enter", "y":
-		return m.firePlan()
-	}
-	return m, nil
+	return m.toRun(plan, err)
 }
 
 // keyInput collects free-text parameters (snapshot suffix, vcpus, memory)
@@ -699,7 +650,7 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.inputKind {
 		case "snap":
 			plan, err := planSnapshot(r, strings.TrimSpace(m.typed))
-			return m.toConfirm(plan, err)
+			return m.toRun(plan, err)
 		case "vcpus":
 			n, err := strconv.Atoi(strings.TrimSpace(m.typed))
 			if err != nil || n < 1 {
@@ -715,7 +666,7 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			plan, perr := planSpecs(r, m.stagedCPUs, g)
-			return m.toConfirm(plan, perr)
+			return m.toRun(plan, perr)
 		case "clone":
 			name := strings.TrimSpace(m.typed)
 			if name == "" {
@@ -737,7 +688,7 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// that was never sealed — the same choice the GUI makes, rather
 			// than a second rule that drifts from it.
 			plan, perr := planCloneFrom(r, name, true)
-			return m.toConfirm(plan, perr)
+			return m.toRun(plan, perr)
 		case "resize":
 			g, err := strconv.Atoi(strings.TrimSpace(m.typed))
 			if err != nil || g < 1 {
@@ -753,7 +704,7 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			plan, perr := planResizeDisk(r, g, cur)
-			return m.toConfirm(plan, perr)
+			return m.toRun(plan, perr)
 		}
 		return m, nil
 	}
@@ -795,19 +746,32 @@ func (m *ui) keySnaps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		plan, err := planRollback(r, target, newer)
-		return m.toConfirm(plan, err)
+		return m.toRun(plan, err)
 	}
 	return m, nil
 }
 
-func (m *ui) toConfirm(plan verbPlan, err error) (tea.Model, tea.Cmd) {
+// toRun executes a plan immediately. There is no confirmation step anywhere
+// in this TUI, by operator instruction (2026-09-20: "I dont want any prompts").
+//
+// What is NOT lost with it: verbs.go still refuses what should be refused —
+// a rollback while the domain runs, a shrink, a delete of a row with no
+// domain — and those refusals surface as the error below. A prompt was never
+// what made those safe. What IS lost is the chance to read the command before
+// it runs, so firePlan now writes the exact argv to the status line as it
+// goes: the "prints its exact command" contract moves from a box you dismiss
+// to a line you can read afterwards.
+//
+// The input overlay stays. Asking for a clone's name or a new disk size is
+// data entry, not confirmation — there is no way to clone without a name.
+func (m *ui) toRun(plan verbPlan, err error) (tea.Model, tea.Cmd) {
 	if err != nil {
 		m.overlay, m.typed = "", ""
 		m.status = styWarn.Render(err.Error())
 		return m, nil
 	}
-	m.pending, m.typed, m.overlay = &plan, "", "confirm"
-	return m, nil
+	m.pending, m.typed, m.overlay = &plan, "", ""
+	return m.firePlan()
 }
 
 // firePlan runs the pending plan in a Cmd goroutine; the result lands as a
@@ -815,7 +779,16 @@ func (m *ui) toConfirm(plan verbPlan, err error) (tea.Model, tea.Cmd) {
 func (m *ui) firePlan() (tea.Model, tea.Cmd) {
 	p := *m.pending
 	m.pending, m.overlay, m.typed = nil, "", ""
-	m.status = "running: " + p.title
+	// The exact command, on screen, as it runs. With the confirm box gone this
+	// is the only place the operator sees what a keystroke actually did, and
+	// "prints its exact command" is a contract this tool keeps whether or not
+	// it asks permission first. Truncated to the width because a verb plan can
+	// carry several commands and the status line is one row.
+	cmd := strings.Join(strings.Fields(strings.ReplaceAll(p.cmdLines(), "\n", " ; ")), " ")
+	m.status = styCmd.Render(truncate(cmd, max(20, m.width-2)))
+	if p.warn != "" {
+		m.status = styWarn.Render("⚠ "+p.warn) + "  " + m.status
+	}
 	return m, func() tea.Msg { return verbDoneMsg{title: p.title, err: runPlan(p)} }
 }
 
@@ -1044,8 +1017,6 @@ func (m *ui) renderOverlay(base string) string {
 		content = helpText()
 	case "actions":
 		content = m.actionsText()
-	case "confirm":
-		content = m.confirmText()
 	case "input":
 		content = m.inputText()
 	}
@@ -1247,11 +1218,11 @@ func (m *ui) actionsText() string {
 	}
 
 	sect("POWER")
-	verb("u", "start "+styStatus.Render("(runs at once)"))
+	verb("u", "start")
 	verb("d", "shut down (graceful)")
 	verb("b", "reboot")
 	verb("z", "suspend (pause)")
-	verb("Z", "resume "+styStatus.Render("(runs at once)"))
+	verb("Z", "resume")
 	verb("K", "force off "+styWarn.Render("(no undo)"))
 
 	sect("DISK")
@@ -1262,7 +1233,7 @@ func (m *ui) actionsText() string {
 
 	sect("CONFIG")
 	verb("v", "vcpu / memory (next start)")
-	verb("A", "autostart (now: "+auto+") "+styStatus.Render("(runs at once)"))
+	verb("A", "autostart (now: "+auto+")")
 	verb("F", "seal as a firecracker golden")
 
 	sect("ACCESS")
@@ -1273,25 +1244,9 @@ func (m *ui) actionsText() string {
 	sect("DANGER")
 	verb("D", "delete "+styWarn.Render("(domain + zvol + its snapshots)"))
 
-	b.WriteString("\n" + styStatus.Render("every key works from the table too — this menu is a reminder, not a mode · ") +
+	b.WriteString("\n" + styWarn.Render("every verb runs on the keystroke — nothing asks twice") + "\n" +
+		styStatus.Render("keys work from the table too; this menu is a reminder, not a mode · ") +
 		keyHint("←/a", "close"))
-	return b.String()
-}
-
-// confirmText shows the pending plan: the exact commands, the warning, and
-// the gate — this box IS the "prints its exact command first" contract.
-func (m *ui) confirmText() string {
-	p := m.pending
-	if p == nil {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n%s", styGroup.Render(p.title),
-		styCmd.Render(strings.TrimRight(p.cmdLines(), "\n"))+"\n")
-	if p.warn != "" {
-		fmt.Fprintf(&b, "\n%s\n", styWarn.Render("⚠ "+p.warn))
-	}
-	b.WriteString("\n" + keyHint("y", "run", "esc/q", "cancel"))
 	return b.String()
 }
 
@@ -1315,7 +1270,7 @@ func (m *ui) inputText() string {
 	case "clone":
 		prompt = fmt.Sprintf("clone %s to — new VM name:", styTitle.Render(r.D.Name))
 	case "resize":
-		// The current size is read at confirm time, not here: asking the
+		// The current size is read when the verb runs, not here: asking the
 		// hypervisor on every keystroke of the prompt would shell out per
 		// character.
 		prompt = fmt.Sprintf("grow %s to, in GiB (one way — a disk cannot be shrunk back):",
@@ -1354,16 +1309,16 @@ func helpText() string {
 	k("S", "ssh to guest (agent IP; $VMX_SSH_USER)")
 	b.WriteString("\n")
 	section("act — a opens the menu, or press the verb key directly")
-	k("u", "start — runs at once, no confirm; microVM rows use kfire")
+	k("u", "start — microVM rows use the kfire verb")
 	k("d", "shut down (graceful)")
 	k("K", "force off "+styWarn.Render("(no undo)"))
 	k("b", "reboot")
-	k("z/Z", "suspend / resume — resume runs at once")
+	k("z/Z", "suspend / resume")
 	k("p", "snapshot (zfs, manual-*)")
 	k("C", "clone to a new name (from @golden where sealed)")
 	k("+", "grow the disk "+styWarn.Render("(one way)"))
 	k("v", "edit vcpu/mem (next start)")
-	k("A", "autostart toggle — runs at once")
+	k("A", "autostart toggle")
 	k("F", "seal as a firecracker golden")
 	k("D", "delete — or forget an unreconciled row "+styWarn.Render("(zvol + snapshots)"))
 	b.WriteString("\n" + styStatus.Render(
