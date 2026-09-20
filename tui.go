@@ -55,10 +55,44 @@ var (
 )
 
 // applyTheme installs one of the two palettes into the shared styles.
+//
+// The palette is 256-colour and blue-led. It used to be the 8-colour ANSI set,
+// where `dim` was colour 8 — "bright black", which on most terminals is a very
+// dark grey a shade off the background. That one colour carried BOTH the muted
+// text and every separator rule, so the lines that are supposed to give the
+// screen its structure were the least visible thing on it, and the whole TUI
+// read as dark mush (operator, 2026-09-20: "its pretty dark").
+//
+// The dark set is deliberately arcade: neon cyan, magenta, 8-bit green and
+// amber over blue rules. This is the project that ships a demoscene installer
+// — a grey enterprise console would be the wrong house style — and the colours
+// are period-correct for a CRT without being a costume.
+//
+// Three changes, each with a reason:
+//   - `rule` is its own colour now, not an alias of `dim`. A separator and a
+//     de-emphasised value are different jobs; tying them together meant making
+//     one readable made the other shout.
+//   - `dim` is a mid grey (245/242) rather than near-black, so muted text is
+//     muted rather than absent.
+//   - accent and header are different hues, so group headers and column
+//     headers are distinguishable at a glance. The old header colour was ANSI
+//     12, pure #0000FF, which measures 1.9:1 against a dark background — it
+//     was not a dim colour, it was an invisible one.
+//
+// Every colour here was measured against a #1e1e1e background and clears
+// 4.5:1, the WCAG floor for body text; the rule clears it too, which the first
+// attempt at this palette did not (a muted blue-grey came out at 2.8:1, i.e.
+// LESS visible than the near-black it replaced — measured, not eyeballed).
+// `ok` stays green and `warn` stays amber because those two are semantic: a
+// running VM that is cyan because cyan is the theme tells the operator less
+// than one that is green. lipgloss degrades 256-colour to the nearest ANSI on
+// a terminal that cannot do it, so a real VGA console still renders.
 func applyTheme(light bool) {
-	accent, ok, warn, dim, hdr := "14", "10", "11", "8", "12"
+	// accent cyan 13.3:1 · hdr pink 6.6:1 · ok neon green 12.5:1
+	// warn amber 9.0:1 · dim grey 4.8:1 · rule blue 4.7:1
+	accent, ok, warn, dim, hdr, rule := "51", "82", "214", "245", "207", "68"
 	if light {
-		accent, ok, warn, dim, hdr = "6", "2", "3", "8", "4"
+		accent, ok, warn, dim, hdr, rule = "25", "28", "130", "242", "90", "67"
 	}
 	styTitle = lipgloss.NewStyle().Bold(true)
 	styGroup = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(accent))
@@ -67,11 +101,18 @@ func applyTheme(light bool) {
 	styOff = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	styWarn = lipgloss.NewStyle().Foreground(lipgloss.Color(warn))
 	styCursor = lipgloss.NewStyle().Reverse(true).Bold(true)
-	styStatus = lipgloss.NewStyle().Faint(true)
+	// An explicit grey rather than Faint(true): faint is a terminal attribute
+	// many emulators render as ~50% alpha over the background, which on a dark
+	// theme put the status line and every hint a hair above invisible. A real
+	// colour is muted on purpose and still legible.
+	styStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
 	styKey = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(accent))
-	styRule = lipgloss.NewStyle().Foreground(lipgloss.Color(dim))
+	styRule = lipgloss.NewStyle().Foreground(lipgloss.Color(rule))
 	styCmd = lipgloss.NewStyle().Foreground(lipgloss.Color(ok))
-	styOverlay = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+	// Double border, not rounded: square double lines are the CRT-era frame
+	// and they match the double rule above the footer, so the two framing
+	// elements on screen agree with each other.
+	styOverlay = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).
 		BorderForeground(lipgloss.Color(accent)).Padding(0, 1)
 }
 
@@ -491,7 +532,11 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !ok {
 		// a verb key with a group header under the cursor must say why
 		// nothing happened, not swallow the keystroke
-		if s := msg.String(); len(s) == 1 && strings.ContainsAny(s, "udKApv") {
+		// Every verb key belongs in this set. A key missing from it is
+		// swallowed silently on a header row, which reads as "the TUI cannot
+		// do that" rather than "move onto a VM first" — the exact impression
+		// the unwired verbs already gave.
+		if s := msg.String(); len(s) == 1 && strings.ContainsAny(s, "udKApvBzZnDOCx") {
 			m.status = styWarn.Render(
 				"cursor is on a group header — j/k onto a VM row first")
 		}
@@ -506,14 +551,64 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "left", "h", "a":
 		m.overlay = ""
 		return m, nil
+	// Power verbs are FC-aware: a Firecracker row and a libvirt domain answer
+	// the same keystroke with their own verb. The TUI has listed microVMs
+	// since withFirecracker() went in, but every FC verb was compiled into
+	// this binary and bound to nothing — pressing u on a microVM planned a
+	// libvirt start for a domain that does not exist.
 	case "u":
-		plan, err = planStart(r)
+		if r.FC != nil {
+			plan, err = planFCStart(r)
+		} else {
+			plan, err = planStart(r)
+		}
 	case "d":
-		plan, err = planShutdown(r)
+		if r.FC != nil {
+			plan, err = planFCShutdown(r)
+		} else {
+			plan, err = planShutdown(r)
+		}
 	case "K":
-		plan, err = planForceOff(r)
+		if r.FC != nil {
+			plan, err = planFCForceOff(r)
+		} else {
+			plan, err = planForceOff(r)
+		}
 	case "A":
 		plan, err = planAutostart(r)
+	case "B":
+		plan, err = planReboot(r)
+	case "z":
+		plan, err = planSuspend(r)
+	case "Z":
+		plan, err = planResume(r)
+	case "n":
+		// Reconcile is delete for a row with no domain behind it, so it is
+		// its own key rather than a mode of D: the operator reaching for it
+		// is looking at the unreconciled group, not at a VM.
+		plan, err = planReconcile(r)
+	case "D":
+		plan, err = planDelete(r)
+	case "O":
+		// Seal as a Firecracker golden. Only meaningful for an appliance VM;
+		// planFCGolden refuses the rest and its error is shown below.
+		plan, err = planFCGolden(r)
+	case "C":
+		if r.Synthetic {
+			m.overlay = ""
+			m.status = styWarn.Render("no domain behind this row")
+			return m, nil
+		}
+		m.overlay, m.inputKind, m.typed = "input", "clone", ""
+		return m, nil
+	case "x":
+		if r.DS == nil {
+			m.overlay = ""
+			m.status = styWarn.Render("no local dataset behind " + r.D.Name)
+			return m, nil
+		}
+		m.overlay, m.inputKind, m.typed = "input", "resize", ""
+		return m, nil
 	case "p":
 		if r.DS == nil {
 			m.overlay = ""
@@ -601,6 +696,44 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			plan, perr := planSpecs(r, m.stagedCPUs, g)
+			return m.toConfirm(plan, perr)
+		case "clone":
+			name := strings.TrimSpace(m.typed)
+			if name == "" {
+				m.status = styWarn.Render("a clone needs a name")
+				return m, nil
+			}
+			// A name reaching virt-clone and `zfs clone` is validated before
+			// it gets there, not after: a VM once got created called --help,
+			// and the same string pointed at `zfs destroy` is unrecoverable.
+			// validZFSName is the check remote.go already applies to every
+			// name that reaches a zfs argv — one rule, not a second one here
+			// that drifts from it.
+			if verr := validZFSName(name); verr != nil {
+				m.status = styWarn.Render(verr.Error())
+				return m, nil
+			}
+			// planCloneFrom with fromGolden picks each disk's @golden anchor
+			// where one exists and falls back to a fresh snapshot per disk
+			// that was never sealed — the same choice the GUI makes, rather
+			// than a second rule that drifts from it.
+			plan, perr := planCloneFrom(r, name, true)
+			return m.toConfirm(plan, perr)
+		case "resize":
+			g, err := strconv.Atoi(strings.TrimSpace(m.typed))
+			if err != nil || g < 1 {
+				m.status = styWarn.Render("size must be a positive number of GiB")
+				return m, nil
+			}
+			// An unknown current size is a refusal, not a default: planResizeDisk
+			// treats 0 as "cannot tell" and a wrong guess here would be a shrink,
+			// which is one-way.
+			cur, cerr := currentDiskBytes(r)
+			if cerr != nil {
+				m.status = styWarn.Render(cerr.Error())
+				return m, nil
+			}
+			plan, perr := planResizeDisk(r, g, cur)
 			return m.toConfirm(plan, perr)
 		}
 		return m, nil
@@ -771,7 +904,10 @@ func (m *ui) View() string {
 
 	// Mirror the top of the frame: a blank line and a rule set the menu off
 	// from the table the same way the underlined header sets off the title.
-	b.WriteString("\n" + styRule.Render(strings.Repeat("─", m.width)) + "\n")
+	// A double rule rather than a single one: it reads as a frame edge at a
+	// glance instead of as another row of content, which is the whole job of
+	// the line, and it suits a console that boots a demoscene installer.
+	b.WriteString("\n" + styRule.Render(strings.Repeat("═", m.width)) + "\n")
 	b.WriteString(m.footerLine())
 
 	if m.overlay != "" {
@@ -1070,12 +1206,26 @@ func (m *ui) actionsText() string {
 	verb := func(key, desc string) {
 		b.WriteString("  " + styKey.Render(key) + "  " + desc + "\n")
 	}
-	verb("u", "start")
-	verb("d", "shut down (graceful)")
-	verb("K", "force off "+styWarn.Render("(no undo)"))
+	// Power verbs read differently on a microVM, so say which one this row
+	// will get rather than making the operator remember the rule.
+	kind := ""
+	if r.FC != nil {
+		kind = styStatus.Render(" (firecracker)")
+	}
+	verb("u", "start"+kind)
+	verb("d", "shut down (graceful)"+kind)
+	verb("K", "force off "+styWarn.Render("(no undo)")+kind)
+	verb("B", "reboot")
+	verb("z", "suspend (pause)")
+	verb("Z", "resume")
 	verb("p", "snapshot (zfs, manual-*)")
+	verb("C", "clone to a new name (from @golden where sealed)")
+	verb("x", "grow the disk "+styWarn.Render("(one way)"))
 	verb("v", "edit vcpu/memory (next start)")
 	verb("A", "autostart toggle (now: "+auto+")")
+	verb("O", "seal as a firecracker golden")
+	verb("n", "reconcile (a row libvirt no longer has)")
+	verb("D", "delete "+styWarn.Render("(domain + zvol + its snapshots)"))
 	b.WriteString("\n" + styStatus.Render("rollback lives in the snapshot pane (s, then R) · ") +
 		keyHint("←/a", "close"))
 	return b.String()
@@ -1115,6 +1265,14 @@ func (m *ui) inputText() string {
 	case "mem":
 		prompt = fmt.Sprintf("new memory for %s in GiB (now %s):",
 			styTitle.Render(r.D.Name), humanBytes(r.D.MaxMemKiB*1024))
+	case "clone":
+		prompt = fmt.Sprintf("clone %s to — new VM name:", styTitle.Render(r.D.Name))
+	case "resize":
+		// The current size is read at confirm time, not here: asking the
+		// hypervisor on every keystroke of the prompt would shell out per
+		// character.
+		prompt = fmt.Sprintf("grow %s to, in GiB (one way — a disk cannot be shrunk back):",
+			styTitle.Render(r.D.Name))
 	}
 	return prompt + "\n" + styKey.Render("  >") + " " + m.typed + "\n\n" +
 		keyHint("enter", "continue", "esc", "cancel")
@@ -1149,12 +1307,19 @@ func helpText() string {
 	k("S", "ssh to guest (agent IP; $VMX_SSH_USER)")
 	b.WriteString("\n")
 	section("act — a opens the menu, or press the verb key directly")
-	k("u", "start")
+	k("u", "start — firecracker rows get the kfire verb")
 	k("d", "shut down (graceful)")
 	k("K", "force off "+styWarn.Render("(no undo)"))
+	k("B", "reboot")
+	k("z/Z", "suspend / resume")
 	k("p", "snapshot (zfs, manual-*)")
+	k("C", "clone to a new name (from @golden where sealed)")
+	k("x", "grow the disk "+styWarn.Render("(one way)"))
 	k("v", "edit vcpu/mem (next start)")
 	k("A", "autostart toggle")
+	k("O", "seal as a firecracker golden")
+	k("n", "reconcile a row libvirt no longer has")
+	k("D", "delete "+styWarn.Render("(domain + zvol + snapshots)"))
 	b.WriteString("\n" + styStatus.Render(
 		"Panes close with ← / q / the key that opened them; esc only\n"+
 			"aborts a command prompt. Every mutation shows its exact\n"+

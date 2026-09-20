@@ -1,14 +1,15 @@
-//go:build gui
-
-// resize_gui.go — the one part of the resize verb that reads the hypervisor.
+// resize_size.go — the one part of the resize verb that reads the hypervisor.
 //
-// Split out of resize.go on purpose. resize.go is pure command construction and
-// compiles in BOTH flavors so resize_test.go can exercise it; currentDiskBytes
-// shells out and is only ever called from the GUI dialog, which is itself
-// behind `//go:build gui`. Left in the untagged file it was dead code in the
-// non-GUI build, and staticcheck's U1000 said so — after the local go
-// build/vet/test all passed, because none of those look for unused functions.
-// (vmxplore CI run 58, 2026-09-02.)
+// Split out of resize.go on purpose: resize.go is pure command construction so
+// resize_test.go can exercise it, and this shells out.
+//
+// It used to carry `//go:build gui`, because the GUI dialog was its only
+// caller and, untagged, it was dead code in the plain build — staticcheck's
+// U1000 said so after go build/vet/test all passed, since none of those look
+// for unused functions (vmxplore CI run 58, 2026-09-02). The TUI resize verb
+// now calls it too, so it is no longer dead either way and the tag is gone
+// along with the file's misleading _gui name. Re-tagging it would take resize
+// back out of the headless build, which is the build that matters on a server.
 package main
 
 import (
