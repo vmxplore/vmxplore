@@ -34,10 +34,11 @@ import (
 
 // ─── styles / theme ─────────────────────────────────────────────────────────
 // One palette drives the whole tool — table, footer, overlays — so it reads
-// as one instrument, not a pile of panes. Two sets: dark terminals get the
-// bright ANSI variants (8–15) so the estate is vivid; light terminals get
-// the deep variants (1–6) that survive a white background. Auto-detected
-// from the terminal background; VMX_THEME=dark|light overrides.
+// as one instrument, not a pile of panes. Two 256-colour sets: dark terminals
+// get the arcade variant (neon cyan, magenta, 8-bit green, amber over blue
+// rules), light terminals get deep variants that survive a white background.
+// Dark is the default and light is opt-in — see wantLightTheme for why that
+// asymmetry is deliberate. VMX_THEME=dark|light overrides either way.
 
 var (
 	styTitle   lipgloss.Style // app title text
@@ -536,7 +537,7 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// swallowed silently on a header row, which reads as "the TUI cannot
 		// do that" rather than "move onto a VM first" — the exact impression
 		// the unwired verbs already gave.
-		if s := msg.String(); len(s) == 1 && strings.ContainsAny(s, "udKApvBzZnDOCx") {
+		if s := msg.String(); len(s) == 1 && strings.ContainsAny(s, "udKApvbzZDFC+=") {
 			m.status = styWarn.Render(
 				"cursor is on a group header — j/k onto a VM row first")
 		}
@@ -551,47 +552,36 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "left", "h", "a":
 		m.overlay = ""
 		return m, nil
-	// Power verbs are FC-aware: a Firecracker row and a libvirt domain answer
-	// the same keystroke with their own verb. The TUI has listed microVMs
-	// since withFirecracker() went in, but every FC verb was compiled into
-	// this binary and bound to nothing — pressing u on a microVM planned a
-	// libvirt start for a domain that does not exist.
+	// Every verb below dispatches on the row TYPE inside itself: planStart and
+	// friends return planFCStart for a Firecracker row, and planDelete returns
+	// planFCDelete for one and planReconcile for a synthetic row with no
+	// domain behind it. So there is no type test here, and there must not be
+	// one — the first cut of this switch branched on r.FC before calling
+	// planStart, which re-implemented the routing that lives in the very
+	// function it was calling, twenty lines away.
 	case "u":
-		if r.FC != nil {
-			plan, err = planFCStart(r)
-		} else {
-			plan, err = planStart(r)
-		}
+		plan, err = planStart(r)
 	case "d":
-		if r.FC != nil {
-			plan, err = planFCShutdown(r)
-		} else {
-			plan, err = planShutdown(r)
-		}
+		plan, err = planShutdown(r)
 	case "K":
-		if r.FC != nil {
-			plan, err = planFCForceOff(r)
-		} else {
-			plan, err = planForceOff(r)
-		}
-	case "A":
-		plan, err = planAutostart(r)
-	case "B":
+		plan, err = planForceOff(r)
+	case "b":
 		plan, err = planReboot(r)
 	case "z":
 		plan, err = planSuspend(r)
 	case "Z":
 		plan, err = planResume(r)
-	case "n":
-		// Reconcile is delete for a row with no domain behind it, so it is
-		// its own key rather than a mode of D: the operator reaching for it
-		// is looking at the unreconciled group, not at a VM.
-		plan, err = planReconcile(r)
+	case "A":
+		plan, err = planAutostart(r)
 	case "D":
+		// Delete, force-delete a microVM, or forget an unreconciled row —
+		// planDelete picks, because "delete" is the verb the operator reaches
+		// for on all three.
 		plan, err = planDelete(r)
-	case "O":
-		// Seal as a Firecracker golden. Only meaningful for an appliance VM;
-		// planFCGolden refuses the rest and its error is shown below.
+	case "F":
+		// Seal a shut-off appliance as a Firecracker golden. Its own key
+		// because it is a distinct verb, not a mode of another; planFCGolden
+		// refuses rows it does not apply to and its error is shown below.
 		plan, err = planFCGolden(r)
 	case "C":
 		if r.Synthetic {
@@ -601,7 +591,10 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.overlay, m.inputKind, m.typed = "input", "clone", ""
 		return m, nil
-	case "x":
+	case "+", "=":
+		// "+" grows the disk, which is the only direction it can go. "=" is
+		// the same physical key unshifted, so it works without reaching for
+		// shift — the same courtesy every terminal zoom shortcut extends.
 		if r.DS == nil {
 			m.overlay = ""
 			m.status = styWarn.Render("no local dataset behind " + r.D.Name)
@@ -900,6 +893,15 @@ func (m *ui) View() string {
 	end := min(len(lines), m.scroll+avail)
 	for _, l := range lines[m.scroll:end] {
 		b.WriteString(l + "\n")
+	}
+	// Pad the table out to the full height so the rule and footer sit ON the
+	// bottom edge of the terminal rather than directly under the last VM.
+	// Without this an estate shorter than the window drew a frame around the
+	// top third of the screen and left the rest an empty black field — which
+	// is a large part of why the console read as "too dark" regardless of the
+	// palette: most of what was on screen was nothing at all.
+	for i := end - m.scroll; i < avail; i++ {
+		b.WriteString("\n")
 	}
 
 	// Mirror the top of the frame: a blank line and a rule set the menu off
@@ -1206,27 +1208,46 @@ func (m *ui) actionsText() string {
 	verb := func(key, desc string) {
 		b.WriteString("  " + styKey.Render(key) + "  " + desc + "\n")
 	}
-	// Power verbs read differently on a microVM, so say which one this row
-	// will get rather than making the operator remember the rule.
-	kind := ""
-	if r.FC != nil {
-		kind = styStatus.Render(" (firecracker)")
+	// Grouped, because a flat list of fifteen keys is a wall. The operator
+	// scans for the JOB first — power, disk, access — and the letter second.
+	sect := func(name string) {
+		b.WriteString("\n" + styHeader.Render(name) + "\n")
 	}
-	verb("u", "start"+kind)
-	verb("d", "shut down (graceful)"+kind)
-	verb("K", "force off "+styWarn.Render("(no undo)")+kind)
-	verb("B", "reboot")
+	// A microVM answers the same keys with kfire verbs (the plan* functions
+	// route on row type), so say which kind of row this is instead of making
+	// the operator remember the rule.
+	if r.FC != nil {
+		b.WriteString(styStatus.Render("  firecracker microVM — power verbs use kfire\n"))
+	}
+
+	sect("POWER")
+	verb("u", "start")
+	verb("d", "shut down (graceful)")
+	verb("b", "reboot")
 	verb("z", "suspend (pause)")
 	verb("Z", "resume")
+	verb("K", "force off "+styWarn.Render("(no undo)"))
+
+	sect("DISK")
 	verb("p", "snapshot (zfs, manual-*)")
+	verb("s", "snapshot pane — browse, and R rolls back")
 	verb("C", "clone to a new name (from @golden where sealed)")
-	verb("x", "grow the disk "+styWarn.Render("(one way)"))
-	verb("v", "edit vcpu/memory (next start)")
-	verb("A", "autostart toggle (now: "+auto+")")
-	verb("O", "seal as a firecracker golden")
-	verb("n", "reconcile (a row libvirt no longer has)")
+	verb("+", "grow the disk "+styWarn.Render("(one way)"))
+
+	sect("CONFIG")
+	verb("v", "vcpu / memory (next start)")
+	verb("A", "autostart (now: "+auto+")")
+	verb("F", "seal as a firecracker golden")
+
+	sect("ACCESS")
+	verb("c", "serial console (exit ctrl+])")
+	verb("S", "ssh to the guest")
+	verb("enter", "detail — disks, addresses, ZFS lineage")
+
+	sect("DANGER")
 	verb("D", "delete "+styWarn.Render("(domain + zvol + its snapshots)"))
-	b.WriteString("\n" + styStatus.Render("rollback lives in the snapshot pane (s, then R) · ") +
+
+	b.WriteString("\n" + styStatus.Render("every key works from the table too — this menu is a reminder, not a mode · ") +
 		keyHint("←/a", "close"))
 	return b.String()
 }
@@ -1307,19 +1328,18 @@ func helpText() string {
 	k("S", "ssh to guest (agent IP; $VMX_SSH_USER)")
 	b.WriteString("\n")
 	section("act — a opens the menu, or press the verb key directly")
-	k("u", "start — firecracker rows get the kfire verb")
+	k("u", "start — microVM rows use the kfire verb")
 	k("d", "shut down (graceful)")
 	k("K", "force off "+styWarn.Render("(no undo)"))
-	k("B", "reboot")
+	k("b", "reboot")
 	k("z/Z", "suspend / resume")
 	k("p", "snapshot (zfs, manual-*)")
 	k("C", "clone to a new name (from @golden where sealed)")
-	k("x", "grow the disk "+styWarn.Render("(one way)"))
+	k("+", "grow the disk "+styWarn.Render("(one way)"))
 	k("v", "edit vcpu/mem (next start)")
 	k("A", "autostart toggle")
-	k("O", "seal as a firecracker golden")
-	k("n", "reconcile a row libvirt no longer has")
-	k("D", "delete "+styWarn.Render("(domain + zvol + snapshots)"))
+	k("F", "seal as a firecracker golden")
+	k("D", "delete — or forget an unreconciled row "+styWarn.Render("(zvol + snapshots)"))
 	b.WriteString("\n" + styStatus.Render(
 		"Panes close with ← / q / the key that opened them; esc only\n"+
 			"aborts a command prompt. Every mutation shows its exact\n"+
@@ -1339,15 +1359,54 @@ func truncate(s string, w int) string {
 	return s[:w-1] + "…"
 }
 
-func runTUI(lv *LV, rs *Ruleset) error {
-	light := !lipgloss.HasDarkBackground()
+// wantLightTheme decides which palette to install, and defaults to DARK on
+// any uncertainty rather than to light.
+//
+// It used to be `light := !lipgloss.HasDarkBackground()`, which reads "light
+// unless proven dark" — and that detection asks the terminal a question that
+// goes unanswered over plenty of ssh sessions, inside tmux, and on a plain
+// TTY. Unanswered came out as light, and the light palette on a dark terminal
+// is not merely wrong, it is unreadable: its colours measure 1.9:1 to 4.4:1
+// against #1e1e1e, where 4.5:1 is the floor for body text. The whole console
+// looked like it had been dipped in mud, which is exactly the report
+// (operator, 2026-09-20: "the colors still suck, too dark").
+//
+// So light is now opt-IN: taken only when something actually says so. A dark
+// palette on a light terminal is merely ugly; a light palette on a dark one is
+// unusable, and unusable is the worse failure to default to.
+func wantLightTheme() bool {
+	// An explicit choice always wins, and is the documented escape hatch when
+	// the guess below is wrong.
 	switch os.Getenv("VMX_THEME") {
 	case "light":
-		light = true
+		return true
 	case "dark":
-		light = false
+		return false
 	}
-	applyTheme(light)
+	// COLORFGBG is "fg;bg" with bg an ANSI index — 0-6 and 8 are dark, 7 and
+	// 9-15 are light. Terminals that set it are telling us outright, so it is
+	// worth more than a query that may time out.
+	if fgbg := os.Getenv("COLORFGBG"); fgbg != "" {
+		if i := strings.LastIndex(fgbg, ";"); i >= 0 {
+			switch strings.TrimSpace(fgbg[i+1:]) {
+			case "7", "9", "10", "11", "12", "13", "14", "15":
+				return true
+			default:
+				return false
+			}
+		}
+	}
+	// Last resort: the terminal query. termenv, underneath, falls back to a
+	// dark background when it cannot get an answer, so an unanswered query
+	// lands on dark — which is the side to fail to. The two checks above
+	// exist because that fallback is an implementation detail of a dependency
+	// and not a promise, and because COLORFGBG is a direct answer where a
+	// query is a guess.
+	return !lipgloss.HasDarkBackground()
+}
+
+func runTUI(lv *LV, rs *Ruleset) error {
+	applyTheme(wantLightTheme())
 	p := tea.NewProgram(newUI(lv, rs), tea.WithAltScreen(),
 		tea.WithMouseCellMotion())
 	_, err := p.Run()
