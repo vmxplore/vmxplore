@@ -12,11 +12,15 @@
 // Nav: j/k or arrows, pgup/pgdown (ctrl+b/ctrl+f) by a screen, g/home and
 // G/end to the ends — in the table and in the snapshot pane alike. Mouse:
 // wheel moves the active cursor, click selects, a header click folds,
-// re-clicking the selected row opens detail. Interactive externals — `c`
-// attaches `virsh console`, `S` opens ssh to the guest's agent-reported
-// IP — run under tea.ExecProcess, which suspends the TUI and also
-// sidesteps DomainOpenConsoleBidirectional's missing abort handle (design
-// risk list) until a native console earns its complexity.
+// re-clicking the selected row opens detail.
+//
+// Interactive externals run under tea.ExecProcess, which suspends the TUI —
+// and also sidesteps DomainOpenConsoleBidirectional's missing abort handle
+// (design risk list) until a native console earns its complexity. `c` attaches
+// `virsh console` on a libvirt domain and follows `kfire console` on a
+// Firecracker microVM, which is not a libvirt domain and would otherwise be a
+// lookup for a name libvirt has never heard of. `S` opens ssh to the guest's
+// agent-reported IP.
 //
 // Refresh: libvirt estate every 2s (stats are one bulk RPC); ZFS datasets +
 // snapshots every 30s (a 16k-snapshot listing is not a 2s-tick operation).
@@ -838,6 +842,23 @@ func (m *ui) firePlan() (tea.Model, tea.Cmd) {
 // Both print their exact command in the status line — the TUI teaches the
 // CLI, never hides it (design: "vmx must never fight virsh").
 
+// rowHasConsole — does this domain have a serial console to attach to?
+//
+// Asked ONLY when c is pressed, never while rendering: it costs a libvirt XML
+// fetch, and the actions menu redraws on every 2 s tick. One call on a
+// keystroke is free; one call every two seconds per row is not.
+//
+// Unknown counts as YES. If libvirt will not hand over the XML, refusing to
+// try is worse than attaching and having virsh say why — a guess that blocks
+// the operator is a worse failure than a guess that lets them find out.
+func (m *ui) rowHasConsole(r Row) bool {
+	x, err := m.lv.XML(r.D.Name)
+	if err != nil {
+		return true
+	}
+	return strings.Contains(x, "<console") || strings.Contains(x, "<serial")
+}
+
 func (m *ui) execConsole() tea.Cmd {
 	r, ok := m.curRow()
 	if !ok {
@@ -847,8 +868,33 @@ func (m *ui) execConsole() tea.Cmd {
 		m.status = styWarn.Render("no domain behind this row")
 		return nil
 	}
+	// A Firecracker microVM is not a libvirt domain, so `virsh console` would
+	// look up a name libvirt has never heard of. kfire keeps its own serial
+	// log and has a verb to follow it, so route there rather than fail — the
+	// same row-type routing the plan* verbs do internally. It follows a log
+	// rather than attaching a tty, so ctrl+c is the way out, not ^].
+	if r.FC != nil {
+		if _, err := exec.LookPath("kfire"); err != nil {
+			m.status = styWarn.Render("kfire not found — cannot reach this microVM's console")
+			return nil
+		}
+		m.status = "→ kfire console " + r.D.Name + "   (exit: ctrl+c)"
+		hint := "vmxplore: following " + r.D.Name + "'s serial log — ctrl+c to return to vmx"
+		args := []string{"-c", `printf '%s\n\n' "$1"; shift; exec "$@"`, "_", hint,
+			"kfire", "console", r.D.Name}
+		return tea.ExecProcess(exec.Command("/bin/sh", args...),
+			func(err error) tea.Msg { return execDoneMsg{err} })
+	}
 	if _, err := exec.LookPath("virsh"); err != nil {
 		m.status = styWarn.Render("virsh not found — install libvirt-client")
+		return nil
+	}
+	// No serial device, no console. libvirt would attach and hang on a domain
+	// whose XML has no <console>, which reads as a wedged TUI rather than as
+	// "this VM has nothing to attach to". rowHasConsole answers from the XML
+	// the estate already holds, so this costs no extra call.
+	if !m.rowHasConsole(r) {
+		m.status = styWarn.Render(r.D.Name + " has no serial console device — use S for ssh")
 		return nil
 	}
 	// The escape sequence, and why this is worth a paragraph.
@@ -1300,7 +1346,14 @@ func (m *ui) actionsText() string {
 	verb("F", "seal as a firecracker golden")
 
 	sect("ACCESS")
-	verb("c", "serial console (exit ctrl+])")
+	// Name the console this row will actually get. A microVM follows a kfire
+	// log and leaves on ctrl+c; a libvirt domain attaches a tty and leaves on
+	// ^]. One label for both would be wrong for one of them.
+	if r.FC != nil {
+		verb("c", "serial log — kfire "+styStatus.Render("(exit ctrl+c)"))
+	} else {
+		verb("c", "serial console "+styStatus.Render("(exit ctrl+])"))
+	}
 	verb("S", "ssh to the guest")
 	verb("enter", "detail — disks, addresses, ZFS lineage")
 
@@ -1369,7 +1422,7 @@ func helpText() string {
 	section("inspect")
 	k("enter", "domain detail (disks, IPs, ZFS lineage)")
 	k("s", "snapshots, classified (noise collapsed; R rolls back)")
-	k("c", "serial console (virsh console; exit ctrl+])")
+	k("c", "serial console — virsh, exit ctrl+]; microVM rows follow the kfire log, exit ctrl+c")
 	k("S", "ssh to guest (agent IP; $VMX_SSH_USER)")
 	b.WriteString("\n")
 	section("act — a opens the menu, or press the verb key directly")
