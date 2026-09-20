@@ -107,6 +107,25 @@ func cellOr(s, fallback string) string {
 	return s
 }
 
+// bootCell renders the autostart flag — whether this domain comes back by
+// itself after the host reboots.
+//
+// It has a column because A toggles it and, until now, nothing on the main
+// screen changed when you pressed it: autostart appeared only in the detail
+// pane and in the actions menu's own label, so the verb worked and looked like
+// it had not (operator, 2026-09-20: "no indicator .. A on one should toggle to
+// boot flag").
+//
+// "on" rather than a tick or a dot: it greps, it survives a terminal with no
+// unicode, and this estate is read over ssh from places where a glyph is a
+// gamble.
+func bootCell(r Row) string {
+	if r.D.Autostart {
+		return "on"
+	}
+	return "-"
+}
+
 func cpuCell(cpu map[string]float64, r Row) string {
 	if r.D.State != "running" {
 		return "-"

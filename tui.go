@@ -1004,8 +1004,8 @@ func (m *ui) View() string {
 		b.WriteString(styWarn.Render("libvirt: "+m.err.Error()) + "\n")
 	}
 
-	header := fmt.Sprintf("  %-*s %-13s %6s %11s  %-*s %-*s %8s %5s %s",
-		nameW, "DOMAIN", "STATE", "CPU", "MEM", backW, "BACKING",
+	header := fmt.Sprintf("  %-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s",
+		nameW, "DOMAIN", "STATE", "BOOT", "CPU", "MEM", backW, "BACKING",
 		origW, "CLONE OF", "SNAPS", "AGENT", "NOTES")
 	b.WriteString(styHeader.Render(truncate(header, m.width)) + "\n")
 
@@ -1095,8 +1095,8 @@ func (m *ui) tableLines() ([]string, int) {
 			sty = styGroup
 		} else {
 			r := m.groups[it.g].Rows[it.row]
-			line = fmt.Sprintf("  %-*s %-13s %6s %11s  %-*s %-*s %8s %5s %s",
-				nameW, truncate(r.D.Name, nameW), r.D.State,
+			line = fmt.Sprintf("  %-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s",
+				nameW, truncate(r.D.Name, nameW), r.D.State, bootCell(r),
 				cpuCell(m.cpu, r), memCell(r),
 				backW, truncate(cellOr(r.Backing, "-"), backW),
 				origW, truncate(cellOr(shortOrigin(r.Origin), "-"), origW),
