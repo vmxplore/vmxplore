@@ -52,6 +52,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -134,6 +135,68 @@ var sshFlags = []string{
 	"-o", "BatchMode=yes",
 	"-o", "StrictHostKeyChecking=accept-new",
 	"-o", "ConnectTimeout=10",
+}
+
+// sshGuestFlags is the policy for the INTERACTIVE ssh into a guest (the TUI's
+// S key), and it is deliberately different from sshFlags above.
+//
+// No host-key checking: these guests are clones, minted with a fresh host key
+// on every build, drawing from a small libvirt DHCP pool — so the same address
+// is a different machine with a different key several times a day. The warning
+// is correct every time and useful none of them, and a prompt in front of a
+// key nobody can verify only teaches the operator to press yes unread. Both
+// known-hosts files go to /dev/null so this neither writes an entry a later
+// real connection would trip over, nor reads one.
+//
+// No BatchMode, unlike sshFlags: this one is attached to a terminal on
+// purpose, and a guest that wants a password must be able to ask for it.
+//
+// This applies to guests on a private host bridge and nothing else. The
+// hypervisor connection keeps StrictHostKeyChecking=accept-new, because a
+// durable host whose key changes is news.
+var sshGuestFlags = []string{
+	"-o", "StrictHostKeyChecking=no",
+	"-o", "UserKnownHostsFile=/dev/null",
+	"-o", "GlobalKnownHostsFile=/dev/null",
+	"-o", "LogLevel=ERROR", // without this, "Permanently added" on every connect
+	"-o", "ConnectTimeout=10",
+}
+
+// guestKeys are the management keys this host may already hold, in the order
+// worth trying. Every one of them was minted by a kldload tool and seeded into
+// the guests it built, so offering them is what turns S from "type the
+// password again" into a connection.
+//
+//	id_ed25519  — kube-cluster's cluster-management key. It writes the public
+//	              half into every node's cloud-init ssh_authorized_keys, so a
+//	              k8s node accepts it by construction.
+//	id_kldload  — the estate key the installer lays down for klab and the
+//	              appliance tiles.
+//
+// Missing files are skipped rather than passed: ssh treats an unreadable -i as
+// an error worth printing, and a host that never built a cluster has no
+// id_ed25519 to offer.
+var guestKeys = []string{
+	"/root/.ssh/id_ed25519",
+	"/root/.ssh/id_kldload",
+}
+
+// sshGuestArgv builds the interactive guest ssh argv: the policy above, plus
+// whichever management keys actually exist on this host, plus the destination.
+//
+// IdentitiesOnly is deliberately NOT set. These are ADDITIONAL candidates, not
+// a replacement set — an operator with their own key in an agent, or in
+// ~/.ssh/config for that host, keeps it, and the password prompt is still
+// there when no key matches. Automating the common case must not remove the
+// escape hatch for the uncommon one.
+func sshGuestArgv(dest string) []string {
+	argv := append([]string{}, sshGuestFlags...)
+	for _, k := range guestKeys {
+		if fi, err := os.Stat(k); err == nil && !fi.IsDir() {
+			argv = append(argv, "-i", k)
+		}
+	}
+	return append(argv, dest)
 }
 
 // sshArgv builds an ssh argv that runs one command on the target host.

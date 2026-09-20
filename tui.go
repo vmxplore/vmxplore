@@ -951,7 +951,26 @@ func (m *ui) execSSH() tea.Cmd {
 		dest = user + "@" + ip
 	}
 	m.status = "→ ssh " + dest
-	c := exec.Command("ssh", dest)
+	// Guest ssh does NOT check host keys, and this is the one place in the
+	// tool where that is the right answer rather than a shortcut.
+	//
+	// These guests are clones. kvm-clone, klab and kube-cluster mint a fresh
+	// host key on every build, and they draw from a small libvirt DHCP pool,
+	// so 192.168.122.101 is a different machine with a different key several
+	// times a day. Checking the key against known_hosts produces a warning
+	// that is CORRECT every time and USEFUL none of them — and a prompt in
+	// front of a key the operator has no way to verify teaches them to press
+	// yes without reading, which is worse than not asking.
+	//
+	// UserKnownHostsFile and GlobalKnownHostsFile go to /dev/null as well, so
+	// this never writes an entry that a later, real connection would trip
+	// over, and never reads one either.
+	//
+	// The scope is exactly right and must stay there: short-lived VMs on a
+	// private host bridge. The HYPERVISOR connection is a different thing —
+	// remote.go's sshFlags keeps StrictHostKeyChecking=accept-new for that,
+	// because a durable host whose key changes is news.
+	c := exec.Command("ssh", sshGuestArgv(dest)...)
 	return tea.ExecProcess(c, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
