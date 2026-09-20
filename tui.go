@@ -183,6 +183,7 @@ type ui struct {
 	typed      string
 	inputKind  string // "snap" | "vcpus" | "mem"
 	stagedCPUs int
+	stagedName string // clone base name, staged between the name and qty rounds
 	snapCursor int
 }
 
@@ -623,7 +624,11 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = styWarn.Render("no domain behind this row")
 			return m, nil
 		}
-		m.overlay, m.inputKind, m.typed = "input", "clone", ""
+		// Prefill a name that is already unique, so the common case is
+		// enter-enter. The operator wanted "name and qty" and nothing else;
+		// making them invent a name for the fifteenth clone of a golden is
+		// the opposite of that.
+		m.overlay, m.inputKind, m.typed = "input", "clone", cloneDefaultName(r.D.Name)
 		return m, nil
 	case "+", "=":
 		// "+" grows the disk, which is the only direction it can go. "=" is
@@ -722,8 +727,44 @@ func (m *ui) keyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// where one exists and falls back to a fresh snapshot per disk
 			// that was never sealed — the same choice the GUI makes, rather
 			// than a second rule that drifts from it.
-			plan, perr := planCloneFrom(r, name, true)
-			return m.toRun(plan, perr)
+			// Stage it and ask how many. One clone is the common case and
+			// costs one more keypress; fifteen is the case that used to mean
+			// fifteen trips through this overlay.
+			m.stagedName, m.inputKind, m.typed = name, "cloneqty", "1"
+			return m, nil
+		case "cloneqty":
+			n, cerr := strconv.Atoi(strings.TrimSpace(m.typed))
+			if cerr != nil || n < 1 {
+				m.status = styWarn.Render("how many clones? a positive number")
+				return m, nil
+			}
+			// planCloneFrom with fromGolden picks each disk's @golden anchor
+			// where one exists and falls back to a fresh snapshot per disk
+			// that was never sealed — the same choice the GUI makes, rather
+			// than a second rule that drifts from it.
+			if n == 1 {
+				plan, perr := planCloneFrom(r, m.stagedName, true)
+				return m.toRun(plan, perr)
+			}
+			// More than one: the typed name is a BASE and each clone gets an
+			// index, so the set reads as a set. Suffixing is predictable in a
+			// way a fresh random per clone is not — `kldload-w-1` next to
+			// `kldload-w-2` is an estate; three unrelated numbers is a mess.
+			var plans []verbPlan
+			for i := 1; i <= n; i++ {
+				nm := fmt.Sprintf("%s-%d", m.stagedName, i)
+				if verr := validZFSName(nm); verr != nil {
+					m.status = styWarn.Render(verr.Error())
+					return m, nil
+				}
+				p, perr := planCloneFrom(r, nm, true)
+				if perr != nil {
+					m.status = styWarn.Render(perr.Error())
+					return m, nil
+				}
+				plans = append(plans, p)
+			}
+			return m.toRunAll(plans)
 		case "resize":
 			g, err := strconv.Atoi(strings.TrimSpace(m.typed))
 			if err != nil || g < 1 {
@@ -795,6 +836,49 @@ func (m *ui) keySnaps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toRun(plan, err)
 	}
 	return m, nil
+}
+
+// cloneDefaultName proposes a name that is already free of collisions, so the
+// common case is enter, enter.
+//
+// <original>-HHMMSS. Six digits of wall clock: short enough to read aloud,
+// unique enough for a human pressing C, and it sorts chronologically within a
+// day — so a list of clones tells you the order they were made in, which a
+// random number does not. HHMMSS rather than seconds-of-day because 060562
+// looks like a broken clock, while 164922 is one.
+//
+// It is a PROPOSAL, sitting in the input buffer ready to be edited or
+// replaced. Nothing here is forced.
+func cloneDefaultName(orig string) string {
+	return orig + "-" + time.Now().Format("150405")
+}
+
+// toRunAll fires several plans as ONE background command, in order.
+//
+// Sequential rather than concurrent: every clone of the same source takes a
+// snapshot of the same zvol, and N of those racing is a way to find out which
+// ZFS operations are not as atomic as assumed. Cloning is fast — a clone is
+// metadata — so the wall-clock cost of doing them in turn is small, and a
+// failure part way names which one failed rather than leaving the operator to
+// work out which of fifteen did not appear.
+func (m *ui) toRunAll(plans []verbPlan) (tea.Model, tea.Cmd) {
+	if len(plans) == 0 {
+		return m, nil
+	}
+	m.overlay, m.typed, m.pending = "", "", nil
+	m.status = styCmd.Render(fmt.Sprintf("running %d clones: %s ...",
+		len(plans), plans[0].title))
+	return m, func() tea.Msg {
+		for i, p := range plans {
+			if err := runPlan(p); err != nil {
+				return verbDoneMsg{
+					title: fmt.Sprintf("%s (clone %d of %d)", p.title, i+1, len(plans)),
+					err:   err,
+				}
+			}
+		}
+		return verbDoneMsg{title: fmt.Sprintf("%d clones", len(plans))}
+	}
 }
 
 // toRun executes a plan immediately. There is no confirmation step anywhere
@@ -1356,7 +1440,7 @@ func (m *ui) actionsText() string {
 	sect("DISK")
 	verb("p", "snapshot (zfs, manual-*)")
 	verb("s", "snapshot pane — browse, and R rolls back")
-	verb("C", "clone to a new name (from @golden where sealed)")
+	verb("C", "clone — name, then how many "+styStatus.Render("(enter accepts both)"))
 	verb("+", "grow the disk "+styWarn.Render("(one way)"))
 
 	sect("CONFIG")
@@ -1403,7 +1487,10 @@ func (m *ui) inputText() string {
 		prompt = fmt.Sprintf("new memory for %s in GiB (now %s):",
 			styTitle.Render(r.D.Name), humanBytes(r.D.MaxMemKiB*1024))
 	case "clone":
-		prompt = fmt.Sprintf("clone %s to — new VM name:", styTitle.Render(r.D.Name))
+		prompt = fmt.Sprintf("clone %s — name (enter accepts):", styTitle.Render(r.D.Name))
+	case "cloneqty":
+		prompt = fmt.Sprintf("how many clones of %s? (>1 appends -1, -2, ...):",
+			styTitle.Render(m.stagedName))
 	case "resize":
 		// The current size is read when the verb runs, not here: asking the
 		// hypervisor on every keystroke of the prompt would shell out per
@@ -1451,7 +1538,7 @@ func helpText() string {
 	k("b", "reboot")
 	k("z/Z", "suspend / resume")
 	k("p", "snapshot (zfs, manual-*)")
-	k("C", "clone to a new name (from @golden where sealed)")
+	k("C", "clone — proposes <name>-HHMMSS, then asks how many; >1 appends -1, -2, ...")
 	k("+", "grow the disk "+styWarn.Render("(one way)"))
 	k("v", "edit vcpu/mem (next start)")
 	k("A", "autostart toggle")
