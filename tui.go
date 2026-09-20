@@ -7,9 +7,12 @@
 // verbs that need a name or a size, help (?). ← (or q) backs out of any
 // pane — q quits only from the main view — and esc aborts the input prompt.
 // There is no confirmation step: every verb runs on its keystroke, and
-// firePlan writes the exact argv to the status line as it goes. Mouse: wheel moves the active cursor, click
-// selects, a header click folds, re-clicking the selected row opens
-// detail. Interactive externals — `c`
+// firePlan writes the exact argv to the status line as it goes.
+//
+// Nav: j/k or arrows, pgup/pgdown (ctrl+b/ctrl+f) by a screen, g/home and
+// G/end to the ends — in the table and in the snapshot pane alike. Mouse:
+// wheel moves the active cursor, click selects, a header click folds,
+// re-clicking the selected row opens detail. Interactive externals — `c`
 // attaches `virsh console`, `S` opens ssh to the guest's agent-reported
 // IP — run under tea.ExecProcess, which suspends the TUI and also
 // sidesteps DomainOpenConsoleBidirectional's missing abort handle (design
@@ -415,15 +418,28 @@ func (m *ui) mouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // or -1 when the click lands outside the table body. Must mirror View's
 // layout exactly: title, optional libvirt-error line, column header, then
 // the scrolled table — change one, change both.
+// pageSize is how many table rows fit on screen: the window minus the title,
+// the column header, the blank, the rule, the status line and one spare. It is
+// what pgup/pgdown move by, and what the table itself scrolls and pads to, so
+// a "page" is exactly a screen and the three cannot disagree — the arithmetic
+// was written out three times before this existed.
+//
+// Floored at 3 because a window too short to hold a page still has to move the
+// cursor by something, and 0 would make pgdown a no-op that looks like a
+// broken key.
+func (m *ui) pageSize() int {
+	if n := m.height - 6; n > 3 {
+		return n
+	}
+	return 3
+}
+
 func (m *ui) itemAt(y int) int {
 	top := 2
 	if m.err != nil {
 		top++
 	}
-	avail := m.height - 6
-	if avail < 3 {
-		avail = 3
-	}
+	avail := m.pageSize()
 	if y < top || y-top >= avail {
 		return -1
 	}
@@ -470,10 +486,17 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "g":
+	case "g", "home":
 		m.cursor = 0
-	case "G":
+	case "G", "end":
 		m.cursor = max(0, len(items)-1)
+	case "pgdown", "ctrl+f":
+		// max(0, ...) because an EMPTY estate makes len(items)-1 equal -1, and
+		// a cursor of -1 gets past curRow's `>= len(items)` guard and indexes
+		// items[-1]. A fresh machine with no VMs is the common case for that.
+		m.cursor = max(0, min(len(items)-1, m.cursor+m.pageSize()))
+	case "pgup", "ctrl+b":
+		m.cursor = max(0, m.cursor-m.pageSize())
 	case "left", "h":
 		// back out: fold the group under the cursor; from a row, first hop
 		// up to its header so a second ← folds
@@ -740,6 +763,17 @@ func (m *ui) keySnaps(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.snapCursor > 0 {
 			m.snapCursor--
 		}
+	// The snapshot pane is the one place a list gets genuinely long — a
+	// machine with sanoid running carries thousands — so paging matters more
+	// here than in the table, not less.
+	case "g", "home":
+		m.snapCursor = 0
+	case "G", "end":
+		m.snapCursor = max(0, len(sel)-1)
+	case "pgdown", "ctrl+f":
+		m.snapCursor = max(0, min(len(sel)-1, m.snapCursor+m.pageSize()))
+	case "pgup", "ctrl+b":
+		m.snapCursor = max(0, m.snapCursor-m.pageSize())
 	case "R":
 		r, ok := m.curRow()
 		if !ok || m.snapCursor >= len(sel) {
@@ -911,10 +945,7 @@ func (m *ui) View() string {
 	b.WriteString(styHeader.Render(truncate(header, m.width)) + "\n")
 
 	lines, cursorLine := m.tableLines()
-	avail := m.height - 6 // title + header + blank + rule + status + spare
-	if avail < 3 {
-		avail = 3
-	}
+	avail := m.pageSize()
 	if cursorLine < m.scroll {
 		m.scroll = cursorLine
 	}
@@ -1327,8 +1358,9 @@ func helpText() string {
 		styTitle.Render(" v"+version+" — keys") + "\n\n")
 	section("navigate")
 	k("j/k ↑/↓", "move (group headers select too)")
+	k("pgup/pgdn", "a screen at a time (ctrl+b / ctrl+f)")
 	k("← →", "fold / unfold the group under the cursor")
-	k("g/G", "top / bottom")
+	k("g/G · home/end", "top / bottom")
 	k("mouse", "wheel scrolls · click selects · header click folds ·")
 	k("", "clicking the selected row opens detail")
 	k("r", "refresh now")
