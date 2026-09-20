@@ -54,7 +54,7 @@ func versionFull() string {
 	return version + " b" + buildNum
 }
 
-const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--version]
+const usage = `usage: vmx [--tui] [--once] [--reconcile] [--connect DEST] [--rules FILE] [--version]
        vmx --appliances
        vmx --appliance NAME --vm VMNAME [KEY=VALUE ...]
        vmx --appliance-script NAME [KEY=VALUE ...]
@@ -68,6 +68,10 @@ const usage = `usage: vmx [--tui] [--once] [--connect DEST] [--rules FILE] [--ve
                static/terminal-only builds start the TUI instead
   --tui        estate TUI (bubbletea) — headless / SSH / power use
   --once       print the estate table once and exit
+  --reconcile  clear the unreconciled group: forget register rows for VMs
+               libvirt does not have. Orphan zvols are LISTED and kept,
+               because destroying one destroys data; add --orphans to
+               destroy those too (zfs destroy -r, snapshots included).
   --connect D  drive a remote hypervisor: a host (fiend.unixbox.net),
                user@host, or a full libvirt URI (qemu+ssh://host/system).
                Uses ssh — same key/known_hosts as your shell.
@@ -190,6 +194,8 @@ Documentation: docs/VM-CONSOLE-DESIGN.md`
 func main() {
 	once := false
 	tui := false
+	reconcile := false
+	reconcileOrphans := false
 	rulesPath := ""
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -207,6 +213,10 @@ func main() {
 			return
 		case "--once":
 			once = true
+		case "--reconcile":
+			reconcile = true
+		case "--orphans":
+			reconcileOrphans = true
 		case "--tui":
 			tui = true
 		case "--rules", "-r":
@@ -416,6 +426,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	if reconcile {
+		os.Exit(runReconcile(rs, reconcileOrphans))
+	}
 	if once {
 		os.Exit(runOnce(rs))
 	}
