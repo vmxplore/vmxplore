@@ -180,12 +180,14 @@ type ui struct {
 	// verb state: the plan being run, the operator's typed buffer
 	// (the input field), and the staged specs value between the
 	// two input rounds. snapCursor selects inside the snaps overlay.
-	pending    *verbPlan
-	typed      string
-	inputKind  string // "snap" | "vcpus" | "mem"
-	stagedCPUs int
-	stagedName string // clone base name, staged between the name and qty rounds
-	snapCursor int
+	pending       *verbPlan
+	typed         string
+	inputKind     string // "snap" | "vcpus" | "mem"
+	stagedCPUs    int
+	stagedName    string // clone base name, staged between the name and qty rounds
+	snapCursor    int
+	factoryCursor int    // row in the Factory pane (factory.go)
+	factoryScope  string // klab distro scope there; empty means all
 }
 
 func newUI(lv *LV, rs *Ruleset) *ui {
@@ -508,6 +510,8 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keySnaps(msg)
 	case "actions":
 		return m.keyActions(msg)
+	case "factory":
+		return m.keyFactory(msg)
 	case "input":
 		return m.keyInput(msg)
 	}
@@ -593,6 +597,11 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.overlay = "snaps"
 			m.snapCursor = 0
 		}
+	case "f":
+		// Factory: build goldens, run the suites. Not row-scoped — it makes
+		// images rather than acting on one — so no curRow check.
+		m.overlay = "factory"
+		m.factoryCursor = 0
 	case "?":
 		m.overlay = "help"
 	case "a":
@@ -1243,7 +1252,7 @@ func (m *ui) colWidths() (int, int, int) {
 // falls back to the plain truncated form instead of emitting torn ANSI.
 func (m *ui) footerLine() string {
 	hints := [...][2]string{
-		{"space", "mark"}, {"enter", "detail"}, {"←→", "fold"}, {"s", "snaps"},
+		{"space", "mark"}, {"f", "factory"}, {"enter", "detail"}, {"←→", "fold"}, {"s", "snaps"},
 		{"a", "actions"}, {"c", "console"}, {"S", "ssh"}, {"?", "help"}, {"q", "quit"},
 	}
 	// A live mark count sits in front of the status, because a verb about to
@@ -1358,6 +1367,8 @@ func (m *ui) renderOverlay(base string) string {
 		content = helpText()
 	case "actions":
 		content = m.actionsText()
+	case "factory":
+		content = m.factoryText()
 	case "input":
 		content = m.inputText()
 	}
@@ -1669,6 +1680,7 @@ func helpText() string {
 	section("navigate")
 	k("j/k ↑/↓", "move (group headers select too)")
 	k("pgup/pgdn", "a screen at a time (ctrl+b / ctrl+f)")
+	k("f", "factory — build goldens (klab lean/GNOME/Xfce/KDE/db, k8s, appliances), run the suites")
 	k("space", "mark a row (on a group header: the whole group); a verb then hits every marked row")
 	k("esc", "clear every mark")
 	k("← →", "fold / unfold the group under the cursor")
