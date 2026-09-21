@@ -272,6 +272,7 @@ func after(d time.Duration, msg tea.Msg) tea.Cmd {
 // domain — or the same group header — when it still exists.
 func (m *ui) rebuild() {
 	var selDom, selHeader string
+	prevIdx := m.cursor
 	if items := m.navItems(); m.cursor < len(items) {
 		it := items[m.cursor]
 		if it.row < 0 {
@@ -283,11 +284,42 @@ func (m *ui) rebuild() {
 	m.groups = withFirecracker(BuildEstate(m.doms, m.dss, m.snaps, m.rs, m.ann))
 	m.cursor = 0
 	items := m.navItems()
+	found := false
 	for i, it := range items {
 		if it.row < 0 && m.groups[it.g].Label == selHeader ||
 			it.row >= 0 && m.groups[it.g].Rows[it.row].D.Name == selDom {
 			m.cursor = i
+			found = true
 			break
+		}
+	}
+	// The selected domain is GONE — almost always because it was just
+	// deleted. Stay where the operator was looking and take the row that
+	// moved up into the gap, which is the next VM. Falling through to
+	// cursor 0 sent them to the top of the estate, onto a group header, with
+	// the view scrolled away from whatever they were working through
+	// (operator, 2026-09-20: "when you delete something the cursor goes to
+	// the bottom, that's annoying, it should just go to the next vm").
+	//
+	// Nearest row at or after the old index, then nearest before it, so
+	// deleting the last VM in the list lands on the new last one rather than
+	// on nothing.
+	if !found && selDom != "" && len(items) > 0 {
+		at := min(prevIdx, len(items)-1)
+		m.cursor = at
+		for i := at; i < len(items); i++ {
+			if items[i].row >= 0 {
+				m.cursor = i
+				break
+			}
+		}
+		if items[m.cursor].row < 0 {
+			for i := at; i >= 0; i-- {
+				if items[i].row >= 0 {
+					m.cursor = i
+					break
+				}
+			}
 		}
 	}
 	// first load (nothing selected yet): land on the first domain row, not
