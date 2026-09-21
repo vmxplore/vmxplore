@@ -164,6 +164,7 @@ type ui struct {
 
 	groups    []GroupRows
 	collapsed map[string]bool // group label → folded (←/→); survives refresh
+	marks     map[string]bool // marked domain NAMES; see marks.go
 	cursor    int             // indexes navItems(): group headers AND rows
 	scroll    int
 
@@ -189,7 +190,7 @@ type ui struct {
 
 func newUI(lv *LV, rs *Ruleset) *ui {
 	return &ui{lv: lv, rs: rs, cpu: map[string]float64{},
-		collapsed: map[string]bool{}, status: "loading estate…"}
+		collapsed: map[string]bool{}, marks: map[string]bool{}, status: "loading estate…"}
 }
 
 // navItem is one selectable line of the estate view: a group header
@@ -571,6 +572,22 @@ func (m *ui) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if _, ok := m.curRow(); ok {
 			m.overlay = "detail"
 		}
+	case " ":
+		// Mark, then step down: a run of rows is space-space-space. Stepping
+		// only when a ROW was marked — not a whole group from its header —
+		// because after marking a group the next useful position is the next
+		// group, not its first member.
+		items := m.navItems()
+		onRow := m.cursor < len(items) && items[m.cursor].row >= 0
+		if m.toggleMark() && onRow && m.cursor < len(items)-1 {
+			m.cursor++
+		}
+	case "esc":
+		if len(m.marks) > 0 {
+			n := m.markCount()
+			m.clearMarks()
+			m.status = styStatus.Render(fmt.Sprintf("cleared %d mark(s)", n))
+		}
 	case "s":
 		if _, ok := m.curRow(); ok {
 			m.overlay = "snaps"
@@ -626,25 +643,30 @@ func (m *ui) keyActions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// one — the first cut of this switch branched on r.FC before calling
 	// planStart, which re-implemented the routing that lives in the very
 	// function it was calling, twenty lines away.
+	//
+	// These take a PLANNER rather than calling the verb here, so one
+	// keystroke can drive many rows: marked rows if any are marked, else the
+	// one under the cursor. Everything below this group needs typed input or
+	// only makes sense on a single row, and stays single.
 	case "u":
-		plan, err = planStart(r)
+		return m.runOnTargets(planStart)
 	case "d":
-		plan, err = planShutdown(r)
+		return m.runOnTargets(planShutdown)
 	case "K":
-		plan, err = planForceOff(r)
+		return m.runOnTargets(planForceOff)
 	case "b":
-		plan, err = planReboot(r)
+		return m.runOnTargets(planReboot)
 	case "z":
-		plan, err = planSuspend(r)
+		return m.runOnTargets(planSuspend)
 	case "Z":
-		plan, err = planResume(r)
+		return m.runOnTargets(planResume)
 	case "A":
-		plan, err = planAutostart(r)
+		return m.runOnTargets(planAutostart)
 	case "D":
 		// Delete, force-delete a microVM, or forget an unreconciled row —
 		// planDelete picks, because "delete" is the verb the operator reaches
 		// for on all three.
-		plan, err = planDelete(r)
+		return m.runOnTargets(planDelete)
 	case "F":
 		// Seal a shut-off appliance as a Firecracker golden. Its own key
 		// because it is a distinct verb, not a mode of another; planFCGolden
@@ -1173,11 +1195,19 @@ const (
 // falls back to the plain truncated form instead of emitting torn ANSI.
 func (m *ui) footerLine() string {
 	hints := [...][2]string{
-		{"enter", "detail"}, {"←→", "fold"}, {"s", "snaps"}, {"a", "actions"},
-		{"c", "console"}, {"S", "ssh"}, {"?", "help"}, {"q", "quit"},
+		{"space", "mark"}, {"enter", "detail"}, {"←→", "fold"}, {"s", "snaps"},
+		{"a", "actions"}, {"c", "console"}, {"S", "ssh"}, {"?", "help"}, {"q", "quit"},
 	}
-	plain := m.status + "  "
-	styled := styStatus.Render(m.status) + "  "
+	// A live mark count sits in front of the status, because a verb about to
+	// hit eleven VMs instead of one is the single most useful thing the
+	// footer can say.
+	status := m.status
+	if n := m.markCount(); n > 0 {
+		status = styKey.Render(fmt.Sprintf("%d marked", n)) +
+			styStatus.Render(" · esc clears · a verb hits all of them") + "  " + status
+	}
+	plain := status + "  "
+	styled := styStatus.Render(status) + "  "
 	for _, h := range hints {
 		plain += " [" + h[0] + "]" + h[1]
 		styled += " " + styKey.Render("["+h[0]+"]") + styStatus.Render(h[1])
@@ -1207,12 +1237,30 @@ func (m *ui) tableLines() ([]string, int) {
 					suffix = fmt.Sprintf(" · %d running", n)
 				}
 			}
+			nm := 0
+			for _, r := range g.Rows {
+				if m.marked(r.D.Name) {
+					nm++
+				}
+			}
+			if nm > 0 {
+				suffix += styKey.Render(fmt.Sprintf(" · %d marked", nm))
+			}
 			line = fmt.Sprintf("%s %s (%d)%s", arrow, g.Label, len(g.Rows), suffix)
 			sty = styGroup
 		} else {
 			r := m.groups[it.g].Rows[it.row]
-			line = fmt.Sprintf("  %-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s",
-				nameW, truncate(r.D.Name, nameW), r.D.State, bootCell(r),
+			// The two leading spaces are the mark gutter. A marked row shows
+			// its marker there rather than recolouring the line, because the
+			// line's colour already means something — running, shut off,
+			// warning — and a second meaning on the same channel makes both
+			// harder to read.
+			gutter := "  "
+			if m.marked(r.D.Name) {
+				gutter = styKey.Render("> ")
+			}
+			line = fmt.Sprintf("%s%-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s",
+				gutter, nameW, truncate(r.D.Name, nameW), r.D.State, bootCell(r),
 				cpuCell(m.cpu, r), memCell(r),
 				backW, truncate(cellOr(r.Backing, "-"), backW),
 				origW, truncate(cellOr(shortOrigin(r.Origin), "-"), origW),
@@ -1550,6 +1598,8 @@ func helpText() string {
 	section("navigate")
 	k("j/k ↑/↓", "move (group headers select too)")
 	k("pgup/pgdn", "a screen at a time (ctrl+b / ctrl+f)")
+	k("space", "mark a row (on a group header: the whole group); a verb then hits every marked row")
+	k("esc", "clear every mark")
 	k("← →", "fold / unfold the group under the cursor")
 	k("g/G · home/end", "top / bottom")
 	k("mouse", "wheel scrolls · click selects · header click folds ·")
