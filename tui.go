@@ -1142,6 +1142,7 @@ func (m *ui) View() string {
 		b.WriteString(styWarn.Render("libvirt: "+m.err.Error()) + "\n")
 	}
 
+	nameW, backW, origW := m.colWidths()
 	header := fmt.Sprintf("  %-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s",
 		nameW, "DOMAIN", "STATE", "BOOT", "CPU", "MEM", backW, "BACKING",
 		origW, "CLONE OF", "SNAPS", "AGENT", "NOTES")
@@ -1183,11 +1184,58 @@ func (m *ui) View() string {
 	return b.String()
 }
 
+// Column widths, minimums. DOMAIN, BACKING and CLONE OF grow into whatever
+// the terminal actually has; everything else is a fixed field.
 const (
-	nameW = 22
-	backW = 26
-	origW = 28
+	nameWMin = 22
+	backWMin = 26
+	origWMin = 28
+
+	// Everything in the row format that is NOT one of the three growable
+	// columns: the gutter, STATE, BOOT, CPU, MEM, SNAPS, AGENT and the single
+	// spaces between them. Counted from the format string itself —
+	//   "%s%-*s %-13s %-4s %6s %11s  %-*s %-*s %8s %5s %s"
+	// 2 + 1 + 13 + 1 + 4 + 1 + 6 + 1 + 11 + 2 + 1 + 1 + 8 + 1 + 5 + 1
+	fixedCols = 59
+
+	// Room kept for NOTES. Notes are usually empty, so giving them the whole
+	// remainder is what made a 200-column terminal render a 135-column table
+	// with a third of the screen blank (operator, 2026-09-20: "why is only
+	// 2/3 of the screen being used").
+	notesW = 24
+
+	// Ceilings. A domain name is not 90 characters and a dataset path is not
+	// 120, so past a point extra width buys nothing and a very wide terminal
+	// would just spread the table thin.
+	nameWMax = 40
+	backWMax = 46
+	origWMax = 48
 )
+
+// colWidths sizes the three growable columns to the terminal.
+//
+// Below the minimums it returns them unchanged and the row truncates, which is
+// the old behaviour and the right one — a narrow terminal should lose the ends
+// of long paths, not the columns after them.
+func (m *ui) colWidths() (int, int, int) {
+	nw, bw, ow := nameWMin, backWMin, origWMin
+	extra := m.width - fixedCols - notesW - (nw + bw + ow)
+	if extra <= 0 {
+		return nw, bw, ow
+	}
+	// Names first: it is the column the operator reads to find a row, and the
+	// one most often truncated in practice (cloudtest-klab-golden-debian is 28).
+	grow := func(w, max, share int) int {
+		if w+share > max {
+			return max
+		}
+		return w + share
+	}
+	nw = grow(nw, nameWMax, extra*4/10)
+	bw = grow(bw, backWMax, extra*3/10)
+	ow = grow(ow, origWMax, extra-extra*4/10-extra*3/10)
+	return nw, bw, ow
+}
 
 // footerLine renders the status + verb menu with the keys coloured (cyan like
 // the group headers, labels faint). Styled output can't go through the
@@ -1222,6 +1270,7 @@ func (m *ui) footerLine() string {
 // to styled lines and reports which line the cursor landed on (for
 // scrolling). Headers carry the fold arrow: ▾ open, ▸ folded.
 func (m *ui) tableLines() ([]string, int) {
+	nameW, backW, origW := m.colWidths()
 	var lines []string
 	cursorLine := 0
 	for i, it := range m.navItems() {
@@ -1312,7 +1361,29 @@ func (m *ui) renderOverlay(base string) string {
 	case "input":
 		content = m.inputText()
 	}
-	box := styOverlay.Width(min(m.width-4, 76)).Render(content)
+	// Overlay width scales with the terminal instead of sitting at a fixed 76.
+	//
+	// 76 was the whole rule, so on a 200-column screen the actions menu and
+	// the help pane used 38% of it and wrapped text that had room not to —
+	// the same fixed-width mistake the table had (operator, 2026-09-20:
+	// "can make the menu bigger too").
+	//
+	// Three-fifths rather than the full width: an overlay is a thing ON TOP
+	// of the estate, and seeing the table either side of it is what says so.
+	// The floor stays 76 because that is the width the longest help and menu
+	// lines were written against, and the ceiling keeps a margin so the
+	// double border never touches the edge.
+	boxW := m.width * 3 / 5
+	if boxW < 76 {
+		boxW = 76
+	}
+	if boxW > m.width-8 {
+		boxW = m.width - 8
+	}
+	if boxW < 24 {
+		boxW = 24 // a terminal too narrow for any of this; render something
+	}
+	box := styOverlay.Width(boxW).Render(content)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		box, lipgloss.WithWhitespaceChars(" "))
 }
