@@ -415,3 +415,27 @@ func TestNeedsZFSImpliesDataDisk(t *testing.T) {
 		}
 	}
 }
+
+// TestDataBlockSizes pins each data disk's volblocksize to what it holds:
+// the database tiles 16K, everything else the 128K default, and every
+// system disk 64K. The disks were all left to the OpenZFS default of 16K
+// (fiend, 2026-09-27), which nothing chose.
+func TestDataBlockSizes(t *testing.T) {
+	if rootBlock != "64K" {
+		t.Fatalf("system disks are %s, want 64K like klab and kvm-create", rootBlock)
+	}
+	db := map[string]bool{"Web Stack": true, "LAMP Stack": true}
+	for _, a := range Appliances() {
+		if a.DataGB == 0 {
+			continue
+		}
+		got := NewVMSpec{DataBlock: a.DataBlock}.dataBlock()
+		want := "128K"
+		if db[a.Name] {
+			want = "16K"
+		}
+		if got != want {
+			t.Errorf("%s: data disk %s, want %s", a.Name, got, want)
+		}
+	}
+}

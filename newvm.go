@@ -276,10 +276,12 @@ type NewVMSpec struct {
 	// turns it into the guest's own pool (app_pool_init), which is what makes
 	// a recipe's dataset tuning real. Zero = no data disk. It stays blank on
 	// purpose: app_pool_init refuses anything that carries a signature.
-	DataGB   int
-	User     string // cloud mode only
-	Password string // cloud mode only
-	SSHKey   string // cloud mode only — one authorized_keys line
+	DataGB int
+	// DataBlock is the data disk's volblocksize ("" = 128K); see Appliance.
+	DataBlock string
+	User      string // cloud mode only
+	Password  string // cloud mode only
+	SSHKey    string // cloud mode only — one authorized_keys line
 	// RootSSHKeys authorizes root directly — set only by the kldload
 	// enrollment path, which needs root in the guest for kvm-mesh and the
 	// cert push. Ordinary VMs never get one.
@@ -748,7 +750,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 		var diskArg string
 		if zfsParent != "" {
 			ds := zfsParent + "/" + s.Name
-			if err := run(true, zfsArgv("create", "-s", "-V",
+			if err := run(true, zfsArgv("create", "-s", "-o", "volblocksize="+rootBlock, "-V",
 				fmt.Sprintf("%dG", s.DiskGB), ds)...); err != nil {
 				return err
 			}
@@ -856,7 +858,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 	var diskArg string
 	if zfsParent != "" {
 		ds := zfsParent + "/" + s.Name
-		if err := run(true, zfsArgv("create", "-s", "-V",
+		if err := run(true, zfsArgv("create", "-s", "-o", "volblocksize="+rootBlock, "-V",
 			fmt.Sprintf("%dG", s.DiskGB), ds)...); err != nil {
 			return err
 		}
@@ -909,7 +911,7 @@ func BuildNewVM(s NewVMSpec, zfsParent string, progress func(string)) error {
 			// volume goes where the terabytes are. dataDiskParent says where,
 			// and beside the root disk when nothing does.
 			dds := dataDiskParent(zfsParent, progress) + "/" + s.Name + "-data"
-			if err := run(true, zfsArgv("create", "-s", "-V",
+			if err := run(true, zfsArgv("create", "-s", "-o", "volblocksize="+s.dataBlock(), "-V",
 				fmt.Sprintf("%dG", s.DataGB), dds)...); err != nil {
 				return err
 			}
@@ -1332,4 +1334,20 @@ func shellQuote(s string) string {
 func metaData(name string) string {
 	return fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n",
 		yamlQuote(name), yamlQuote(name))
+}
+
+// rootBlock is the volblocksize of every VM's system disk: 64K, the same
+// as klab's goldens and kvm-create. An OS disk compresses better and costs a
+// quarter of the metadata at 64K, and a clone inherits its golden's size, so
+// one value for every system disk keeps the estate uniform. Leaving it to
+// the OpenZFS default gave every appliance 16K while every klab golden had
+// 64K (fiend, 2026-09-27).
+const rootBlock = "64K"
+
+// dataBlock is the data disk's volblocksize: the spec's, else 128K.
+func (s NewVMSpec) dataBlock() string {
+	if s.DataBlock != "" {
+		return s.DataBlock
+	}
+	return "128K"
 }

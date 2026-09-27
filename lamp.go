@@ -37,8 +37,9 @@ var lampStack = Appliance{
 	RAMMB:  2048,
 	DiskGB: 20,
 
-	Needs:  NeedsZFS,
-	DataGB: 50,
+	Needs:     NeedsZFS,
+	DataGB:    50,
+	DataBlock: "16K", // MySQL pages
 
 	Port:    80,
 	LandsOn: "http://<vm-ip>/  (stack health at /healthz)",

@@ -105,6 +105,13 @@ type Appliance struct {
 	// makes a recipe's dataset properties real rather than decorative.
 	// Zero means no data disk.
 	DataGB int
+	// DataBlock is the data disk's volblocksize: "128K" for media and bulk
+	// files written and read in long runs (the default), "16K" for a disk
+	// that holds a database, whose 8K/16K pages would otherwise be
+	// rewritten 64K at a time. The data disks were all left to the OpenZFS
+	// default of 16K, so a 500 GB media volume carried eight times the
+	// metadata it needed (fiend, 2026-09-27).
+	DataBlock string
 
 	Fields []ApplianceField
 
@@ -241,16 +248,17 @@ func (a Appliance) Spec(vmName, user, password, sshKey string,
 		return NewVMSpec{}, err
 	}
 	s := NewVMSpec{
-		Name:     strings.TrimSpace(vmName),
-		Distro:   a.Distro,
-		VCPUs:    a.VCPUs,
-		RAMMB:    a.RAMMB,
-		DiskGB:   a.DiskGB,
-		DataGB:   a.DataGB,
-		User:     strings.TrimSpace(user),
-		Password: password,
-		SSHKey:   strings.TrimSpace(sshKey),
-		PostInst: script,
+		Name:      strings.TrimSpace(vmName),
+		Distro:    a.Distro,
+		VCPUs:     a.VCPUs,
+		RAMMB:     a.RAMMB,
+		DiskGB:    a.DiskGB,
+		DataGB:    a.DataGB,
+		DataBlock: a.DataBlock,
+		User:      strings.TrimSpace(user),
+		Password:  password,
+		SSHKey:    strings.TrimSpace(sshKey),
+		PostInst:  script,
 	}
 	return s, s.validate()
 }
@@ -670,8 +678,9 @@ var applianceCatalog = []Appliance{
 		// The database is the reason this wants a pool: an 8K-record dataset
 		// matching PostgreSQL's page size, snapshots before schema changes,
 		// and a rollback that is one command. Degrades to plain dirs.
-		Needs:  NeedsZFS,
-		DataGB: 50,
+		Needs:     NeedsZFS,
+		DataGB:    50,
+		DataBlock: "16K", // MySQL/PostgreSQL pages
 
 		Port:    80,
 		LandsOn: "http://<vm-ip>/  (stack health at /healthz)",
