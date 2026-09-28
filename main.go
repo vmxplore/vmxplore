@@ -8,6 +8,7 @@
 //	vmx            → native GUI (Fyne) in the full build; the static
 //	                 TUI-only build (no `gui` tag) starts the TUI instead
 //	vmx --tui      → estate TUI (bubbletea) — headless / SSH / power use
+//	vmx --console VM → one VM's screen, fullscreen (gui_console.go)
 //	vmx --once     → print the estate table once and exit (scripts, smoke)
 //	vmx --rules F  → use rules file F for grouping/classification
 //	vmx --version  → version and exit
@@ -63,10 +64,14 @@ const usage = `usage: vmx [--tui] [--once] [--reconcile] [--connect DEST] [--rul
        vmx --destroy-all [--yes]
        vmx --sysdiag
        vmx --vdi-wall [--open]
+       vmx --console VM
 
   (no flags)   native GUI — the estate frame (list · console · details);
                static/terminal-only builds start the TUI instead
   --tui        estate TUI (bubbletea) — headless / SSH / power use
+  --console VM one VM's screen, fullscreen, nothing else; Ctrl+Alt+Q quits
+               (VMX_QUIT_KEY to change it). On a host with no desktop:
+               cage -- vmxplore --console VM
   --once       print the estate table once and exit
   --reconcile  clear the unreconciled group: forget register rows for VMs
                libvirt does not have. Orphan zvols are LISTED and kept,
@@ -219,6 +224,15 @@ func main() {
 			reconcileOrphans = true
 		case "--tui":
 			tui = true
+		case "--console":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "vmx: --console needs a VM name")
+				os.Exit(2)
+			}
+			// one VM's screen, fullscreen, nothing else (gui_console.go);
+			// `cage -- vmxplore --console VM` on a host with no desktop
+			os.Exit(runConsoleGUI(args[i]))
 		case "--rules", "-r":
 			i++
 			if i >= len(args) {

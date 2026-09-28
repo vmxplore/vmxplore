@@ -626,6 +626,9 @@ type vncViewer struct {
 	// onFullScreen is the console's fullscreen toggle, owned by the GUI and
 	// reached from here because a focused viewer eats the key that fires it.
 	onFullScreen func()
+	// onQuit is console mode's way out (gui_console.go): under cage there is
+	// no window frame, so the quit chord is caught here like the fullscreen one.
+	onQuit func()
 }
 
 func newVNCViewer(conn *rfbConn) *vncViewer {
@@ -827,6 +830,11 @@ func (v *vncViewer) TypedShortcut(s fyne.Shortcut) {
 		c.Modifier == fullScreenKey.Modifier {
 		if v.onFullScreen != nil {
 			v.onFullScreen()
+		}
+	}
+	if c, ok := s.(*desktop.CustomShortcut); ok && v.onQuit != nil {
+		if q, _ := resolveQuitKey(); c.KeyName == q.KeyName && c.Modifier == q.Modifier {
+			v.onQuit()
 		}
 	}
 }

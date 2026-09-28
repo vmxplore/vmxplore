@@ -13,6 +13,12 @@ import (
 	"os"
 )
 
+// runConsoleGUI needs the GUI: the static build can only say so.
+func runConsoleGUI(name string) int {
+	fmt.Fprintf(os.Stderr, "vmx: --console %s needs the GUI build (make gui, or go build -tags gui)\n", name)
+	return 2
+}
+
 func runGUI(rs *Ruleset) {
 	fmt.Fprintln(os.Stderr,
 		"vmx: this is the static terminal build (no GUI compiled in) — starting the TUI.\n"+
