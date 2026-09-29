@@ -10,6 +10,12 @@ import "testing"
 // first version of this test replicated the algorithm and would have passed
 // against the broken code.
 func TestCursorAfterDelete(t *testing.T) {
+	// Only this test's domains: rebuild() also appends the host's live
+	// Firecracker microVMs, and with two VDI clones running on onyx the
+	// cursor landed on "vdi-deskto-1" (2026-09-28). No kfire on PATH means
+	// no microVM group; the cache is cleared so an earlier read cannot leak.
+	t.Setenv("PATH", t.TempDir())
+	fcInvalidate()
 	doms := func(names ...string) []Dom {
 		var out []Dom
 		for _, n := range names {
