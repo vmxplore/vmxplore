@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -139,5 +140,28 @@ func TestParseFailLines(t *testing.T) {
 	}
 	if len(parseFailLines("")) != 0 {
 		t.Error("empty input must give no lines")
+	}
+}
+
+// An --only name that is no tile fails the request before anything is
+// built: "nope" alone built nothing and exited 0, and beside a real name it
+// was dropped without a word. Only unknown-name cases here -- a request that
+// matched would start real builds.
+func TestBuildAllRefusesUnknownOnly(t *testing.T) {
+	// Unknown names only, and never a real one: against the old code a real
+	// name beside an unknown one went on to build that tile, and only the
+	// tile already existing on the test host kept this test from starting a
+	// VM build (onyx, 2026-09-28).
+	for _, only := range []string{"nope", "not-a-tile, also-not-one"} {
+		var lines []string
+		built, failed, access, _ := BuildAllAppliances(context.Background(), only,
+			func(l string) { lines = append(lines, l) }, nil)
+		if built != 0 || failed == 0 || access != nil {
+			t.Errorf("--only %q: built=%d failed=%d, want 0 built and a failure", only, built, failed)
+		}
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "no catalog tile named") || strings.Contains(joined, "tile(s)") {
+			t.Errorf("--only %q: log does not refuse before building:\n%s", only, joined)
+		}
 	}
 }

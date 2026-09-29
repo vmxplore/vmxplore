@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -540,20 +541,39 @@ func BuildAllAppliances(ctx context.Context, only string, log func(string),
 	log("build-all: started — checking which tiles already exist")
 	have := domainNames()
 	var todo []Appliance
+	matched := map[string]bool{}
 	for _, a := range Appliances() {
 		vm := applianceVMName(a.Name)
 		if len(want) > 0 && !want[strings.ToLower(a.Name)] && !want[vm] {
 			continue
 		}
+		matched[strings.ToLower(a.Name)], matched[vm] = true, true
 		if have[vm] {
 			log(vm + " already exists — skipped")
 			continue
 		}
 		todo = append(todo, a)
 	}
+	// A name in --only that is no tile is a failed request, not a smaller
+	// one: "--only nope" built nothing and exited 0, and "--only vdi,nope"
+	// quietly dropped the second name (found designing the install's
+	// appliance selection, 2026-09-28). Refuse before building anything, so
+	// a typo costs a second rather than a two-hour build of the wrong set.
+	var unknown []string
+	for o := range want {
+		if !matched[o] {
+			unknown = append(unknown, o)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		log("build-all: no catalog tile named " + strings.Join(unknown, ", ") +
+			" (use a name from `vmx --appliances`, or its VM name such as app-vdi-deskto) — nothing built")
+		return 0, len(unknown), nil, nil
+	}
 	if len(todo) == 0 {
 		if len(want) > 0 {
-			log("build-all: no catalog tile matches --only " + only)
+			log("build-all: every tile in --only " + only + " already exists")
 		} else {
 			log("build-all: nothing to build")
 		}
