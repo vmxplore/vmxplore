@@ -937,7 +937,7 @@ func runGUI(rs *Ruleset) {
 			return append(out, applianceBranchUID, toolsBranchUID)
 		}
 		if uid == fcBranchUID {
-			gs := fcGoldensCached()
+			gs := fcGoldensSnapshot()
 			out := make([]string, 0, len(gs)+len(fcRowsNow)+3)
 			// Destroy all first, above the verbs that make more: it is the
 			// undo for everything below it, and after a demo the operator
@@ -1036,7 +1036,7 @@ func runGUI(rs *Ruleset) {
 							run++
 						}
 					}
-					t.Text = fmt.Sprintf("Firecracker  (%d golden, %d microVM, %d running)", len(fcGoldensCached()), len(fcRowsNow), run)
+					t.Text = fmt.Sprintf("Firecracker  (%d golden, %d microVM, %d running)", len(fcGoldensSnapshot()), len(fcRowsNow), run)
 					t.Color = acBrand.at()
 					t.Refresh()
 					return
@@ -1083,7 +1083,7 @@ func runGUI(rs *Ruleset) {
 				row.title.Text = "◇ " + g
 				row.title.Color = acBrand.at()
 				row.detail.Text = "   golden"
-				for _, fg := range fcGoldensCached() {
+				for _, fg := range fcGoldensSnapshot() {
 					if fg.Name == g {
 						data := ""
 						if fg.DataZvol != "" {
@@ -4358,12 +4358,12 @@ func runGUI(rs *Ruleset) {
 	}
 
 	// ── refresh: estate every 2s, ZFS every 30s (the TUI cadence) ────────
-	apply := func(doms []Dom, cpuRaw map[string]uint64, at time.Time) {
+	apply := func(doms []Dom, cpuRaw map[string]uint64, fcRows []Row, at time.Time) {
 		if !st.prevAt.IsZero() {
 			st.cpu = cpuPercent(st.prevCPU, cpuRaw, at.Sub(st.prevAt), doms)
 		}
 		st.prevCPU, st.prevAt = cpuRaw, at
-		fcRowsNow = fcRowsCached()
+		fcRowsNow = fcRows
 		st.groups = withoutFCGhosts(BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann), fcRowsNow)
 		rebuildView()
 		tree.Refresh()
@@ -4420,7 +4420,14 @@ func runGUI(rs *Ruleset) {
 			cpuRaw[d.Name] = d.CPUTimeNs
 		}
 		at := time.Now()
-		fyne.Do(func() { apply(doms, cpuRaw, at) })
+		// kfire is asked HERE, off the UI thread. apply used to call
+		// fcRowsCached from inside fyne.Do, and the sidebar's item painter
+		// called fcGoldensCached: each could run `kfire list` / `kfire
+		// goldens` (4-6 s apiece on a loaded onyx, 2026-09-28) on the UI
+		// thread, and GNOME put up "not responding" over every click.
+		fcRows := fcRowsCached()
+		fcGoldensCached()
+		fyne.Do(func() { apply(doms, cpuRaw, fcRows, at) })
 	}
 	fetchZFS := func() {
 		ann := LoadAnnotations()

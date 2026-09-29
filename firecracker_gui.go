@@ -42,6 +42,16 @@ func fcGoldensCached() []FCGolden {
 	return fcGoldenC
 }
 
+// fcGoldensSnapshot is what the last refresh read, and never runs kfire: for
+// the tree's painters and anything else on the UI thread, where a 4-6 s
+// `kfire goldens` froze the window (onyx, 2026-09-28). The background tick
+// keeps it fresh through fcGoldensCached.
+func fcGoldensSnapshot() []FCGolden {
+	fcMu.Lock()
+	defer fcMu.Unlock()
+	return fcGoldenC
+}
+
 // streamCmd runs argv and hands every output line to log as it arrives,
 // which is what a clone needs: each instance prints as it comes up, and a
 // ten-instance --wait is half a minute nobody wants to stare at a blank
