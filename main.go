@@ -397,15 +397,36 @@ func main() {
 				fmt.Println(p)
 			}
 			if open {
+				// No session, no browser: say so and where the page is,
+				// rather than hand it to an xdg-open that opens nothing.
+				// kld runs this as whoever launched it; under sudo or over
+				// ssh that is a user with no desktop (onyx, 2026-09-28).
+				if ok, why := desktopSession(os.Geteuid(), os.Getenv); !ok {
+					fmt.Fprintf(os.Stderr, "vdi-wall: %s -- open it in a browser where you are logged in:\n", why)
+					for _, p := range paths {
+						fmt.Fprintf(os.Stderr, "  file://%s\n", p)
+					}
+					return
+				}
 				// One tab per page. Staggered: browsers drop tabs opened in a
 				// tight loop, and the wall is autoplaying video in every one.
 				for i, p := range paths {
 					if i > 0 {
 						time.Sleep(400 * time.Millisecond)
 					}
-					if err := exec.Command("xdg-open", p).Start(); err != nil {
-						fmt.Fprintf(os.Stderr, "vmx: xdg-open: %v\n", err)
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					// Its own session: kld runs this in a job pane whose pty is
+					// closed when vmx returns, and the hangup took the freshly
+					// started browser down with it -- the page list printed,
+					// the browser flickered and was gone (onyx, 2026-09-28).
+					// No pipes: a browser xdg-open starts inherits them, and
+					// waiting for their EOF waited for the browser to exit.
+					xo := exec.CommandContext(ctx, "xdg-open", p)
+					xo.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+					if err := xo.Run(); err != nil {
+						fmt.Fprintf(os.Stderr, "vdi-wall: xdg-open could not open %s: %v\n", p, err)
 					}
+					cancel()
 				}
 			}
 			return
@@ -499,4 +520,19 @@ func maybeElevate(connectErr error) {
 		os.Args...)
 	// error path falls through to main's normal failure message
 	_ = syscall.Exec(sudo, argv, env)
+}
+
+// desktopSession says whether this process can put a window on someone's
+// desktop, and if not, why -- in words an operator can act on. Root has no
+// session of its own (kld used to run every verb under sudo); a process with
+// neither WAYLAND_DISPLAY nor DISPLAY is on ssh or a text console. getenv is
+// a parameter so the test can drive it.
+func desktopSession(euid int, getenv func(string) string) (bool, string) {
+	if euid == 0 {
+		return false, "running as root, which has no desktop session (run it as the logged-in user, not under sudo)"
+	}
+	if getenv("WAYLAND_DISPLAY") == "" && getenv("DISPLAY") == "" {
+		return false, "no desktop session here (no WAYLAND_DISPLAY or DISPLAY: ssh or a text console)"
+	}
+	return true, ""
 }
