@@ -1788,6 +1788,19 @@ func runGUI(rs *Ruleset) {
 	// followConsole keeps both panes in lock-step with the selection.
 	followConsole := func(r Row) {
 		conName, conState = r.D.Name, r.D.State
+		// A Firecracker microVM is not a libvirt domain and has no display:
+		// both panes asked libvirt for it and showed "no domain with matching
+		// name" (onyx, 2026-09-28, on a VDI clone). Say what it is instead, and
+		// for a VDI offer its desktop, which is a stream, in the browser.
+		if r.FC != nil {
+			detachConsole()
+			detachVNC()
+			consoleHost.Objects = []fyne.CanvasObject{conPlaceholder(r.D.Name + " is a Firecracker microVM: its serial log is `kfire console " + r.D.Name + "`")}
+			consoleHost.Refresh()
+			vncHost.Objects = []fyne.CanvasObject{fcScreenPane(r)}
+			vncHost.Refresh()
+			return
+		}
 		if r.D.State == "running" && !r.Synthetic {
 			attachConsole(r.D.Name)
 			attachVNC(r.D.Name)
@@ -4812,4 +4825,30 @@ func fitTerminal(term fyne.CanvasObject) fyne.CanvasObject {
 		rowH = cellH
 	}
 	return container.New(&termFit{rowH: rowH, cellH: cellH}, term)
+}
+
+// fcScreenPane is the Screen tab for a Firecracker microVM, which has no
+// display to show: for a VDI, a button that opens its desktop stream (the
+// same page one tile of the wall plays) in the browser; for anything else,
+// where its service answers.
+func fcScreenPane(r Row) fyne.CanvasObject {
+	fcNote := func(t string) fyne.CanvasObject {
+		l := widget.NewLabel(t)
+		l.Wrapping = fyne.TextWrapWord
+		return l
+	}
+	msg := r.D.Name + " is a Firecracker microVM: it has no display, so there is no screen to draw here."
+	if r.FC.IP == "" {
+		return fcNote(msg + " It has no address yet.")
+	}
+	if isVDIRow(r) {
+		u := fmt.Sprintf("http://%s:%d/session1/", r.FC.IP, vdiWallPort)
+		open := widget.NewButton("Open "+r.D.Name+"'s desktop in the browser", func() {
+			if a := BrowserArgv(u); a != nil {
+				_ = exec.Command(a[0], a[1:]...).Start() // the browser reports its own failures
+			}
+		})
+		return container.NewVBox(widget.NewLabel(msg+" Its desktop is a stream:"), widget.NewLabel(u), open)
+	}
+	return fcNote(msg + fmt.Sprintf(" Its service answers at http://%s:%d/", r.FC.IP, r.FC.Port))
 }

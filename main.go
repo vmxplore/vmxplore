@@ -414,19 +414,25 @@ func main() {
 					if i > 0 {
 						time.Sleep(400 * time.Millisecond)
 					}
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					// Its own session: kld runs this in a job pane whose pty is
-					// closed when vmx returns, and the hangup took the freshly
-					// started browser down with it -- the page list printed,
-					// the browser flickered and was gone (onyx, 2026-09-28).
-					// No pipes: a browser xdg-open starts inherits them, and
-					// waiting for their EOF waited for the browser to exit.
-					xo := exec.CommandContext(ctx, "xdg-open", p)
-					xo.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-					if err := xo.Run(); err != nil {
-						fmt.Fprintf(os.Stderr, "vdi-wall: xdg-open could not open %s: %v\n", p, err)
+					// BrowserArgv, as the GUI's wall does: Firefox first,
+					// because Chrome-family browsers sat on black tiles for
+					// these WebRTC players (2026-09-05, -06); xdg-open last.
+					// Started and let go, never waited on: a Firefox that was
+					// not already running stays in the foreground for its
+					// whole life. Its own session and no pipes, so neither a
+					// closing job pane nor an inherited pipe ties the two.
+					a := BrowserArgv("file://" + p)
+					if a == nil {
+						fmt.Fprintf(os.Stderr, "vdi-wall: no browser here (firefox or xdg-open) -- open file://%s\n", p)
+						continue
 					}
-					cancel()
+					br := exec.Command(a[0], a[1:]...)
+					br.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+					if err := br.Start(); err != nil {
+						fmt.Fprintf(os.Stderr, "vdi-wall: %s could not open %s: %v\n", a[0], p, err)
+					} else {
+						_ = br.Process.Release() // not ours to wait for
+					}
 				}
 			}
 			return
