@@ -119,6 +119,13 @@ func (t compactTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color
 			return color.NRGBA{R: 0xe3, G: 0xe9, B: 0xef, A: 0xff} // crisp steel-white
 		}
 		return color.NRGBA{R: 0x1e, G: 0x18, B: 0x18, A: 0xff}
+	case theme.ColorNameSeparator:
+		// the rules between tree rows: a step off the card, not a stripe
+		// (the default drew a full-contrast line under every VM)
+		if dark {
+			return color.NRGBA{R: 0x1c, G: 0x22, B: 0x2b, A: 0xff}
+		}
+		return color.NRGBA{R: 0xec, G: 0xe8, B: 0xe6, A: 0xff}
 	}
 	return t.Theme.Color(name, v)
 }
@@ -263,6 +270,24 @@ func rowDetail(r Row, group string) string {
 	return "   " + strings.Join(parts, " · ")
 }
 
+// vmDisplayName is the name a person reads in the tree. An appliance build
+// is named by applianceVMName (app- + a 10-character slug), so
+// "app-plex-on-zf" is shown as its catalog name, "Plex on ZFS"; any other
+// app- domain loses the prefix and its dashes. Everything else is shown as
+// libvirt names it -- the real name is still in the details pane and every
+// verb uses it.
+func vmDisplayName(name string) string {
+	if !strings.HasPrefix(name, "app-") {
+		return name
+	}
+	for _, a := range Appliances() {
+		if applianceVMName(a.Name) == name {
+			return a.Name
+		}
+	}
+	return strings.ReplaceAll(strings.TrimPrefix(name, "app-"), "-", " ")
+}
+
 // tileColor lifts a launcher tile one more step off the card backdrop.
 func tileColor() color.Color {
 	if variantDark() {
@@ -360,6 +385,12 @@ func (h *hoverReveal) MouseOut()                      { h.content.Hide() }
 // tap, opens the verb context menu on right-click.
 type vmRow struct {
 	widget.BaseWidget
+	// One line, Proxmox-style (operator, 2026-10-01: "only the left side
+	// menus kinda suck"): a state dot, the name in the UI font, and a faint
+	// right-hand note (address, "off", or a description). The painter sets
+	// dot/title/detail .Text; layout trims title and detail to the pane width
+	// on every resize, so a long name never runs under the note.
+	dot      *canvas.Text
 	title    *canvas.Text
 	detail   *canvas.Text
 	onTap    func() // click the row body → select (drives panes)
@@ -381,7 +412,9 @@ type vmRow struct {
 
 // dotZoneW is how wide (px) the leading state-dot hit zone is: clicking
 // inside it toggles the batch checkbox, outside it selects the row.
-const dotZoneW = 22
+// 34, not 22: the operator found the dots "small and hard to click"
+// (2026-10-01); the glyph is drawn larger and centred in the zone too.
+const dotZoneW = 34
 
 // MouseDown records whether Ctrl or Shift was held, so the paired Tapped
 // can tell a range-select click from a plain one (Fyne delivers MouseDown
@@ -420,96 +453,163 @@ const (
 
 func newVMRow() *vmRow {
 	r := &vmRow{
+		dot:    canvas.NewText("", theme.Color(theme.ColorNameForeground)),
 		title:  canvas.NewText("", theme.Color(theme.ColorNameForeground)),
 		detail: canvas.NewText("", theme.Color(theme.ColorNameForeground)),
 	}
-	r.title.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
-	r.detail.TextStyle = fyne.TextStyle{Monospace: true}
-	r.detail.TextSize = theme.TextSize() * 0.85
+	r.detail.TextSize = theme.TextSize() * 0.9
+	r.detail.Alignment = fyne.TextAlignTrailing
+	r.dot.TextSize = theme.TextSize() * 1.35
+	r.dot.Alignment = fyne.TextAlignCenter
 	r.ExtendBaseWidget(r)
 	return r
 }
 
 func (r *vmRow) CreateRenderer() fyne.WidgetRenderer {
-	// tight two-line stack; the detail sits just under the title
 	if r.zoneHL == nil {
 		r.zoneHL = canvas.NewRectangle(theme.Color(theme.ColorNameHover))
 		r.zoneHL.CornerRadius = 3
 		r.zoneHL.Hide()
 	}
-	box := container.New(&rowLayout{}, r.title, r.detail)
-	// The highlight is laid out by dotLayout so it covers exactly the hit
-	// zone Tapped tests against — one constant, dotZoneW, drives both.
-	return widget.NewSimpleRenderer(container.New(&dotOverlay{}, r.zoneHL, box))
+	return &vmRowRenderer{r: r, objs: []fyne.CanvasObject{r.zoneHL, r.dot, r.title, r.detail}}
 }
 
-// dotOverlay puts the zone highlight under the row content, sized to the same
-// dotZoneW that Tapped uses. Deriving both from one constant means the visible
-// target and the clickable target cannot drift apart.
-type dotOverlay struct{}
-
-func (dotOverlay) MinSize(o []fyne.CanvasObject) fyne.Size { return o[1].MinSize() }
-func (dotOverlay) Layout(o []fyne.CanvasObject, sz fyne.Size) {
-	o[0].Move(fyne.NewPos(0, 0))
-	o[0].Resize(fyne.NewSize(dotZoneW, sz.Height))
-	o[1].Move(fyne.NewPos(0, 0))
-	o[1].Resize(sz)
+// vmRowRenderer lays the row out itself, on resize AND on refresh: the tree
+// recycles rows and the painter changes their text without resizing them,
+// so a layout that only ran on resize kept the previous row's trim.
+type vmRowRenderer struct {
+	r       *vmRow
+	objs    []fyne.CanvasObject
+	fullT   string // the untrimmed texts, so a wider pane can show more again
+	fullD   string
+	lastLay fyne.Size
 }
 
-// Hoverable: reveal the batch target when the pointer enters it.
-func (r *vmRow) MouseIn(e *desktop.MouseEvent) { r.MouseMoved(e) }
-func (r *vmRow) MouseMoved(e *desktop.MouseEvent) {
-	in := e.Position.X < dotZoneW
-	if in == r.inZone {
-		return // no state change: do not repaint on every mouse move
-	}
-	r.inZone = in
-	if r.zoneHL == nil {
-		return
-	}
-	if in {
-		r.zoneHL.Show()
-	} else {
-		r.zoneHL.Hide()
-	}
-	r.zoneHL.Refresh()
+const rowPadX = 4
+
+func (vr *vmRowRenderer) MinSize() fyne.Size {
+	h := fyne.MeasureText("Ag", theme.TextSize(), fyne.TextStyle{}).Height
+	return fyne.NewSize(dotZoneW+80, h+6)
 }
-func (r *vmRow) MouseOut() {
-	r.inZone = false
-	if r.zoneHL != nil {
-		r.zoneHL.Hide()
-		r.zoneHL.Refresh()
+
+func (vr *vmRowRenderer) Layout(sz fyne.Size) {
+	r := vr.r
+	// the painter writes full text into .Text; remember it before trimming
+	if r.title.Text != ellipsisMark(vr.fullT, r.title.Text) {
+		vr.fullT = r.title.Text
+	}
+	if r.detail.Text != ellipsisMark(vr.fullD, r.detail.Text) {
+		vr.fullD = r.detail.Text
+	}
+	r.zoneHL.Move(fyne.NewPos(0, 0))
+	r.zoneHL.Resize(fyne.NewSize(dotZoneW, sz.Height))
+	th := fyne.MeasureText("Ag", r.title.TextSize, r.title.TextStyle).Height
+	y := (sz.Height - th) / 2
+	dth := fyne.MeasureText("●", r.dot.TextSize, r.dot.TextStyle).Height
+	r.dot.Move(fyne.NewPos(0, (sz.Height-dth)/2))
+	r.dot.Resize(fyne.NewSize(dotZoneW, dth))
+	avail := sz.Width - dotZoneW - 2*rowPadX
+	if avail < 0 {
+		avail = 0
+	}
+	dw := fyne.MeasureText(vr.fullD, r.detail.TextSize, r.detail.TextStyle).Width
+	if dw > avail*0.55 {
+		dw = avail * 0.55 // the name gets at least 45% of the row
+	}
+	tw := avail - dw - 12
+	r.title.Text = fitText(vr.fullT, tw, r.title.TextSize, r.title.TextStyle)
+	r.detail.Text = fitText(vr.fullD, dw, r.detail.TextSize, r.detail.TextStyle)
+	r.title.Move(fyne.NewPos(dotZoneW, y))
+	r.title.Resize(fyne.NewSize(tw, th))
+	dh := fyne.MeasureText("Ag", r.detail.TextSize, r.detail.TextStyle).Height
+	r.detail.Move(fyne.NewPos(sz.Width-rowPadX-dw, (sz.Height-dh)/2))
+	r.detail.Resize(fyne.NewSize(dw, dh))
+	vr.lastLay = sz
+}
+
+func (vr *vmRowRenderer) Refresh() {
+	vr.Layout(vr.r.Size())
+	for _, o := range vr.objs {
+		o.Refresh()
 	}
 }
 
-// Cursorable: a pointer cursor over the zone, the default elsewhere — the
-// second half of saying "this part is a different control".
-func (r *vmRow) Cursor() desktop.Cursor {
-	if r.inZone {
-		return desktop.PointerCursor
+func (vr *vmRowRenderer) Objects() []fyne.CanvasObject { return vr.objs }
+func (vr *vmRowRenderer) Destroy()                     {}
+
+// ellipsisMark returns trimmed if it is a trimmed form of full (full cut
+// short with "…"), else something that cannot equal trimmed -- how Layout
+// tells "the painter wrote new text" from "this is my own earlier trim".
+func ellipsisMark(full, trimmed string) string {
+	if full != "" && strings.HasSuffix(trimmed, "…") &&
+		strings.HasPrefix(full, strings.TrimSuffix(trimmed, "…")) {
+		return trimmed
 	}
-	return desktop.DefaultCursor
+	return full
 }
 
-// rowLayout stacks the title and detail with a small gap, sizing to both —
-// VBox padding was too airy for a dense list.
-type rowLayout struct{}
-
-func (rowLayout) MinSize(o []fyne.CanvasObject) fyne.Size {
-	t, d := o[0].MinSize(), o[1].MinSize()
-	w := t.Width
-	if d.Width > w {
-		w = d.Width
+// fitText trims s with "…" until it measures at most w. Binary search over
+// the rune count: the tree repaints rows constantly and a long catalog
+// description trimmed one rune at a time cost ~100 measurements a row.
+func fitText(s string, w float32, size float32, st fyne.TextStyle) string {
+	if w <= 0 {
+		return ""
 	}
-	return fyne.NewSize(w, t.Height+d.Height+2)
+	if fyne.MeasureText(s, size, st).Width <= w {
+		return s
+	}
+	rs := []rune(s)
+	cut := func(n int) string { return strings.TrimRight(string(rs[:n]), " ") + "…" }
+	lo, hi := 0, len(rs)-1 // lo always fits (0 -> "…" is treated as fitting)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fyne.MeasureText(cut(mid), size, st).Width <= w {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo == 0 {
+		return ""
+	}
+	return cut(lo)
 }
 
-func (rowLayout) Layout(o []fyne.CanvasObject, sz fyne.Size) {
-	t := o[0].MinSize()
-	o[0].Move(fyne.NewPos(0, 0))
-	o[0].Resize(fyne.NewSize(sz.Width, t.Height))
-	o[1].Move(fyne.NewPos(0, t.Height+2))
-	o[1].Resize(fyne.NewSize(sz.Width, o[1].MinSize().Height))
+// branchRow is a tree group header: an icon, the name, and a faint count.
+// It replaced a single bold canvas.Text in the brand colour, which made
+// every header look like a link (operator, 2026-10-01).
+type branchRow struct {
+	widget.BaseWidget
+	icon  *widget.Icon
+	label *canvas.Text
+	count *canvas.Text
+}
+
+func newBranchRow() *branchRow {
+	b := &branchRow{
+		icon:  widget.NewIcon(theme.FolderIcon()),
+		label: canvas.NewText("", brightFg()),
+		count: canvas.NewText("", tileSubColor()),
+	}
+	b.label.TextStyle = fyne.TextStyle{Bold: true}
+	b.count.TextSize = theme.TextSize() * 0.9
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func (b *branchRow) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(container.NewHBox(b.icon, b.label, b.count))
+}
+
+// set paints the header; every field is written because the tree recycles
+// header widgets between branches.
+func (b *branchRow) set(icon fyne.Resource, label, count string) {
+	b.icon.SetResource(icon)
+	b.label.Text, b.label.Color = label, brightFg()
+	b.count.Text, b.count.Color = count, tileSubColor()
+	b.label.Refresh()
+	b.count.Refresh()
+	b.Refresh()
 }
 
 func (r *vmRow) Tapped(e *fyne.PointEvent) {
@@ -1015,9 +1115,7 @@ func runGUI(rs *Ruleset) {
 	tree = widget.NewTree(childUIDs, isBranch,
 		func(branch bool) fyne.CanvasObject {
 			if branch {
-				t := canvas.NewText("", acBrand.at())
-				t.TextStyle = fyne.TextStyle{Bold: true}
-				return t
+				return newBranchRow()
 			}
 			return newVMRow()
 		},
@@ -1025,53 +1123,44 @@ func runGUI(rs *Ruleset) {
 			defer traceSlow("paint row "+uid, time.Now())
 			tracePainted()
 			if branch {
-				t := o.(*canvas.Text)
-				if uid == applianceBranchUID {
-					t.Text = fmt.Sprintf("Apps  (%d)", len(Appliances()))
-					t.Color = acBrand.at()
-					t.Refresh()
-					return
+				h := o.(*branchRow)
+				folder := theme.FolderIcon()
+				if tree != nil && tree.IsBranchOpen(uid) {
+					folder = theme.FolderOpenIcon()
 				}
-				if uid == fcBranchUID {
+				switch {
+				case uid == applianceBranchUID:
+					h.set(theme.GridIcon(), "Apps", fmt.Sprintf("%d to build", len(Appliances())))
+				case uid == fcBranchUID:
 					run := 0
 					for _, r := range fcRowsNow {
 						if r.D.State == "running" {
 							run++
 						}
 					}
-					t.Text = fmt.Sprintf("Firecracker  (%d golden, %d microVM, %d running)", len(fcGoldensSnapshot()), len(fcRowsNow), run)
-					t.Color = acBrand.at()
-					t.Refresh()
-					return
-				}
-				if uid == toolsBranchUID {
+					h.set(theme.MediaFastForwardIcon(), "Firecracker",
+						fmt.Sprintf("%d golden · %d microVM · %d running", len(fcGoldensSnapshot()), len(fcRowsNow), run))
+				case uid == toolsBranchUID:
 					n := 0
 					for _, g := range toolGroups {
 						n += len(g.Tools)
 					}
-					t.Text = "kldload"
+					cnt := ""
 					if n > 0 {
-						t.Text = fmt.Sprintf("kldload tools  (%d)", n)
+						cnt = fmt.Sprintf("%d", n)
 					}
-					t.Color = acBrand.at()
-					t.Refresh()
-					return
+					h.set(theme.SettingsIcon(), "kldload tools", cnt)
+				case strings.HasPrefix(uid, toolGroupUIDPrefix):
+					h.set(folder, strings.TrimPrefix(uid, toolGroupUIDPrefix), "")
+				default:
+					label := strings.TrimPrefix(uid, "grp/")
+					n, run := groupStats(label)
+					cnt := fmt.Sprintf("%d", n)
+					if run > 0 {
+						cnt = fmt.Sprintf("%d · %d running", n, run)
+					}
+					h.set(folder, label, cnt)
 				}
-				if name, ok := strings.CutPrefix(uid, toolGroupUIDPrefix); ok {
-					t.Text = name
-					t.Color = acBrand.at()
-					t.Refresh()
-					return
-				}
-				label := strings.TrimPrefix(uid, "grp/")
-				n, run := groupStats(label)
-				s := fmt.Sprintf("%s  (%d)", label, n)
-				if run > 0 {
-					s += fmt.Sprintf("  ·  %d running", run)
-				}
-				t.Text = s
-				t.Color = acBrand.at()
-				t.Refresh()
 				return
 			}
 			// A catalog leaf is a thing to build, not a thing that exists,
@@ -1083,16 +1172,17 @@ func runGUI(rs *Ruleset) {
 				// A golden: what a clone clones. The row is the shortcut to
 				// cloning it; the sizes are what a clone inherits.
 				row := o.(*vmRow)
-				row.title.Text = "◇ " + g
-				row.title.Color = acBrand.at()
-				row.detail.Text = "   golden"
+				row.dot.Text, row.dot.Color = "◇", acBrand.at()
+				row.title.Text = g
+				row.title.Color = brightFg()
+				row.detail.Text = "golden"
 				for _, fg := range fcGoldensSnapshot() {
 					if fg.Name == g {
 						data := ""
 						if fg.DataZvol != "" {
 							data = " + data pool"
 						}
-						row.detail.Text = fmt.Sprintf("   golden · %d vCPU / %d MB%s · %d clone(s) · click to clone",
+						row.detail.Text = fmt.Sprintf("golden · %d vCPU / %d MB%s · %d clone(s)",
 							fg.VCPUs, fg.RAMMB, data, fg.Clones)
 					}
 				}
@@ -1113,25 +1203,29 @@ func runGUI(rs *Ruleset) {
 				var open *func()
 				switch uid {
 				case selfTestUID:
-					row.title.Text = "▶ Self-test"
-					row.title.Color = acBrand.at()
+					row.dot.Text, row.title.Text = "▶", "Self-test"
+					row.dot.Color = acBrand.at()
+					row.title.Color = brightFg()
 					row.detail.Text = "build and audit every tile — the proof, not the promise"
 					open = &openSelfTest
 				case buildAllUID:
-					row.title.Text = "▶ Build all"
-					row.title.Color = acBrand.at()
+					row.dot.Text, row.title.Text = "▶", "Build all"
+					row.dot.Color = acBrand.at()
+					row.title.Color = brightFg()
 					row.detail.Text = "one of everything, kept and shut off — tiles that already exist are skipped"
 					if buildAllStatus != "" {
 						row.detail.Text = buildAllStatus
 					}
 					open = &openBuildAll
 				case fcMakeGoldenUID:
-					row.title.Text = "◆ Make a golden…"
-					row.title.Color = acBrand.at()
+					row.dot.Text, row.title.Text = "◆", "Make a golden…"
+					row.dot.Color = acBrand.at()
+					row.title.Color = brightFg()
 					row.detail.Text = "snapshot a shut-off appliance VM's zvols and pull its kernel — what clones clone"
 					open = &openFCMakeGolden
 				case fcDestroyAllUID:
-					row.title.Text = "✕ Destroy all microVMs"
+					row.dot.Text, row.title.Text = "✕", "Destroy all microVMs"
+					row.dot.Color = acGold.at()
 					row.title.Color = acGold.at()
 					if n := len(fcRowsNow); n > 0 {
 						row.detail.Text = fmt.Sprintf("%d running — kfire destroy --all takes each with its zvols, tap, seed, unit and estate row", n)
@@ -1140,17 +1234,20 @@ func runGUI(rs *Ruleset) {
 					}
 					open = &openFCDestroyAll
 				case fcDemoUID:
-					row.title.Text = "★ Deploy the demo estate"
-					row.title.Color = acBrand.at()
+					row.dot.Text, row.title.Text = "★", "Deploy the demo estate"
+					row.dot.Color = acBrand.at()
+					row.title.Color = brightFg()
 					row.detail.Text = demoTileDetail()
 					open = &openFCDemo
 				case fcCloneUID:
-					row.title.Text = "⚡ Clone microVMs"
-					row.title.Color = acBrand.at()
+					row.dot.Text, row.title.Text = "⚡", "Clone microVMs"
+					row.dot.Color = acBrand.at()
+					row.title.Color = brightFg()
 					row.detail.Text = "Firecracker clones of a golden — 250 ms each, serving in seconds; they appear under \"firecracker\""
 					open = &openFCClone
 				default:
-					row.title.Text = "✕ Destroy all"
+					row.dot.Text, row.title.Text = "✕", "Destroy all"
+					row.dot.Color = acGold.at()
 					row.title.Color = acGold.at()
 					row.detail.Text = "remove every VM this catalog built (app-* and st-*), nothing else"
 					open = &openDestroyAll
@@ -1164,15 +1261,15 @@ func runGUI(rs *Ruleset) {
 				row.onToggle = func() {}
 				row.onRange = func() {}
 				row.onMenu = func(fyne.Position) {}
-				row.title.Refresh()
-				row.detail.Refresh()
+				row.Refresh()
 				return
 			}
 			if uid == getKldloadUID {
 				// the promotion surface on generic hosts — tier 3, sold not faked
 				row := o.(*vmRow)
-				row.title.Text = "⇗ Get kldload"
-				row.title.Color = acGold.at()
+				row.dot.Text, row.title.Text = "⇗", "Get kldload"
+				row.dot.Color = acGold.at()
+				row.title.Color = brightFg()
 				row.detail.Text = "kldload hosts grow a tool launcher here — clusters, goldens, demos, one click"
 				row.detail.Color = theme.Color(theme.ColorNameForeground)
 				row.onTap = func() {
@@ -1182,16 +1279,16 @@ func runGUI(rs *Ruleset) {
 				row.onToggle = func() {}
 				row.onRange = func() {}
 				row.onMenu = func(fyne.Position) {}
-				row.title.Refresh()
-				row.detail.Refresh()
+				row.Refresh()
 				return
 			}
 			if name, ok := strings.CutPrefix(uid, toolUIDPrefix); ok {
 				// A tool row: the colour says what it does before you read
 				// it, same language the verb page uses one level down.
 				row := o.(*vmRow)
-				row.title.Text = "▸ " + name
-				row.title.Color = toolAccent(name).at()
+				row.dot.Text, row.dot.Color = "▸", toolAccent(name).at()
+				row.title.Text = name
+				row.title.Color = brightFg()
 				row.detail.Text = toolDesc[name]
 				row.detail.Color = theme.Color(theme.ColorNameForeground)
 				row.onTap = func() {
@@ -1202,8 +1299,7 @@ func runGUI(rs *Ruleset) {
 				row.onToggle = func() {}
 				row.onRange = func() {}
 				row.onMenu = func(fyne.Position) {}
-				row.title.Refresh()
-				row.detail.Refresh()
+				row.Refresh()
 				return
 			}
 			if name, ok := strings.CutPrefix(uid, applianceUIDPrefix); ok {
@@ -1212,18 +1308,22 @@ func runGUI(rs *Ruleset) {
 					return
 				}
 				row := o.(*vmRow)
-				row.title.Text = "＋ " + a.Name
+				row.dot.Text = "＋"
+				row.title.Text = a.Name
 				// The colour IS the availability verdict for THIS host:
 				// green builds fully, gold degrades (the detail says how),
 				// dull cannot build here at all.
 				level, blurb := ApplianceFit(a)
 				switch level {
 				case "degraded":
-					row.title.Color = acGold.at()
+					row.dot.Color = acGold.at()
+					row.title.Color = brightFg()
 				case "unavailable":
+					row.dot.Color = acOff.at()
 					row.title.Color = acOff.at()
 				default:
-					row.title.Color = acGreen.at()
+					row.dot.Color = acGreen.at()
+					row.title.Color = brightFg()
 				}
 				row.detail.Text = fmt.Sprintf("%s   ·   %d vCPU, %d MB, %d GB",
 					a.Summary, a.VCPUs, a.RAMMB, a.DiskGB)
@@ -1243,8 +1343,7 @@ func runGUI(rs *Ruleset) {
 				row.onToggle = func() {}
 				row.onRange = func() {}
 				row.onMenu = func(fyne.Position) {}
-				row.title.Refresh()
-				row.detail.Refresh()
+				row.Refresh()
 				return
 			}
 			r, ok := rowByUID(uid)
@@ -1269,16 +1368,36 @@ func runGUI(rs *Ruleset) {
 			if checked[r.D.Name] {
 				dot, col = "☑", acBrand.at()
 			}
-			cpu := ""
-			if c, ok := st.cpu[r.D.Name]; ok && r.D.State == "running" {
-				cpu = fmt.Sprintf("   %.0f%% cpu", c)
+			// the note on the right: where to reach it when it runs, its
+			// state when it does not. Sizes, disks and snapshots are in the
+			// details pane below; the tree is for finding a machine.
+			note := r.D.State
+			switch r.D.State {
+			case "running":
+				note = "running"
+				if ip := firstIPv4(r.D.IPs); ip != "" {
+					note = ip
+				} else if !r.D.AgentUp {
+					note = "no agent"
+				}
+				if c, ok := st.cpu[r.D.Name]; ok && c >= 1 {
+					note = fmt.Sprintf("%.0f%%  %s", c, note)
+				}
+			case "shut off":
+				note = "off"
+			}
+			if len(r.Notes) > 0 {
+				note = strings.Join(r.Notes, "; ")
 			}
 			row := o.(*vmRow)
-			row.title.Text = fmt.Sprintf("%s %s   %s%s",
-				dot, r.D.Name, r.D.State, cpu)
-			row.title.Color = col
-			row.detail.Text = rowDetail(r, "") // group is the branch above
-			row.detail.Color = theme.Color(theme.ColorNameForeground)
+			row.dot.Text, row.dot.Color = dot, col
+			row.title.Text = vmDisplayName(r.D.Name)
+			row.title.Color = brightFg()
+			if r.D.State == "shut off" && !checked[r.D.Name] {
+				row.title.Color = tileSubColor() // stopped machines recede
+			}
+			row.detail.Text = note
+			row.detail.Color = tileSubColor()
 			// the leaf widget consumes taps, so it must drive selection
 			// itself — the tree never sees the click otherwise
 			leafUID := uid
@@ -1331,8 +1450,7 @@ func runGUI(rs *Ruleset) {
 					rowMenuAt(r, pos)
 				}
 			}
-			row.title.Refresh()
-			row.detail.Refresh()
+			row.Refresh()
 		},
 	)
 
@@ -1824,10 +1942,28 @@ func runGUI(rs *Ruleset) {
 		Text:  "select a VM — everything about it lives here",
 		Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{Monospace: true}}})
 	dossier.Wrapping = fyne.TextWrapWord // lineage/disk lines run long
+	// the card is the pane; the full dossier above is its "Technical
+	// details" section, unchanged (gui_vmcard.go)
+	vmc := newVMCard(dossier)
+	groupOf := func(name string) string {
+		for _, g := range viewGroups {
+			for _, r := range g.Rows {
+				if r.D.Name == name {
+					return g.Label
+				}
+			}
+		}
+		return ""
+	}
 	renderDossier := func(r Row) {
 		defer traceSlow("renderDossier "+r.D.Name, time.Now())
 		dossier.Segments = st.dossierSegs(r)
 		dossier.Refresh()
+		cpu := -1.0
+		if c, ok := st.cpu[r.D.Name]; ok {
+			cpu = c
+		}
+		vmc.set(r, cpu, groupOf(r.D.Name))
 	}
 	status := widget.NewLabel(fmt.Sprintf("vmxplore %s · rules: %s",
 		versionFull(), rs.Source))
@@ -4511,7 +4647,7 @@ func runGUI(rs *Ruleset) {
 	// because a dossier is four lines for a fresh clone and twenty for an
 	// appliance with three disks and a mesh.
 	details := container.NewBorder(heading("DETAILS", acBlue), nil, nil, nil,
-		container.NewScroll(dossier))
+		vmc.root)
 	estateBody := container.NewVSplit(tree, details)
 	estateBody.SetOffset(0.62)
 	left := gap(card(container.NewBorder(
@@ -4779,6 +4915,12 @@ func runGUI(rs *Ruleset) {
 		time.Sleep(500 * time.Millisecond)
 		fyne.Do(applyPalette)
 	}()
+	startCapture(a, w, func(name string) {
+		if g := groupOf(name); g != "" {
+			tree.OpenBranch("grp/" + g)
+		}
+		tree.Select("vm/" + name)
+	})
 	w.ShowAndRun()
 }
 
