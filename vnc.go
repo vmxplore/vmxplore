@@ -36,11 +36,13 @@ package main
 import (
 	"encoding/binary"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"image"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -136,6 +138,14 @@ type rfbConn struct {
 	err     error
 	closing bool // Close() was called: later errors are expected, not faults
 	done    chan struct{}
+	// out feeds writeLoop: input events are queued, never written on the
+	// Fyne goroutine (see write). nil (hand-built conns in tests) = write
+	// synchronously as before. stopW closes on Close.
+	out       chan []byte
+	stopW     chan struct{}
+	stopOnce  sync.Once
+	lastMask  uint8 // pointer(): only pure motion (mask unchanged) may be dropped
+	lastMaskS bool
 	// scratch is blitRaw's row buffer, grown as needed and reused. Only the
 	// read loop touches it, so it needs no lock; allocating a w*4 row per
 	// rectangle per frame was steady GC pressure on the render hot path.
@@ -177,6 +187,9 @@ func dialRFB(addr string) (*rfbConn, error) {
 		c.Close()
 		return nil, err
 	}
+	r.out = make(chan []byte, 256)
+	r.stopW = make(chan struct{})
+	go r.writeLoop()
 	go r.readLoop()
 	r.requestUpdate(false)
 	return r, nil
@@ -392,11 +405,66 @@ func (r *rfbConn) Err() error {
 // error capture is what stops a broken pipe from being invisible — before it,
 // a write failure left the last frame on screen and silently swallowed every
 // keystroke and mouse move, which reads as "the console froze".
-func (r *rfbConn) write(b []byte) {
-	r.mu.Lock()
-	_, err := r.c.Write(b)
-	r.mu.Unlock()
-	r.setErr(err)
+//
+// Queued, not written, when the connection has a writer (every dialled one).
+// pointer() and key() run on the Fyne goroutine on every mouse move and key:
+// a synchronous Write there froze the whole window whenever the guest stopped
+// reading (hung, rebooting) -- no deadline, so for as long as the stall
+// lasted. Now the UI only ever enqueues.
+func (r *rfbConn) write(b []byte) { r.send(b, false) }
+
+// send queues b for writeLoop. droppable messages (pointer motion) are
+// dropped when the queue is full -- the next move supersedes them; anything
+// else waits up to a second and then fails the connection, because a lost
+// button-up or keystroke is worse than a reported error.
+func (r *rfbConn) send(b []byte, droppable bool) {
+	if r.out == nil {
+		r.mu.Lock()
+		_, err := r.c.Write(b)
+		r.mu.Unlock()
+		r.setErr(err)
+		return
+	}
+	if droppable {
+		select {
+		case r.out <- b:
+		default:
+		}
+		return
+	}
+	t := time.NewTimer(time.Second)
+	defer t.Stop()
+	select {
+	case r.out <- b:
+	case <-r.stopW:
+	case <-r.done:
+	case <-t.C:
+		r.setErr(errors.New("vnc: the guest stopped reading input"))
+	}
+}
+
+// writeLoop owns the socket's write side for a dialled connection. A write
+// that cannot finish in 10 s ends the session with an error, like a read
+// failure does, instead of hanging forever.
+func (r *rfbConn) writeLoop() {
+	for {
+		select {
+		case b := <-r.out:
+			r.mu.Lock()
+			// error ignored: a failed deadline set shows up as the write's error
+			_ = r.c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_, err := r.c.Write(b)
+			r.mu.Unlock()
+			if err != nil {
+				r.setErr(err)
+				return
+			}
+		case <-r.stopW:
+			return
+		case <-r.done:
+			return
+		}
+	}
 }
 
 func (r *rfbConn) requestUpdate(incremental bool) {
@@ -572,7 +640,11 @@ func (r *rfbConn) pointer(mask uint8, x, y int) {
 	msg := []byte{msgPointerEvent, mask, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(msg[2:4], uint16(x))
 	binary.BigEndian.PutUint16(msg[4:6], uint16(y))
-	r.write(msg)
+	// pure motion (same buttons as last time) may be dropped under
+	// backpressure; a press or release never is
+	motion := r.lastMaskS && mask == r.lastMask
+	r.lastMask, r.lastMaskS = mask, true
+	r.send(msg, motion)
 }
 
 func (r *rfbConn) key(sym uint32, down bool) {
@@ -603,6 +675,9 @@ func (r *rfbConn) Close() {
 	r.errMu.Lock()
 	r.closing = true
 	r.errMu.Unlock()
+	if r.stopW != nil {
+		r.stopOnce.Do(func() { close(r.stopW) })
+	}
 	// error ignored: closing an already-dead socket has no recovery
 	_ = r.c.Close()
 }
@@ -613,9 +688,10 @@ func (r *rfbConn) Close() {
 // focus (keys flow to the guest until focus moves).
 type vncViewer struct {
 	widget.BaseWidget
-	conn *rfbConn
-	img  *canvas.Image
-	mask uint8
+	frames frameCoalescer
+	conn   *rfbConn
+	img    *canvas.Image
+	mask   uint8
 	// fit debounces the "become my size" request. Dragging a window edge or
 	// entering fullscreen fires Resize many times in a few hundred
 	// milliseconds, and every one of those would be a guest mode change —
@@ -639,8 +715,12 @@ func newVNCViewer(conn *rfbConn) *vncViewer {
 	v.img = canvas.NewImageFromImage(conn.frame())
 	v.img.FillMode = canvas.ImageFillContain
 	v.img.ScaleMode = canvas.ImageScaleFastest
+	// One repaint queued at a time. Each frame used to queue its own
+	// fyne.Do with a full texture upload (~8 MB at 1080p); a busy guest
+	// sends 30+ a second, and clicks and keys waited behind the backlog
+	// (audit, 2026-10-01).
 	conn.SetOnFrame(func() {
-		fyne.Do(func() {
+		v.frames.trigger(fyne.Do, func() {
 			v.img.Image = conn.frame() // DesktopSize may have swapped it
 			v.img.Refresh()
 		})
@@ -1036,4 +1116,20 @@ func (r *rfbConn) cutTextCB() func(string) {
 	r.cbMu.Lock()
 	defer r.cbMu.Unlock()
 	return r.onCutText
+}
+
+// frameCoalescer keeps at most one repaint queued. pending clears when the
+// repaint STARTS, so a frame that lands while it runs queues exactly one
+// more: the last frame is always painted, and a fast guest cannot build a
+// backlog in front of the operator's input.
+type frameCoalescer struct{ pending atomic.Bool }
+
+func (f *frameCoalescer) trigger(do func(func()), paint func()) {
+	if !f.pending.CompareAndSwap(false, true) {
+		return
+	}
+	do(func() {
+		f.pending.Store(false)
+		paint()
+	})
 }

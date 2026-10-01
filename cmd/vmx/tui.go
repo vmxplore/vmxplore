@@ -45,34 +45,36 @@ type detailMsg struct {
 }
 
 type model struct {
-	active   int
-	sub      []int             // current sub-tab per section
-	ctx      map[string]string // "si/sub" -> context (a VM, a dataset)
-	row      int
-	width    int
-	height   int
-	data     map[string]*sectionData
-	loading  map[string]bool
-	status   string
-	statusAt time.Time
-	prompt   string // non-empty while a verb waits for typed input
-	secret   bool   // the prompt's input is a passphrase: masked on screen
-	input    string
-	pending  func(string) tea.Cmd
-	help     bool
-	detail   bool
-	marks    map[string]bool     // marked row names, per section/sub key + name
-	details  map[string][]string // detailer lines, per section/sub key + name
-	asked    map[string]bool     // detailers already fired, same key
-	filter   textinput.Model
-	filterOn bool
-	sortCol  int
-	sortDesc bool
-	spin     spinner.Model
-	now      time.Time
-	con      *console   // an open in-TUI console (screen, serial, ssh, job); nil otherwise
-	jobs     []*console // every job started this session, oldest first
-	nav      []navFrame // where Enter came from: Backspace (or Esc with nothing to clear) pops
+	tickGen   int // the live console-tick chain (conTickMsg)
+	conReqGen int // the latest console asked for (consoleReadyMsg)
+	active    int
+	sub       []int             // current sub-tab per section
+	ctx       map[string]string // "si/sub" -> context (a VM, a dataset)
+	row       int
+	width     int
+	height    int
+	data      map[string]*sectionData
+	loading   map[string]bool
+	status    string
+	statusAt  time.Time
+	prompt    string // non-empty while a verb waits for typed input
+	secret    bool   // the prompt's input is a passphrase: masked on screen
+	input     string
+	pending   func(string) tea.Cmd
+	help      bool
+	detail    bool
+	marks     map[string]bool     // marked row names, per section/sub key + name
+	details   map[string][]string // detailer lines, per section/sub key + name
+	asked     map[string]bool     // detailers already fired, same key
+	filter    textinput.Model
+	filterOn  bool
+	sortCol   int
+	sortDesc  bool
+	spin      spinner.Model
+	now       time.Time
+	con       *console   // an open in-TUI console (screen, serial, ssh, job); nil otherwise
+	jobs      []*console // every job started this session, oldest first
+	nav       []navFrame // where Enter came from: Backspace (or Esc with nothing to clear) pops
 	// refreshing is a background reload of the visible table (the live
 	// Machines view every 3 s): no spinner, the rows stay until replaced
 	refreshing bool
@@ -383,6 +385,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading[m.key()] = true
 		return m, m.reload()
 	case conTickMsg:
+		if msg.gen != m.tickGen {
+			return m, nil // an older chain: let it die
+		}
 		// jobs that finished since the last tick are reported once and the
 		// table reloaded, whether or not their pane is showing
 		var cmds []tea.Cmd
@@ -408,7 +413,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.say(stGood.Render(c.vm + ": done in " + c.finished.Sub(c.started).Truncate(time.Second).String() + " (ctrl+j shows the output)"))
 		}
 		if m.con != nil || m.runningJobs() > 0 {
-			cmds = append(cmds, conTick())
+			cmds = append(cmds, conTickAt(m.tickGen))
 		}
 		return m, tea.Batch(cmds...)
 	case pickerMsg:
@@ -443,7 +448,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.con = c
 		c.resize(m.width, m.conBodyH())
-		return m, tea.Batch(conTick(), tea.DisableMouse)
+		tc := m.newTick()
+		return m, tea.Batch(tc, tea.DisableMouse)
 	case tea.MouseMsg:
 		if m.con != nil {
 			m.con.mouse(msg, conBodyTop)
@@ -498,6 +504,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailMsg:
 		m.details[msg.key+"\x00"+msg.name] = msg.lines
 		return m, nil
+	case consoleReadyMsg:
+		return m.consoleReady(msg)
 	case doneMsg:
 		invalidateSnapCounts()
 		if msg.err != nil {
@@ -671,7 +679,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.con = m.jobs[len(m.jobs)-1]
 			m.con.resize(m.width, m.conBodyH())
-			return m, conTick()
+			tc := m.newTick()
+			return m, tc
 		case "enter":
 			return m.drill()
 		case "x":
@@ -1870,24 +1879,61 @@ func colourCell(rendered, raw string) string {
 // needs the mouse, so cell-motion reporting is on only while one is open:
 // with it on, the terminal's own text selection is gone.
 
+// consoleReadyMsg delivers a console opened off the update loop.
+type consoleReadyMsg struct {
+	gen  int
+	kind consoleKind
+	vm   string
+	note string
+	c    *console
+	err  error
+	exec bool // a sixel terminal: run the full-window screen instead
+}
+
+// openConsole asks for a console; consoleReady installs it. The serial probe
+// (sudo virsh dumpxml), the VNC port lookup and dial ran here, inside
+// Update, so every key waited behind a console opening (audit, 2026-10-01).
+// They run in the returned Cmd now. conReqGen makes a console that arrives
+// after the operator asked for another one close itself instead of showing.
 func (m model) openConsole(kind consoleKind, vm, addr string) (tea.Model, tea.Cmd) {
-	// A text console drawn as dots is unreadable: in gnome-terminal (VTE with
-	// sixels off, which is every GNOME terminal) w showed kldload-cp's login
-	// screen as braille noise (fiend, 2026-09-27; the fallback of 90524367
-	// promised "a boot log stays legible" and it does not at this scale). So a
-	// terminal that cannot draw images gets the VM's serial console -- the
-	// same console, as text -- whenever the VM has one, and says so. A VM with
-	// no serial port (a Windows guest) still gets the cell picture.
-	note := ""
-	if kind == conScreen && !sixelTerminal && hasSerial(vm) {
-		kind = conSerial
-		note = "this terminal draws no images · ctrl+] 1 for the dot picture · pixels need a sixel terminal such as foot"
+	m.conReqGen++
+	gen, w, h := m.conReqGen, m.width, m.conBodyH()
+	m.say(stDim.Render("opening " + kind.String() + " " + vm + "…"))
+	return m, func() tea.Msg {
+		// A text console drawn as dots is unreadable: in gnome-terminal (VTE
+		// with sixels off, which is every GNOME terminal) w showed
+		// kldload-cp's login screen as braille noise (fiend, 2026-09-27; the
+		// fallback of 90524367 promised "a boot log stays legible" and it
+		// does not at this scale). So a terminal that cannot draw images
+		// gets the VM's serial console -- the same console, as text --
+		// whenever the VM has one, and says so. A VM with no serial port (a
+		// Windows guest) still gets the cell picture.
+		note := ""
+		if kind == conScreen && !sixelTerminal && hasSerial(vm) {
+			kind = conSerial
+			note = "this terminal draws no images · ctrl+] 1 for the dot picture · pixels need a sixel terminal such as foot"
+		}
+		if kind == conScreen && sixelTerminal {
+			return consoleReadyMsg{gen: gen, kind: kind, vm: vm, exec: true}
+		}
+		c, err := openConsole(kind, vm, addr, w, h)
+		return consoleReadyMsg{gen: gen, kind: kind, vm: vm, note: note, c: c, err: err}
 	}
-	if kind == conScreen && sixelTerminal {
+}
+
+func (m model) consoleReady(msg consoleReadyMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.conReqGen { // the operator asked for another console since
+		if msg.c != nil {
+			msg.c.close()
+		}
+		return m, nil
+	}
+	if msg.exec {
 		// pixels where the terminal draws them: the full window, back to
 		// the table on ctrl+] d
-		cmd := exec.Command(selfExe(), "screen", vm)
+		cmd := exec.Command(selfExe(), "screen", msg.vm)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		vm := msg.vm
 		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 			if err != nil {
 				return doneMsg{"screen " + vm, err}
@@ -1895,21 +1941,23 @@ func (m model) openConsole(kind consoleKind, vm, addr string) (tea.Model, tea.Cm
 			return doneMsg{what: "screen " + vm + ": back"}
 		})
 	}
-	c, err := openConsole(kind, vm, addr, m.width, m.conBodyH())
-	if err != nil {
-		m.say(stWarn.Render(kind.String() + " " + vm + ": " + err.Error()))
+	if msg.err != nil {
+		m.say(stWarn.Render(msg.kind.String() + " " + msg.vm + ": " + msg.err.Error()))
 		return m, nil
 	}
+	c := msg.c
 	if m.con != nil && m.con.kind != conJob {
 		m.con.close()
 	}
 	m.con = c
-	c.note = note
+	c.note = msg.note
 	c.resize(m.width, m.conBodyH())
-	if kind == conScreen {
-		return m, tea.Batch(conTick(), tea.EnableMouseCellMotion)
+	if msg.kind == conScreen {
+		tc := m.newTick()
+		return m, tea.Batch(tc, tea.EnableMouseCellMotion)
 	}
-	return m, tea.Batch(conTick(), tea.DisableMouse)
+	tc := m.newTick()
+	return m, tea.Batch(tc, tea.DisableMouse)
 }
 
 // runningJobs counts the jobs whose child is still alive.
@@ -1937,7 +1985,8 @@ func (m model) leaveJob() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.con = nil
-	return m, conTick()
+	tc := m.newTick()
+	return m, tc
 }
 
 func (m model) closeConsole() (tea.Model, tea.Cmd) {
@@ -2085,7 +2134,8 @@ func (m model) openActivity() (tea.Model, tea.Cmd) {
 			if j.vm == col(r, 0) {
 				m.con = j
 				j.resize(m.width, m.conBodyH())
-				return m, conTick()
+				tc := m.newTick()
+				return m, tc
 			}
 		}
 		return m, nil
@@ -2104,7 +2154,8 @@ func (m model) openActivity() (tea.Model, tea.Cmd) {
 	m.jobs = append(m.jobs, c)
 	m.con = c
 	c.resize(m.width, m.conBodyH())
-	return m, conTick()
+	tc := m.newTick()
+	return m, tc
 }
 
 // unitOK admits systemd unit names and nothing shell-shaped.

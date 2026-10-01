@@ -34,6 +34,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -550,31 +551,78 @@ func checkPoolName(s string) error {
 // ─── live host probe for the picker ─────────────────────────────────────────
 
 var hostCapsCache struct {
-	at   time.Time
-	caps HostCaps
+	mu         sync.Mutex // the GUI painter and the CLI paths read it from different goroutines
+	at         time.Time
+	caps       HostCaps
+	refreshing bool
 }
 
-// CurrentHostCaps probes what the target host offers RIGHT NOW, cached for
-// 30s — the picker repaints every refresh and libvirt does not need the
-// traffic. A pool imported mid-session shows up within the half-minute.
-func CurrentHostCaps() HostCaps {
-	if time.Since(hostCapsCache.at) < 30*time.Second && !hostCapsCache.at.IsZero() {
-		return hostCapsCache.caps
-	}
+func probeHostCaps() HostCaps {
 	kvm := false
 	if lv, err := ConnectSystem(); err == nil {
 		kvm = true
 		lv.Close()
 	}
-	hostCapsCache.caps = HostCaps{KVM: kvm, ZFS: HasZFS()}
-	hostCapsCache.at = time.Now()
+	return HostCaps{KVM: kvm, ZFS: HasZFS()}
+}
+
+// CurrentHostCaps probes what the target host offers RIGHT NOW, cached for
+// 30s — the picker repaints every refresh and libvirt does not need the
+// traffic. A pool imported mid-session shows up within the half-minute.
+// It blocks on a probe when the cache is stale: right for the CLI, wrong on
+// the GUI's paint path (HostCapsSnapshot).
+func CurrentHostCaps() HostCaps {
+	hostCapsCache.mu.Lock()
+	if time.Since(hostCapsCache.at) < 30*time.Second && !hostCapsCache.at.IsZero() {
+		c := hostCapsCache.caps
+		hostCapsCache.mu.Unlock()
+		return c
+	}
+	hostCapsCache.mu.Unlock()
+	c := probeHostCaps()
+	hostCapsCache.mu.Lock()
+	hostCapsCache.caps, hostCapsCache.at = c, time.Now()
+	hostCapsCache.mu.Unlock()
+	return c
+}
+
+// HostCapsSnapshot never blocks: the last probe's answer, with one probe
+// started in the background when it is stale. The catalog's row painter
+// called CurrentHostCaps, so every 30 s a paint opened a libvirt connection
+// (a qemu+ssh dial on a remote host) on the UI thread (audit, 2026-10-01).
+// Before the first probe lands it answers KVM+ZFS (what a kldload host has),
+// and the next 2 s repaint corrects it.
+func HostCapsSnapshot() HostCaps {
+	hostCapsCache.mu.Lock()
+	defer hostCapsCache.mu.Unlock()
+	stale := hostCapsCache.at.IsZero() || time.Since(hostCapsCache.at) >= 30*time.Second
+	if stale && !hostCapsCache.refreshing {
+		hostCapsCache.refreshing = true
+		go func() {
+			c := probeHostCaps()
+			hostCapsCache.mu.Lock()
+			hostCapsCache.caps, hostCapsCache.at, hostCapsCache.refreshing = c, time.Now(), false
+			hostCapsCache.mu.Unlock()
+		}()
+	}
+	if hostCapsCache.at.IsZero() {
+		return HostCaps{KVM: true, ZFS: true}
+	}
 	return hostCapsCache.caps
 }
 
 // ApplianceFit is the one-line answer to "what happens if I click this HERE".
 // Level drives the colour; the blurb is the detail text beside the tile.
 func ApplianceFit(a Appliance) (level, blurb string) {
-	caps := CurrentHostCaps()
+	return applianceFitWith(a, CurrentHostCaps())
+}
+
+// ApplianceFitNow is ApplianceFit for the GUI's paint path: it never probes.
+func ApplianceFitNow(a Appliance) (level, blurb string) {
+	return applianceFitWith(a, HostCapsSnapshot())
+}
+
+func applianceFitWith(a Appliance, caps HostCaps) (level, blurb string) {
 	av := a.Availability(caps)
 	switch av.Level {
 	case "unavailable":

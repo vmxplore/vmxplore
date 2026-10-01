@@ -98,14 +98,29 @@ type console struct {
 	fbW, fbH   int
 }
 
-type conTickMsg struct{}
+// conTickMsg carries the generation of the chain that sent it. Every
+// place that starts the 80 ms tick used to start ANOTHER chain, and the
+// handler re-armed whichever one ticked, so opening a few panes ran N
+// chains and N x 12.5 redraws a second, framebuffer render included
+// (audit, 2026-10-01). newTick bumps the generation; a tick from an older
+// chain is not re-armed, so exactly one survives.
+type conTickMsg struct{ gen int }
 
 // screenBlocks selects half-blocks for the pane instead of braille
 // (KLD_SCREEN_CELLS=blocks); braille keeps a text console legible.
 var screenBlocks = os.Getenv("KLD_SCREEN_CELLS") == "blocks"
 
-func conTick() tea.Cmd {
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return conTickMsg{} })
+func conTickAt(gen int) tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return conTickMsg{gen: gen} })
+}
+
+// newTick starts the one live tick chain and retires any other. Call it as
+// `c := m.newTick(); return m, c` -- in `return m, m.newTick()` the model
+// is copied before newTick bumps the generation, and the returned model
+// would carry the old one.
+func (m *model) newTick() tea.Cmd {
+	m.tickGen++
+	return conTickAt(m.tickGen)
 }
 
 // openConsole starts a session of the kind on the VM named by the row. The

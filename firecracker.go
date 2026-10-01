@@ -217,9 +217,21 @@ func fcRows(insts []FCInstance) []Row {
 // fcGroupCached is the "firecracker" group, or false when kfire is absent
 // or has nothing. Ten-second cache: see the banner.
 var (
+	// fcMu guards the cached data only and is held for a swap, never across
+	// a kfire run. It used to be held through `kfire list` and the 4-6 s
+	// `kfire goldens`, and fcGoldensSnapshot -- the UI thread's read --
+	// waited on it, so the window froze while kfire ran (audit, 2026-10-01).
+	// fcSlowMu serialises the kfire reads themselves.
 	fcMu     sync.Mutex
-	fcAt     time.Time
-	fcCached []FCInstance
+	fcSlowMu sync.Mutex
+	// Seams for the cache's tests: a stub kfire on PATH would not do,
+	// because kfireArgv goes through sudo, whose secure_path finds the real
+	// one. Production never reassigns these.
+	fcInstancesRead = fcInstances
+	fcGoldensRead   = fcGoldens
+	fcHaveKfire     = kfireAvailable
+	fcAt            time.Time
+	fcCached        []FCInstance
 )
 
 func fcInvalidate() {
@@ -231,17 +243,24 @@ func fcInvalidate() {
 // fcRefresh reads the instances when the cache is older than ten seconds.
 // A kfire that cannot answer (no sudo, no state dir yet) means an empty
 // list, not a crash of the estate view; the audit log has the why. Callers
-// hold fcMu. The goldens ride the same clock in firecracker_gui.go.
+// hold fcSlowMu and NOT fcMu: kfire runs with no data lock held, and the
+// result is swapped in under fcMu. The goldens ride the same clock in
+// firecracker_gui.go.
 func fcRefresh() {
-	if time.Since(fcAt) <= 10*time.Second {
+	fcMu.Lock()
+	fresh := time.Since(fcAt) <= 10*time.Second
+	fcMu.Unlock()
+	if fresh {
 		return
 	}
-	insts, err := fcInstances()
+	insts, err := fcInstancesRead()
 	if err != nil {
 		auditLog("kfire list --json: "+err.Error(), 1)
 		insts = nil
 	}
+	fcMu.Lock()
 	fcCached, fcAt = insts, time.Now()
+	fcMu.Unlock()
 }
 
 // fcRowsCached is every instance as an estate row — empty, not absent,
@@ -253,9 +272,11 @@ func fcRowsCached() []Row {
 	if !kfireAvailable() {
 		return nil
 	}
+	fcSlowMu.Lock()
+	fcRefresh()
+	fcSlowMu.Unlock()
 	fcMu.Lock()
 	defer fcMu.Unlock()
-	fcRefresh()
 	return fcRows(fcCached)
 }
 

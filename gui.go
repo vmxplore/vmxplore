@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -473,9 +474,11 @@ type vmRow struct {
 
 // dotZoneW is how wide (px) the leading state-dot hit zone is: clicking
 // inside it toggles the batch checkbox, outside it selects the row.
-// 34, not 22: the operator found the dots "small and hard to click"
-// (2026-10-01); the glyph is drawn larger and centred in the zone too.
-const dotZoneW = 34
+// 26: the dot's own size, drawn larger and centred. 34 (2026-10-01, after
+// "small and hard to click") made the zone a band down the row's left edge
+// that toggled the batch check when the operator meant to select the VM;
+// the target is now the dot, and a round hover ring shows it before a click.
+const dotZoneW = 26
 
 // MouseDown records whether Ctrl or Shift was held, so the paired Tapped
 // can tell a range-select click from a plain one (Fyne delivers MouseDown
@@ -567,8 +570,13 @@ func (vr *vmRowRenderer) Layout(sz fyne.Size) {
 	if r.detail.Text != ellipsisMark(vr.fullD, r.detail.Text) {
 		vr.fullD = r.detail.Text
 	}
-	r.zoneHL.Move(fyne.NewPos(0, 0))
-	r.zoneHL.Resize(fyne.NewSize(dotZoneW, sz.Height))
+	ring := float32(dotZoneW) - 2
+	if ring > sz.Height-2 {
+		ring = sz.Height - 2
+	}
+	r.zoneHL.CornerRadius = ring / 2 // a circle round the dot, not a band
+	r.zoneHL.Move(fyne.NewPos((dotZoneW-ring)/2, (sz.Height-ring)/2))
+	r.zoneHL.Resize(fyne.NewSize(ring, ring))
 	th := fyne.MeasureText("Ag", r.title.TextSize, r.title.TextStyle).Height
 	y := (sz.Height - th) / 2
 	dth := fyne.MeasureText("●", r.dot.TextSize, r.dot.TextStyle).Height
@@ -949,7 +957,17 @@ func firePlan(w fyne.Window, p verbPlan, after func()) {
 	}()
 }
 
+// audioProbe answers hostAudioReachable once per session, probed in the
+// background at start. The New VM dialog ran it on every click: a qemu
+// process under sudo, ~100 ms, with a 3 s timeout before the dialog
+// appeared (audit, 2026-10-01). Host audio does not come and go within a
+// session; a click in the first instant waits only for the probe in flight.
+var audioProbe = sync.OnceValue(hostAudioReachable)
+
 func runGUI(rs *Ruleset) {
+	if target.SSHHost == "" {
+		go audioProbe() // warm it; the New VM dialog reads the answer
+	}
 	a := app.NewWithID("dev.vmxplore")
 	a.Settings().SetTheme(compactTheme{theme.DefaultTheme()})
 	a.SetIcon(fyne.NewStaticResource("vmxplore.svg", iconSVG))
@@ -1394,7 +1412,7 @@ func runGUI(rs *Ruleset) {
 				// The colour IS the availability verdict for THIS host:
 				// green builds fully, gold degrades (the detail says how),
 				// dull cannot build here at all.
-				level, blurb := ApplianceFit(a)
+				level, blurb := ApplianceFitNow(a) // never probes on the paint path
 				switch level {
 				case "degraded":
 					row.dot.Color = acGold.at()
@@ -1638,6 +1656,11 @@ func runGUI(rs *Ruleset) {
 	// the estate is local, or when nothing is attached.
 	var vncTunnel func()
 	vncName := ""
+	// vncWant is the VM a connect is in flight for, or attached to. The
+	// connect runs off the UI thread now, and a selection that moves on
+	// while it runs must discard the late connection, not show it.
+	vncWant := ""
+	var installVNC func(conn *rfbConn, name string)
 	detachVNC := func() {
 		if vncConn != nil {
 			vncConn.Close()
@@ -1648,35 +1671,63 @@ func runGUI(rs *Ruleset) {
 			vncTunnel()
 			vncTunnel = nil
 		}
-		vncConn, vncName = nil, ""
+		vncConn, vncName, vncWant = nil, "", ""
 	}
+	// attachVNC connects the Screen pane to name. The lookup, the ssh tunnel
+	// (remote hosts poll it for up to 5 s) and the RFB dial + handshake run
+	// in a goroutine; they ran in the selection handler, so a slow or remote
+	// console froze the window on every click (audit, 2026-10-01). The pane
+	// says "connecting" at once.
 	attachVNC := func(name string) {
 		if vncName == name && vncConn != nil {
 			return
 		}
+		if vncWant == name && vncConn == nil {
+			return // a connect for this VM is already in flight
+		}
 		detachVNC()
-		port, err := vncPort(lv, name)
-		if err != nil {
-			vncHost.Objects = []fyne.CanvasObject{conPlaceholder(err.Error())}
-			vncHost.Refresh()
-			return
-		}
-		addr, stopTunnel, err := vncEndpoint(port)
-		if err != nil {
-			vncHost.Objects = []fyne.CanvasObject{conPlaceholder(err.Error())}
-			vncHost.Refresh()
-			return
-		}
-		vncTunnel = stopTunnel
-		conn, err := dialRFB(addr)
-		if err != nil {
-			stopTunnel()
-			vncTunnel = nil
-			vncHost.Objects = []fyne.CanvasObject{
-				conPlaceholder("vnc: " + err.Error())}
-			vncHost.Refresh()
-			return
-		}
+		vncWant = name
+		vncHost.Objects = []fyne.CanvasObject{conPlaceholder("connecting to " + vmDisplayName(name) + "…")}
+		vncHost.Refresh()
+		go func() {
+			var (
+				addr       string
+				stopTunnel func()
+				conn       *rfbConn
+			)
+			port, err := vncPort(lv, name)
+			if err == nil {
+				addr, stopTunnel, err = vncEndpoint(port)
+			}
+			if err == nil {
+				if conn, err = dialRFB(addr); err != nil {
+					stopTunnel()
+					stopTunnel = nil
+					err = fmt.Errorf("vnc: %w", err)
+				}
+			}
+			fyne.Do(func() {
+				if vncWant != name { // the selection moved on: drop it
+					if conn != nil {
+						conn.Close()
+					}
+					if stopTunnel != nil {
+						stopTunnel()
+					}
+					return
+				}
+				if err != nil {
+					vncWant = ""
+					vncHost.Objects = []fyne.CanvasObject{conPlaceholder(err.Error())}
+					vncHost.Refresh()
+					return
+				}
+				vncTunnel = stopTunnel
+				installVNC(conn, name)
+			})
+		}()
+	}
+	installVNC = func(conn *rfbConn, name string) {
 		vncConn, vncName = conn, name
 		// guest clipboard → host clipboard (ServerCutText)
 		conn.SetOnCutText(func(s string) {
@@ -2291,7 +2342,7 @@ func runGUI(rs *Ruleset) {
 		// Remote targets never get it: virt-install runs here while the guest
 		// runs there, so this session's audio says nothing about that machine
 		// — and its sound would come out of that machine's speakers anyway.
-		soundOK := target.SSHHost == "" && hostAudioReachable()
+		soundOK := target.SSHHost == "" && audioProbe()
 		sound := widget.NewCheck("host audio (guest sound plays on this machine)", nil)
 		soundNote := widget.NewLabel("")
 		soundNote.Wrapping = fyne.TextWrapWord
@@ -2856,7 +2907,16 @@ func runGUI(rs *Ruleset) {
 				logMu.Unlock()
 				return
 			}
-			text := strings.Join(logBuf, "")
+			// the last 400 lines: re-wrapping the WHOLE log four times a
+			// second grew with it, and a 45-machine Build all ended slow
+			// (audit, 2026-10-01). logBuf keeps every line.
+			const keep = 400
+			var text string
+			if n := len(logBuf); n > keep {
+				text = fmt.Sprintf("… %d earlier lines not shown …\n", n-keep) + strings.Join(logBuf[n-keep:], "")
+			} else {
+				text = strings.Join(logBuf, "")
+			}
 			logDirty = false
 			logMu.Unlock()
 			out.SetText(text)
@@ -2915,13 +2975,22 @@ func runGUI(rs *Ruleset) {
 			// Four times a second: fast enough that the log reads as live,
 			// slow enough that 500 lines are a handful of repaints.
 			tick := time.NewTicker(250 * time.Millisecond)
+			// tickDone ends the painter: tick.Stop() does not close tick.C,
+			// so `for range tick.C` leaked one goroutine per run (audit,
+			// 2026-10-01).
+			tickDone := make(chan struct{})
 			go func() {
-				for range tick.C {
-					fyne.Do(func() {
-						flushLog()
-						sc.ScrollToBottom()
-						render()
-					})
+				for {
+					select {
+					case <-tick.C:
+						fyne.Do(func() {
+							flushLog()
+							sc.ScrollToBottom()
+							render()
+						})
+					case <-tickDone:
+						return
+					}
 				}
 			}()
 			go func() {
@@ -2949,6 +3018,7 @@ func runGUI(rs *Ruleset) {
 					fyne.Do(render)
 				})
 				tick.Stop()
+				close(tickDone)
 				// Cleared HERE, in the goroutine, so the window is closable
 				// the instant the work is done however busy the UI thread is.
 				busy.Store(false)
@@ -3186,10 +3256,12 @@ func runGUI(rs *Ruleset) {
 	// "Destroy all microVMs" is the undo.
 	openFCDemo = func() {
 		have := make([]string, 0, 8)
-		for _, g := range fcGoldensCached() {
+		// the snapshot and the tree's own rows: the cached reads ran kfire on
+		// the click when the cache was stale (audit, 2026-10-01)
+		for _, g := range fcGoldensSnapshot() {
 			have = append(have, g.Name)
 		}
-		if why := DemoBlockers(demoTeardownRunning(), len(fcRowsCached()), have); len(why) > 0 {
+		if why := DemoBlockers(demoTeardownRunning(), len(fcRowsNow), have); len(why) > 0 {
 			dialog.ShowInformation("Deploy the demo estate",
 				"Not ready:\n\n  · "+strings.Join(why, "\n  · ")+
 					"\n\nA golden is made by \"Build all\", which takes one of each on the\nway through, or by \"Make a golden…\" on a shut-off appliance.", w)
@@ -3290,159 +3362,175 @@ func runGUI(rs *Ruleset) {
 					"Firecracker itself is installed at firstboot.", w)
 			return
 		}
-		goldens, err := fcGoldens()
-		if err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-		if len(goldens) == 0 {
-			dialog.ShowInformation("Clone microVMs",
-				"No Firecracker golden yet.\n\nShut an appliance VM down, then right-click it\n"+
-					"→ Firecracker golden. Cloning clones that.", w)
-			return
-		}
-		names := make([]string, len(goldens))
-		for i, g := range goldens {
-			names[i] = g.Name
-		}
-		sel := widget.NewSelect(names, nil)
-		sel.SetSelected(names[0])
-		for _, n := range names {
-			if n == preselect {
-				sel.SetSelected(n)
+		// The dialog is built in show; the goldens come from the background
+		// refresh's snapshot when it has them (the usual case), and from a
+		// kfire read in a goroutine when it does not. This used to run
+		// `kfire goldens` on the click: 4-6 s with the window frozen (audit,
+		// 2026-10-01).
+		show := func(goldens []FCGolden, err error) {
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
 			}
-		}
-		count := widget.NewEntry()
-		count.SetText("1")
-		cpu := widget.NewEntry()
-		cpu.SetPlaceHolder("the golden's")
-		ram := widget.NewEntry()
-		ram.SetPlaceHolder("the golden's, in MB")
-		// The follow-up is a question on the form, not a surprise after
-		// it: the label says what will open for THIS golden (fcfollow.go)
-		// and follows the golden and count fields as they change.
-		portOf := func(name string) int {
-			for _, g := range goldens {
-				if g.Name == name {
-					return g.Port
+			if len(goldens) == 0 {
+				dialog.ShowInformation("Clone microVMs",
+					"No Firecracker golden yet.\n\nShut an appliance VM down, then right-click it\n"+
+						"→ Firecracker golden. Cloning clones that.", w)
+				return
+			}
+			names := make([]string, len(goldens))
+			for i, g := range goldens {
+				names[i] = g.Name
+			}
+			sel := widget.NewSelect(names, nil)
+			sel.SetSelected(names[0])
+			for _, n := range names {
+				if n == preselect {
+					sel.SetSelected(n)
 				}
 			}
-			return 0
-		}
-		open := widget.NewCheck("", nil)
-		open.SetChecked(true)
-		relabel := func() {
-			n, _ := strconv.Atoi(strings.TrimSpace(count.Text))
-			if n < 1 {
-				n = 1
-			}
-			open.Text = cloneFollowUpLabel(sel.Selected, portOf(sel.Selected), n)
-			open.Refresh()
-		}
-		relabel()
-		sel.OnChanged = func(string) { relabel() }
-		count.OnChanged = func(string) { relabel() }
-		form := widget.NewForm(
-			widget.NewFormItem("Golden", sel),
-			widget.NewFormItem("How many", count),
-			widget.NewFormItem("vCPU", cpu),
-			widget.NewFormItem("RAM", ram),
-			widget.NewFormItem("", open))
-		dialog.ShowCustomConfirm("Clone Firecracker microVMs", "Clone", "Cancel", form, func(ok bool) {
-			if !ok {
-				return
-			}
-			n, err := strconv.Atoi(strings.TrimSpace(count.Text))
-			if err != nil || n < 1 {
-				dialog.ShowError(fmt.Errorf("how many: a positive number"), w)
-				return
-			}
-			followUp := ""
-			if open.Checked {
-				followUp = cloneFollowUp(sel.Selected, portOf(sel.Selected))
-			}
-			before := fcInstanceNames(fcRowsCached())
-			args := []string{"clone", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
-			if c := strings.TrimSpace(cpu.Text); c != "" {
-				args = append(args, "--cpu", c)
-			}
-			if m := strings.TrimSpace(ram.Text); m != "" {
-				args = append(args, "--ram", m)
-			}
-			batchLogWindow("Clone Firecracker microVMs",
-				fmt.Sprintf("Cloning %d microVM(s) from %s. Each is a ZFS clone of the\n"+
-					"golden's zvols and a Firecracker process; the line for each one\n"+
-					"prints when it answers on its port. They appear in the estate\n"+
-					"under \"firecracker\" and are removed with Delete.\n", n, sel.Selected),
-				"Clone", true, 3*time.Second, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
-					err := streamCmd(ctx, log, kfireArgv(args...)...)
-					fcInvalidate()
-					if err != nil {
-						return "clone FAILED — " + err.Error()
+			count := widget.NewEntry()
+			count.SetText("1")
+			cpu := widget.NewEntry()
+			cpu.SetPlaceHolder("the golden's")
+			ram := widget.NewEntry()
+			ram.SetPlaceHolder("the golden's, in MB")
+			// The follow-up is a question on the form, not a surprise after
+			// it: the label says what will open for THIS golden (fcfollow.go)
+			// and follows the golden and count fields as they change.
+			portOf := func(name string) int {
+				for _, g := range goldens {
+					if g.Name == name {
+						return g.Port
 					}
-					// A batch ends with the clones on screen when the
-					// operator asked for it ("the last step would bring up
-					// the viewer", 2026-09-05): the wall for streamed
-					// desktops, an RDP session per seat, a browser tab per
-					// page. Only the clones this batch made — not the ones
-					// that were already there.
-					switch followUp {
-					case "wall":
-						fyne.Do(vdiWallAct)
-						return "done — opening the VDI wall, one tile per desktop"
-					case "rdp", "browser":
-						fresh := newInstancesOf(sel.Selected, before, fcRowsCached())
-						if len(fresh) == 0 {
-							return "done — but no new instance has an address yet; open them from the estate"
+				}
+				return 0
+			}
+			open := widget.NewCheck("", nil)
+			open.SetChecked(true)
+			relabel := func() {
+				n, _ := strconv.Atoi(strings.TrimSpace(count.Text))
+				if n < 1 {
+					n = 1
+				}
+				open.Text = cloneFollowUpLabel(sel.Selected, portOf(sel.Selected), n)
+				open.Refresh()
+			}
+			relabel()
+			sel.OnChanged = func(string) { relabel() }
+			count.OnChanged = func(string) { relabel() }
+			form := widget.NewForm(
+				widget.NewFormItem("Golden", sel),
+				widget.NewFormItem("How many", count),
+				widget.NewFormItem("vCPU", cpu),
+				widget.NewFormItem("RAM", ram),
+				widget.NewFormItem("", open))
+			dialog.ShowCustomConfirm("Clone Firecracker microVMs", "Clone", "Cancel", form, func(ok bool) {
+				if !ok {
+					return
+				}
+				n, err := strconv.Atoi(strings.TrimSpace(count.Text))
+				if err != nil || n < 1 {
+					dialog.ShowError(fmt.Errorf("how many: a positive number"), w)
+					return
+				}
+				followUp := ""
+				if open.Checked {
+					followUp = cloneFollowUp(sel.Selected, portOf(sel.Selected))
+				}
+				// the tree's rows: a stale cache here ran kfire in the button
+				// callback; "before" only needs what existed, and 2 s old is fine
+				before := fcInstanceNames(fcRowsNow)
+				args := []string{"clone", sel.Selected, "-n", fmt.Sprint(n), "--wait"}
+				if c := strings.TrimSpace(cpu.Text); c != "" {
+					args = append(args, "--cpu", c)
+				}
+				if m := strings.TrimSpace(ram.Text); m != "" {
+					args = append(args, "--ram", m)
+				}
+				batchLogWindow("Clone Firecracker microVMs",
+					fmt.Sprintf("Cloning %d microVM(s) from %s. Each is a ZFS clone of the\n"+
+						"golden's zvols and a Firecracker process; the line for each one\n"+
+						"prints when it answers on its port. They appear in the estate\n"+
+						"under \"firecracker\" and are removed with Delete.\n", n, sel.Selected),
+					"Clone", true, 3*time.Second, func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+						err := streamCmd(ctx, log, kfireArgv(args...)...)
+						fcInvalidate()
+						if err != nil {
+							return "clone FAILED — " + err.Error()
 						}
-						opened, failed, note := 0, "", ""
-						if followUp == "rdp" {
-							// one window per seat, not one tabbed window;
-							// a Remmina already open keeps the old setting
-							// until it is restarted, so say that
-							if p := remminaPrefPath(); p != "" {
-								if changed, err := remminaOneWindowPerSeat(p); err == nil && changed && remminaRunning() {
-									note = " — Remmina was already open in tab mode: quit it (remmina -q) and the next batch gets one window per seat"
-								}
+						// A batch ends with the clones on screen when the
+						// operator asked for it ("the last step would bring up
+						// the viewer", 2026-09-05): the wall for streamed
+						// desktops, an RDP session per seat, a browser tab per
+						// page. Only the clones this batch made — not the ones
+						// that were already there.
+						switch followUp {
+						case "wall":
+							fyne.Do(vdiWallAct)
+							return "done — opening the VDI wall, one tile per desktop"
+						case "rdp", "browser":
+							fresh := newInstancesOf(sel.Selected, before, fcRowsCached())
+							if len(fresh) == 0 {
+								return "done — but no new instance has an address yet; open them from the estate"
 							}
-						}
-						for _, r := range fresh {
-							ip := firstIPv4(r.D.IPs)
+							opened, failed, note := 0, "", ""
 							if followUp == "rdp" {
-								argv := rdpClientArgv(ip)
-								if argv == nil {
-									failed = "no RDP client on this host (remmina or xfreerdp)"
-									break
-								}
-								if err := exec.Command(argv[0], argv[1:]...).Start(); err != nil {
-									failed = argv[0] + ": " + err.Error()
-									break
-								}
-								auditLog(strings.Join(argv, " "), 0)
-							} else {
-								u := fmt.Sprintf("http://%s:%d/", ip, r.FC.Port)
-								if r.FC.Port == 80 {
-									u = "http://" + ip + "/"
-								}
-								if parsed, err := url.Parse(u); err == nil {
-									fyne.Do(func() { _ = fyne.CurrentApp().OpenURL(parsed) })
+								// one window per seat, not one tabbed window;
+								// a Remmina already open keeps the old setting
+								// until it is restarted, so say that
+								if p := remminaPrefPath(); p != "" {
+									if changed, err := remminaOneWindowPerSeat(p); err == nil && changed && remminaRunning() {
+										note = " — Remmina was already open in tab mode: quit it (remmina -q) and the next batch gets one window per seat"
+									}
 								}
 							}
-							opened++
+							for _, r := range fresh {
+								ip := firstIPv4(r.D.IPs)
+								if followUp == "rdp" {
+									argv := rdpClientArgv(ip)
+									if argv == nil {
+										failed = "no RDP client on this host (remmina or xfreerdp)"
+										break
+									}
+									if err := exec.Command(argv[0], argv[1:]...).Start(); err != nil {
+										failed = argv[0] + ": " + err.Error()
+										break
+									}
+									auditLog(strings.Join(argv, " "), 0)
+								} else {
+									u := fmt.Sprintf("http://%s:%d/", ip, r.FC.Port)
+									if r.FC.Port == 80 {
+										u = "http://" + ip + "/"
+									}
+									if parsed, err := url.Parse(u); err == nil {
+										fyne.Do(func() { _ = fyne.CurrentApp().OpenURL(parsed) })
+									}
+								}
+								opened++
+							}
+							list := fresh
+							fyne.Do(func() { showCloneDetails(sel.Selected, list) })
+							if failed != "" {
+								return fmt.Sprintf("done — opened %d, then stopped: %s", opened, failed)
+							}
+							if followUp == "rdp" {
+								return fmt.Sprintf("done — %d RDP session(s) opening; log in with the tile's guest account%s", opened, note)
+							}
+							return fmt.Sprintf("done — %d browser tab(s) opening", opened)
 						}
-						list := fresh
-						fyne.Do(func() { showCloneDetails(sel.Selected, list) })
-						if failed != "" {
-							return fmt.Sprintf("done — opened %d, then stopped: %s", opened, failed)
-						}
-						if followUp == "rdp" {
-							return fmt.Sprintf("done — %d RDP session(s) opening; log in with the tile's guest account%s", opened, note)
-						}
-						return fmt.Sprintf("done — %d browser tab(s) opening", opened)
-					}
-					return "done — the instances are under \"firecracker\" in the estate"
-				})
-		}, w)
+						return "done — the instances are under \"firecracker\" in the estate"
+					})
+			}, w)
+		}
+		if gs := fcGoldensSnapshot(); len(gs) > 0 {
+			show(gs, nil)
+			return
+		}
+		go func() {
+			gs, err := fcGoldens()
+			fyne.Do(func() { show(gs, err) })
+		}()
 	}
 
 	// EZ Fleet: one dialog → build a golden + N clones. The whole value
@@ -3454,8 +3542,30 @@ func runGUI(rs *Ruleset) {
 	// vmNameTaken reports whether a domain OR its zvol already exists. Both
 	// matter: virsh undefine leaves the dataset behind, so a name can be free
 	// to libvirt and still collide in ZFS.
+	// vmNameTaken answers from the domains (2 s refresh) and datasets (30 s)
+	// the GUI already holds; it ran virsh dominfo + zfs list per name in the
+	// fleet dialog's button, 2(n+1) processes on one click (audit,
+	// 2026-10-01). A name made in the last refresh interval can slip past --
+	// the create then fails loudly on the collision, which is the old
+	// failure mode too. The processes remain the fallback before the first
+	// ZFS refresh.
 	vmNameTaken := func(n string) bool {
 		if n == "" {
+			return false
+		}
+		if st.dss != nil {
+			for _, g := range st.groups {
+				for _, r := range g.Rows {
+					if r.D.Name == n {
+						return true
+					}
+				}
+			}
+			if parent := ZFSVMParent(st.visibleRows()); parent != "" {
+				if _, ok := st.dss[parent+"/"+n]; ok {
+					return true
+				}
+			}
 			return false
 		}
 		// virsh() and not bare "virsh": the latter defaults to
@@ -3662,13 +3772,14 @@ func runGUI(rs *Ruleset) {
 		for _, g := range st.groups {
 			rows = append(rows, g.Rows...)
 		}
-		// fcRowsCached, not fcRowsNow: called at the end of a clone batch
-		// the instances are seconds old and the 2 s tick may not have
-		// picked them up yet; the cache was just invalidated, so this
-		// asks kfire.
-		rows = append(rows, fcRowsCached()...)
 		auditLog("gui: VDI wall", 0)
 		go func() {
+			// fcRowsCached, not fcRowsNow: called at the end of a clone batch
+			// the instances are seconds old and the 2 s tick may not have
+			// picked them up yet; the cache was just invalidated, so this
+			// asks kfire -- here in the goroutine, not on the UI thread,
+			// where it froze the window (audit, 2026-10-01).
+			rows := append(rows, fcRowsCached()...)
 			streams := VDIWallStreams(rows, whepProbe)
 			paths, err := WriteVDIWallPages(streams)
 			var p string
@@ -3784,9 +3895,17 @@ func runGUI(rs *Ruleset) {
 	// the LOCAL box whether a REMOTE dataset has a @golden snapshot answers
 	// about the wrong machine — it would silently pick the full-copy plan for
 	// a golden that exists.
+	// hasGolden reads the snapshot list the 30 s ZFS refresh already holds.
+	// It ran `zfs list <ds>@golden` per row, on the UI thread, while the
+	// Clone dialog was being built: one process per VM (and an ssh per VM
+	// against a remote host) for every click (audit, 2026-10-01). The
+	// process is the fallback only before the first refresh has landed.
 	hasGolden := func(r Row) bool {
 		if r.DS == nil {
 			return false
+		}
+		if st.snaps != nil {
+			return slices.Contains(st.snaps[r.DS.Name], "golden")
 		}
 		chk := zfsArgv("list", r.DS.Name+"@golden")
 		return exec.Command(chk[0], chk[1:]...).Run() == nil
@@ -4582,6 +4701,22 @@ func runGUI(rs *Ruleset) {
 	}
 
 	// ── refresh: estate every 2s, ZFS every 30s (the TUI cadence) ────────
+	// lastTreeSig/lastSelSig: what the tree and the selected VM's panes last
+	// showed. The 2 s tick repainted every visible row (re-measuring each
+	// for its trim), the card and the word-wrapped dossier whether or not
+	// anything had changed -- 9-32 ms on the UI thread every two seconds
+	// (audit, 2026-10-01). Now it repaints only what differs.
+	lastTreeSig, lastSelSig := "", ""
+	rowSig := func(b *strings.Builder, r Row) {
+		fmt.Fprintf(b, "%s|%s|%s|%d|%t|%d|", r.D.Name, r.D.State, strings.Join(r.D.IPs, ","), len(r.Notes), checked[r.D.Name], r.SnapTotal)
+		if c, ok := st.cpu[r.D.Name]; ok {
+			fmt.Fprintf(b, "%.0f|", c)
+		}
+		if r.DS != nil {
+			fmt.Fprintf(b, "%d|%s|%d", r.DS.Used, r.Origin, len(st.snaps[r.DS.Name]))
+		}
+		b.WriteByte('\n')
+	}
 	apply := func(doms []Dom, cpuRaw map[string]uint64, fcRows []Row, at time.Time) {
 		defer traceSlow("apply (2 s refresh)", time.Now())
 		if !st.prevAt.IsZero() {
@@ -4591,7 +4726,27 @@ func runGUI(rs *Ruleset) {
 		fcRowsNow = fcRows
 		st.groups = withoutFCGhosts(BuildEstate(doms, st.dss, st.snaps, st.rs, st.ann), fcRowsNow)
 		rebuildView()
-		tree.Refresh()
+		var sig strings.Builder
+		sig.WriteString(st.filter + "\n")
+		for _, g := range viewGroups {
+			sig.WriteString("#" + g.Label + "\n")
+			for _, r := range g.Rows {
+				rowSig(&sig, r)
+			}
+		}
+		for _, r := range fcRowsNow {
+			rowSig(&sig, r)
+		}
+		// the non-estate rows that change on their own: the Build all
+		// status, the goldens (names, clone counts) and the demo tile
+		sig.WriteString(buildAllStatus + "\n" + demoTileDetail() + "\n")
+		for _, g := range fcGoldensSnapshot() {
+			fmt.Fprintf(&sig, "g|%s|%d|%d|%d\n", g.Name, g.Clones, g.VCPUs, g.RAMMB)
+		}
+		if s := sig.String(); s != lastTreeSig {
+			lastTreeSig = s
+			tree.Refresh()
+		}
 		if !didFold && len(viewGroups) > 0 {
 			foldOffGroups()
 			didFold = true
@@ -4611,7 +4766,13 @@ func runGUI(rs *Ruleset) {
 		status.SetText(fmt.Sprintf("%d domains · rules: %s · %s · vmxplore %s",
 			len(doms), st.rs.Source, at.Format("15:04:05"), versionFull()))
 		if r, ok := st.selected(); ok {
-			renderDossier(r)
+			var ss strings.Builder
+			rowSig(&ss, r)
+			fmt.Fprintf(&ss, "%t", r.D.Autostart)
+			if s := ss.String(); s != lastSelSig {
+				lastSelSig = s
+				renderDossier(r)
+			}
 			// The console is attached to a PROCESS, not to a name. A domain
 			// that stopped and started again is a new qemu with a new
 			// serial pty and a new VNC port, so the standing attachment is
@@ -4998,6 +5159,10 @@ func runGUI(rs *Ruleset) {
 	}()
 	openBranch = func(uid string) { tree.OpenBranch(uid) }
 	startCapture(a, w, func(name string) {
+		if strings.HasPrefix(name, "grp/") || name == actionsBranchUID {
+			tree.Select(name) // a header, through the real click path
+			return
+		}
 		if g := groupOf(name); g != "" {
 			tree.OpenBranch("grp/" + g)
 		}

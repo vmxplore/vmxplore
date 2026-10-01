@@ -25,20 +25,27 @@ var (
 // fcGoldensCached is the goldens on the instances' clock: read again
 // whenever the instances were, so one fcInvalidate refreshes both.
 func fcGoldensCached() []FCGolden {
-	if !kfireAvailable() {
+	if !fcHaveKfire() {
 		return nil
 	}
-	fcMu.Lock()
-	defer fcMu.Unlock()
+	fcSlowMu.Lock()
+	defer fcSlowMu.Unlock()
 	fcRefresh()
-	if !fcGoldenAt.Equal(fcAt) {
-		gs, err := fcGoldens()
+	fcMu.Lock()
+	at, stale := fcAt, !fcGoldenAt.Equal(fcAt)
+	fcMu.Unlock()
+	if stale {
+		gs, err := fcGoldensRead() // 4-6 s: no data lock held
 		if err != nil {
 			auditLog("kfire goldens --json: "+err.Error(), 1)
 			gs = nil
 		}
-		fcGoldenC, fcGoldenAt = gs, fcAt
+		fcMu.Lock()
+		fcGoldenC, fcGoldenAt = gs, at
+		fcMu.Unlock()
 	}
+	fcMu.Lock()
+	defer fcMu.Unlock()
 	return fcGoldenC
 }
 

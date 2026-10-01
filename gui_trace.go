@@ -16,10 +16,21 @@ package main
 import (
 	"log"
 	"os"
+	"strconv"
 	"time"
 )
 
 var traceOn = os.Getenv("VMX_TRACE") == "1"
+
+// traceMin is the threshold; VMX_TRACE_MS overrides the default 30, and 0
+// logs every step -- how to prove the trace can print at all before reading
+// its silence as "nothing was slow".
+var traceMin = func() time.Duration {
+	if v, err := strconv.Atoi(os.Getenv("VMX_TRACE_MS")); err == nil && v >= 0 {
+		return time.Duration(v) * time.Millisecond
+	}
+	return 30 * time.Millisecond
+}()
 
 // traceSlow is deferred at the top of a UI-thread step:
 //
@@ -28,7 +39,7 @@ func traceSlow(what string, start time.Time) {
 	if !traceOn {
 		return
 	}
-	if d := time.Since(start); d > 30*time.Millisecond {
+	if d := time.Since(start); d >= traceMin {
 		log.Printf("vmxplore trace: %s took %v", what, d.Round(time.Millisecond))
 	}
 }
