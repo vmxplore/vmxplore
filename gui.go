@@ -813,6 +813,7 @@ func runGUI(rs *Ruleset) {
 	// in the tree rather than a "grp/" group.
 	var fcRowsNow []Row
 	rebuildView := func() {
+		defer traceSlow("rebuildView", time.Now())
 		q := strings.ToLower(strings.TrimSpace(st.filter))
 		viewGroups = viewGroups[:0]
 		st.rows = st.rows[:0]
@@ -1021,6 +1022,7 @@ func runGUI(rs *Ruleset) {
 			return newVMRow()
 		},
 		func(uid string, branch bool, o fyne.CanvasObject) {
+			defer traceSlow("paint row "+uid, time.Now())
 			if branch {
 				t := o.(*canvas.Text)
 				if uid == applianceBranchUID {
@@ -1787,6 +1789,7 @@ func runGUI(rs *Ruleset) {
 
 	// followConsole keeps both panes in lock-step with the selection.
 	followConsole := func(r Row) {
+		defer traceSlow("followConsole "+r.D.Name, time.Now())
 		conName, conState = r.D.Name, r.D.State
 		// A Firecracker microVM is not a libvirt domain and has no display:
 		// both panes asked libvirt for it and showed "no domain with matching
@@ -1821,6 +1824,7 @@ func runGUI(rs *Ruleset) {
 		Style: widget.RichTextStyle{TextStyle: fyne.TextStyle{Monospace: true}}})
 	dossier.Wrapping = fyne.TextWrapWord // lineage/disk lines run long
 	renderDossier := func(r Row) {
+		defer traceSlow("renderDossier "+r.D.Name, time.Now())
 		dossier.Segments = st.dossierSegs(r)
 		dossier.Refresh()
 	}
@@ -4297,6 +4301,7 @@ func runGUI(rs *Ruleset) {
 	// ── selection → panes ────────────────────────────────────────────────
 	// A branch (group header) toggles its own fold; a leaf drives the panes.
 	tree.OnSelected = func(uid string) {
+		defer traceSlow("tree click "+uid, time.Now())
 		if isBranch(uid) {
 			if tree.IsBranchOpen(uid) {
 				tree.CloseBranch(uid)
@@ -4359,6 +4364,7 @@ func runGUI(rs *Ruleset) {
 
 	// ── refresh: estate every 2s, ZFS every 30s (the TUI cadence) ────────
 	apply := func(doms []Dom, cpuRaw map[string]uint64, fcRows []Row, at time.Time) {
+		defer traceSlow("apply (2 s refresh)", time.Now())
 		if !st.prevAt.IsZero() {
 			st.cpu = cpuPercent(st.prevCPU, cpuRaw, at.Sub(st.prevAt), doms)
 		}
