@@ -32,3 +32,29 @@ func traceSlow(what string, start time.Time) {
 		log.Printf("vmxplore trace: %s took %v", what, d.Round(time.Millisecond))
 	}
 }
+
+// Click-to-paint latency. Every traced step above can be fast while the
+// click still takes seconds, because OpenBranch only marks the branch: the
+// rows are laid out and painted on a later frame, outside every step. So a
+// branch click stamps the time (traceClick), and the next row the tree
+// paints (tracePainted) logs how long the operator actually waited, always,
+// not only over 30 ms, so a fast click is evidence too.
+var (
+	clickAt   time.Time
+	clickWhat string
+)
+
+func traceClick(what string) {
+	if traceOn {
+		clickAt, clickWhat = time.Now(), what
+	}
+}
+
+func tracePainted() {
+	if !traceOn || clickAt.IsZero() {
+		return
+	}
+	log.Printf("vmxplore trace: click %s -> first row painted after %v",
+		clickWhat, time.Since(clickAt).Round(time.Millisecond))
+	clickAt = time.Time{}
+}

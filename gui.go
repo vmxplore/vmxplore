@@ -1023,6 +1023,7 @@ func runGUI(rs *Ruleset) {
 		},
 		func(uid string, branch bool, o fyne.CanvasObject) {
 			defer traceSlow("paint row "+uid, time.Now())
+			tracePainted()
 			if branch {
 				t := o.(*canvas.Text)
 				if uid == applianceBranchUID {
@@ -4303,6 +4304,7 @@ func runGUI(rs *Ruleset) {
 	tree.OnSelected = func(uid string) {
 		defer traceSlow("tree click "+uid, time.Now())
 		if isBranch(uid) {
+			traceClick(uid)
 			if tree.IsBranchOpen(uid) {
 				tree.CloseBranch(uid)
 			} else {
