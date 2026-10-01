@@ -1637,7 +1637,7 @@ func (m model) vitalsView(d *sectionData, vw, h int) []string {
 func (m model) helpView() string {
 	k := func(key, what string) string { return "  " + stKey.Render(fmt.Sprintf("%-10s", key)) + what }
 	lines := []string{
-		stTitle.Render("kld " + versionFull() + " — keys"),
+		stTitle.Render("vmx " + versionFull() + " — keys"),
 		"",
 		k("1-9, 0", "switch section   ·   h / l previous / next section"),
 		k("tab, [ ]", "next / previous sub-tab of the section"),
@@ -1886,7 +1886,7 @@ func (m model) openConsole(kind consoleKind, vm, addr string) (tea.Model, tea.Cm
 	if kind == conScreen && sixelTerminal {
 		// pixels where the terminal draws them: the full window, back to
 		// the table on ctrl+] d
-		cmd := exec.Command("kld", "screen", vm)
+		cmd := exec.Command(selfExe(), "screen", vm)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 			if err != nil {
@@ -1975,7 +1975,7 @@ func (m model) updateConsole(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				vm := c.vm
 				c.close()
 				m.con = nil
-				cmd := exec.Command("kld", "screen", vm)
+				cmd := exec.Command(selfExe(), "screen", vm)
 				cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 				return m, tea.Sequence(tea.DisableMouse, tea.ExecProcess(cmd, func(err error) tea.Msg {
 					if err != nil {

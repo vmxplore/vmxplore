@@ -1,6 +1,7 @@
 # build artifacts — `make build` outputs (vmx = static TUI, vmxplore = GUI)
 /vmx
 /vmxplore
+/vmxctl
 # local self-incrementing build counter (stamped via -X main.buildNum)
 /.buildnum
 # `make test` scratch — Go's temp dir, kept in-tree because /tmp is noexec here

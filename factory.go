@@ -63,7 +63,7 @@ func factoryItems() []factoryItem {
 
 		{section: "GOLDENS — other"},
 		{label: "kubernetes golden", note: "kubeadm, containerd, helm, cilium-cli", argv: []string{"kube-cluster", "golden"}},
-		{label: "appliance catalogue", note: "all 12 tiles, kept as Firecracker goldens", argv: []string{"vmx", "--build-all"}},
+		{label: "appliance catalogue", note: "all 12 tiles, kept as Firecracker goldens", argv: []string{"vmxctl", "--build-all"}},
 
 		{section: "TESTS"},
 		{label: "kubernetes smoke", note: "against the running cluster", argv: []string{"kube-smoke-test"}},

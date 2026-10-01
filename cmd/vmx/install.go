@@ -34,7 +34,7 @@ type choice struct{ key, label, note string }
 
 var profiles = []choice{
 	{"core", "Core", "ZFS on root, ssh, the mesh; no tools"},
-	{"console", "Console", "minimal appliance: ZFS, KVM, storage, every tool, kld here; no web UI"},
+	{"console", "Console", "minimal appliance: ZFS, KVM, storage, every tool, vmx here; no web UI"},
 	{"server", "Server", "headless: ssh, mesh, monitoring"},
 	{"desktop", "Desktop", "GNOME workstation with every console"},
 	{"kvm", "KVM host", "a hypervisor: libvirt, goldens, klab"},
@@ -432,7 +432,7 @@ func (m installModel) answers() string {
 	// password that differed from the one the operator typed twice.
 	q := func(s string) string { return `"` + s + `"` }
 	lines := []string{
-		"# written by kld install " + versionFull() + " — the console's install menu",
+		"# written by vmx install " + versionFull() + " — the console's install menu",
 		"KLDLOAD_PROFILE=" + q(m.profile),
 		"KLDLOAD_DISTRO=" + q(m.distro),
 		"KLDLOAD_DISK=" + q(m.disk),

@@ -215,7 +215,7 @@ func wizK8sConfirm(w wizChoices) (string, []palEntry) {
 // once, so asking it on the keystroke is not the kfire-on-the-UI-thread
 // mistake.
 func wizAppliance(w wizChoices) (string, []palEntry) {
-	out, _ := run(5*time.Second, "vmxplore", "--appliances") // empty on failure: the list then says so
+	out, _ := run(5*time.Second, "vmxctl", "--appliances") // empty on failure: the list then says so
 	var names []string
 	for _, l := range strings.Split(out, "\n") {
 		if l != "" && l[0] >= 'A' && l[0] <= 'Z' {
@@ -223,15 +223,15 @@ func wizAppliance(w wizChoices) (string, []palEntry) {
 		}
 	}
 	if len(names) == 0 {
-		return "no appliance catalog (vmxplore --appliances printed nothing)", nil
+		return "no appliance catalog (vmxctl --appliances printed nothing)", nil
 	}
 	vals := append([]string{"*all*"}, names...)
 	labels := append([]string{"every appliance in the catalog"}, names...)
 	return "which appliance?", pickStep(w, "app", vals, labels, func(w wizChoices) (string, []palEntry) {
 		if w["app"] == "*all*" {
-			return confirmStep("appliances", []string{"vmxplore", "--build-all"})
+			return confirmStep("appliances", []string{"vmxctl", "--build-all"})
 		}
-		return confirmStep("appliance "+w["app"], []string{"vmxplore", "--build-all", "--only", w["app"]})
+		return confirmStep("appliance "+w["app"], []string{"vmxctl", "--build-all", "--only", w["app"]})
 	})
 }
 

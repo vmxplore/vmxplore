@@ -284,9 +284,9 @@ func countGroups(rows [][]string) int {
 // loadAppliances parses `vmx --appliances`: a name line, a summary line, a
 // "license · distro · size" line, "serves:", "fit:", then the settings.
 func loadAppliances(d *sectionData) {
-	out, err := run(60*time.Second, "vmxplore", "--appliances")
+	out, err := run(60*time.Second, "vmxctl", "--appliances")
 	if err != nil && strings.TrimSpace(out) == "" {
-		d.err = "vmxplore --appliances: " + err.Error()
+		d.err = "vmxctl --appliances: " + err.Error()
 		return
 	}
 	d.columns = []string{"appliance", "distro", "size", "serves", "fit", "settings", "about"}
@@ -327,7 +327,7 @@ func loadAppliances(d *sectionData) {
 		}
 	}
 	flush()
-	d.headline = fmt.Sprintf("%d appliances (vmxplore --appliances) — b builds one, B builds them all", len(d.rows))
+	d.headline = fmt.Sprintf("%d appliances (vmxctl --appliances) — b builds one, B builds them all", len(d.rows))
 }
 
 // ── (the Build menu follows) ─────────────────────────────────────────────────
@@ -392,7 +392,7 @@ func buildRows() []buildRow {
 	}
 	appsHave := func(_ map[string]bool, apps int) string { return strconv.Itoa(apps) + " built" }
 	rows := []buildRow{
-		{name: "EVERYTHING", kind: "everything", what: "every klab golden, the Kubernetes golden, every appliance", cmd: allKlab + " ; kube-cluster golden ; vmxplore --build-all", have: func(g map[string]bool, apps int) string {
+		{name: "EVERYTHING", kind: "everything", what: "every klab golden, the Kubernetes golden, every appliance", cmd: allKlab + " ; kube-cluster golden ; vmxctl --build-all", have: func(g map[string]bool, apps int) string {
 			n, _, _ := strings.Cut(sumKlab(g, 0), "/")
 			kn, _ := strconv.Atoi(n)
 			if g["k8s-golden"] {
@@ -412,8 +412,8 @@ func buildRows() []buildRow {
 		buildRow{name: "kubernetes: set the control planes", kind: "kubernetes", what: "kube-cluster scale --control-planes N (X: 1, 3 or 5; grows or shrinks the HA set)", arg: "cps", have: nodesHave},
 		buildRow{name: "windows 11 golden", kind: "windows", what: "unattended Win11 eval golden (fetched on demand, q35 + TPM)", cmd: "kvm-win golden win11"},
 		buildRow{name: "windows server golden", kind: "windows", what: "unattended Windows Server golden", cmd: "kvm-win golden server"},
-		buildRow{name: "all appliances", kind: "appliances", what: "every catalogue appliance as a VM (app-*), sealed as Firecracker goldens where kfire is", cmd: "vmxplore --build-all", have: appsHave},
-		buildRow{name: "appliance self-test", kind: "appliances", what: "build every tile as a VM and audit it (st-*), tear down the passing ones", cmd: "vmxplore --selftest"},
+		buildRow{name: "all appliances", kind: "appliances", what: "every catalogue appliance as a VM (app-*), sealed as Firecracker goldens where kfire is", cmd: "vmxctl --build-all", have: appsHave},
+		buildRow{name: "appliance self-test", kind: "appliances", what: "build every tile as a VM and audit it (st-*), tear down the passing ones", cmd: "vmxctl --selftest"},
 		buildRow{name: "one appliance", kind: "appliances", what: "b on the Appliances tab: pick the tile, name the VM, set its KEY=VALUE fields"},
 		// danger: kimage build works on THIS machine in place -- it deletes its
 		// ssh host keys and empties its machine-id and hostname -- and was one
@@ -430,7 +430,7 @@ func buildRows() []buildRow {
 		// the way back: a minimal install builds all of this after the fact,
 		// and takes it down again (the operator's ask, 2026-09-26)
 		buildRow{name: "DESTROY-klab-goldens", kind: "remove", what: "klab destroy goldens: every klab golden (clones of them refuse it; delete those first)", cmd: "klab destroy goldens", have: sumKlab, danger: true},
-		buildRow{name: "DESTROY-appliances", kind: "remove", what: "vmxplore --destroy-all --yes: every app-* and st-* VM, their zvols, seeds, Firecracker goldens and mesh peers", cmd: "vmxplore --destroy-all --yes", have: appsHave, danger: true},
+		buildRow{name: "DESTROY-appliances", kind: "remove", what: "vmxctl --destroy-all --yes: every app-* and st-* VM, their zvols, seeds, Firecracker goldens and mesh peers", cmd: "vmxctl --destroy-all --yes", have: appsHave, danger: true},
 		buildRow{name: "DESTROY-the-cluster", kind: "remove", what: "kube-cluster destroy: every control plane and worker VM and zvol", cmd: "kube-cluster destroy", have: nodesHave, danger: true},
 		buildRow{name: "remove one golden or node", kind: "remove", what: "d on its row in VMs (kvm-delete): a golden with clones refuses; a cluster node's peers are dropped on the next scale"},
 	)

@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -56,26 +57,27 @@ func versionFull() string {
 }
 
 func usage() {
-	fmt.Print(`kld ` + versionFull() + ` — the kldload operator console (terminal)
+	fmt.Print(`vmx ` + versionFull() + ` — the vmxplore terminal console
 
-  kld                       open the terminal console
-  kld <section> [<sub-tab>] open on a section: overview machines storage
+  vmx                       open the terminal console
+  vmx <section> [<sub-tab>] open on a section: overview machines storage
                             network cluster ansible helm metrics estate
                             provision — and one of its sub-tabs
-  kld --gui [section]       this console in a terminal window (kldload-term;
-                            needs a display) — the GUI is the TUI
-  kld <section> [<sub-tab>] --print
+  vmx --gui [section]       this console in a window: vmxplore's terminal
+                            (vmxplore --term) when the GUI is installed,
+                            else kldload-term; needs a display
+  vmx <section> [<sub-tab>] --print
                             print that sub-tab once and exit
-  kld screen <vm> [--blocks|--sixel]
+  vmx screen <vm> [--blocks|--sixel]
                             the VM's display full-screen in this terminal:
                             sixels where the terminal draws them (never under
                             tmux unless --sixel), half-block cells otherwise
                             (--blocks forces them); ctrl+] is the menu, d
                             detaches
-  kld install               the install menu: profile, distribution, security,
+  vmx install               the install menu: profile, distribution, security,
                             disk, hostname, user — then the unattended
                             installer; or provision another machine
-  kld --version
+  vmx --version
 
 Keys inside:  1-9, 0  section   tab  sub-tab   j/k  row   enter  drill in
 (a VM's or a dataset's snapshots)   /  filter   o  sort   i  vitals pane
@@ -83,30 +85,35 @@ r  reload   ?  the verbs of the current tab   q  quit
 Verbs run the shipped commands (virsh, kvm-*, zfs, kldload-rollback,
 kldload-enroll, kubectl, ansible, helm, kldload-netboot-server); the
 destructive ones ask for the name to be typed back.
+
+The non-interactive jobs (--build-all, --selftest, --appliances,
+--vdi-wall, ...) are vmxctl's; the GUI is vmxplore. For one release vmx
+still forwards those flags to vmxctl, with a warning.
 `)
 }
 
 func main() {
 	args := os.Args[1:]
+	forwardOldFlags(args)
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help", "help":
 			usage()
 			return
 		case "--version", "-V":
-			fmt.Println("kld " + versionFull())
+			fmt.Println("vmx " + versionFull())
 			return
 		case "install":
 			// the install menu: the live medium's boot target
 			if err := runInstallMenu(); err != nil {
-				fmt.Fprintln(os.Stderr, "kld install:", err)
+				fmt.Fprintln(os.Stderr, "vmx install:", err)
 				os.Exit(1)
 			}
 			return
 		case "screen":
 			// a VM's display, full-screen in this terminal (screen.go)
 			if err := runScreen(args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, "kld screen:", err)
+				fmt.Fprintln(os.Stderr, "vmx screen:", err)
 				os.Exit(1)
 			}
 			return
@@ -141,7 +148,7 @@ func main() {
 			sub = j
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "kld: no section or sub-tab named %q (sections: %s; sub-tabs of %s: %s)\n",
+		fmt.Fprintf(os.Stderr, "vmx: no section or sub-tab named %q (sections: %s; sub-tabs of %s: %s)\n",
 			a, strings.Join(sectionNames(), " "), sections[start].name, strings.ToLower(strings.Join(sections[start].subs, " ")))
 		os.Exit(2)
 	}
@@ -156,14 +163,14 @@ func main() {
 	}
 	if gui && !print {
 		if err := openWindow(start); err != nil {
-			fmt.Fprintln(os.Stderr, "kld:", err, "— starting the terminal console")
+			fmt.Fprintln(os.Stderr, "vmx:", err, "— starting the terminal console")
 		} else {
 			return
 		}
 	}
 	sixelTerminal = terminalHasSixel()
 	if _, err := tea.NewProgram(newModel(start, sub, 0), tea.WithAltScreen()).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "kld:", err)
+		fmt.Fprintln(os.Stderr, "vmx:", err)
 		os.Exit(1)
 	}
 }
@@ -172,27 +179,76 @@ func main() {
 
 var errNoDisplay = errors.New("no display")
 
-// openWindow is the GUI: this same console in a terminal window, opened by
-// kldload-term --app (the wrapper every terminal launcher on a kldload host
-// uses: whichever emulator the distro ships, full screen, closes on quit).
-// One program for a window manager and a headless box, and nothing to
-// drift between them (operator, 2026-09-26: "no web gui at all"). It
-// returns errNoDisplay when there is nothing to draw on, and any other
-// error when the wrapper is missing, so the caller falls back to the
-// terminal it is already in.
+// openWindow puts this console in a window of its own: vmxplore's terminal
+// (`vmxplore --term vmx --tui SECTION`) when the GUI build is installed --
+// the terminal the operator chose, and the same thing the desktop icon runs
+// (2026-09-30) -- else kldload-term --app, the wrapper every terminal
+// launcher on a kldload host uses. One program for a window manager and a
+// headless box (operator, 2026-09-26: "no web gui at all"). It returns
+// errNoDisplay when there is nothing to draw on, and any other error when
+// neither window is available, so the caller falls back to the terminal it
+// is already in.
 func openWindow(section int) error {
 	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
 		return errNoDisplay
 	}
-	wrapper, err := exec.LookPath("kldload-term")
-	if err != nil {
-		return errors.New("kldload-term is not installed")
+	self := selfExe()
+	sec := strings.ToLower(sections[section].name)
+	var c *exec.Cmd
+	if gui, err := exec.LookPath("vmxplore"); err == nil {
+		c = exec.Command(gui, "--term", self, "--tui", sec)
+	} else if wrapper, err := exec.LookPath("kldload-term"); err == nil {
+		c = exec.Command(wrapper, "--app", self, "--tui", sec)
+	} else {
+		return errors.New("neither vmxplore nor kldload-term is installed")
 	}
-	self, err := os.Executable()
-	if err != nil {
-		self = "kld"
-	}
-	c := exec.Command(wrapper, "--app", self, "--tui", strings.ToLower(sections[section].name))
 	c.Stdin = os.Stdin
 	return c.Run()
+}
+
+// selfExe is this binary's own path, for the verbs that run vmx again (the
+// full-window screen). By name it was "kld", which a host with vmx and no kld
+// does not have; os.Executable is right whatever the binary is called.
+func selfExe() string {
+	if p, err := os.Executable(); err == nil {
+		return p
+	}
+	return "vmx"
+}
+
+// forwardOldFlags hands the old `vmx` job flags to the binary that does them
+// now, with a warning, and does not return when it does. Until 2026-09-30
+// `vmx` was the bubbletea TUI AND every non-interactive job (--build-all,
+// --selftest, --appliances ...); the jobs moved to vmxctl and the GUI-only
+// --console to vmxplore, so vmx is only the console. kldload's first boot and
+// people's habits still type `vmx --build-all`: for one release that keeps
+// working, says where it went, and then this goes (project rule: a renamed
+// interface keeps a warning alias for a release).
+func forwardOldFlags(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	target := ""
+	switch args[0] {
+	case "--console":
+		target = "vmxplore"
+	case "--once", "--reconcile", "--orphans", "--setup", "--selftest", "--demo",
+		"--build-all", "--enroll", "--destroy-all", "--appliances", "--sysdiag",
+		"--vdi-wall", "--appliance", "--appliance-script", "--connect", "-c",
+		"--rules", "-r":
+		target = "vmxctl"
+	default:
+		return
+	}
+	fmt.Fprintf(os.Stderr, "vmx: %s moved to %s; running `%s %s` (this forward goes in a later release)\n",
+		args[0], target, target, strings.Join(args, " "))
+	path, err := exec.LookPath(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vmx: %s is not installed, so %s cannot run\n", target, args[0])
+		os.Exit(127)
+	}
+	if err := syscall.Exec(path, append([]string{target}, args...), os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "vmx: running %s: %v\n", target, err)
+		os.Exit(1)
+	}
 }

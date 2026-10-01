@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -210,7 +211,9 @@ func main() {
 			if hasGUI {
 				fmt.Println("vmxplore " + versionFull() + " (gui)")
 			} else {
-				fmt.Println("vmxplore " + versionFull())
+				// the same package builds vmxctl (no gui tag): name the binary
+				// that was run, so `vmxctl --version` does not say vmxplore
+				fmt.Println(filepath.Base(os.Args[0]) + " " + versionFull())
 			}
 			return
 		case "--help", "-h":
@@ -224,6 +227,14 @@ func main() {
 			reconcileOrphans = true
 		case "--tui":
 			tui = true
+		case "--term":
+			// vmxplore's terminal as its own window, running the rest of
+			// the command line (default: vmx). A leading "--" is dropped.
+			rest := args[i+1:]
+			if len(rest) > 0 && rest[0] == "--" {
+				rest = rest[1:]
+			}
+			os.Exit(runTermGUI(rest))
 		case "--console":
 			i++
 			if i >= len(args) {

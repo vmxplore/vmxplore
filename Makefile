@@ -1,10 +1,14 @@
 # Makefile — vmxplore build entry points (Phase A, in the kldload repo).
 #
-# Two binaries from one tree (the zxplore/wgxplore pattern):
-#   vmxplore — the full build: native GUI (Fyne) + TUI (--tui). Needs cgo+GL.
-#   vmx      — STATIC terminal-only build (CGO_ENABLED=0): zero runtime deps,
-#              scp it to any libvirt box. Headless hosts build just this
-#              (`make tui`) with nothing but the Go toolchain.
+# Three binaries from one tree (decided 2026-09-30: one product, one repo):
+#   vmxplore — the GUI (Fyne). Needs cgo+GL. `vmxplore --term [cmd]` opens its
+#              terminal as a window of its own; the TUI's icon runs vmx in it.
+#   vmx      — the terminal console (cmd/vmx, the interface that was kld).
+#              STATIC (CGO_ENABLED=0): scp it to any libvirt box. Headless
+#              hosts build it with nothing but the Go toolchain (`make tui`).
+#   vmxctl   — the non-interactive jobs (--build-all, --selftest, --appliances,
+#              --vdi-wall, ...): the root package without the gui tag, STATIC,
+#              so a headless host and kldload's first boot can run them.
 #
 # BUILD dependencies (cgo + OpenGL — for the GUI binary only):
 #   Fedora/RHEL:   dnf install -y golang gcc pkgconf-pkg-config \
@@ -33,6 +37,7 @@
 
 BIN_TUI := vmx
 BIN_GUI := vmxplore
+BIN_CTL := vmxctl
 
 BUILDNUM_FILE = .buildnum
 STAMPFLAGS    = -ldflags "-X main.buildNum=$$(cat $(BUILDNUM_FILE) 2>/dev/null || echo 0)"
@@ -45,15 +50,18 @@ APPDIR   = $(DESTDIR)$(PREFIX)/share/applications
 ICONDIR  = $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps
 DOCDIR   = $(DESTDIR)$(PREFIX)/share/doc/vmxplore
 
-.PHONY: build bump tui gui test race vulncheck manlint staticcheck vet fmt check clean install uninstall
+.PHONY: build bump tui gui ctl test race vulncheck manlint staticcheck vet fmt check clean install uninstall
 
 bump:
 	@n=$$(cat $(BUILDNUM_FILE) 2>/dev/null || echo 0); echo $$((n + 1)) > $(BUILDNUM_FILE)
 
-build: bump tui gui
+build: bump tui gui ctl
 
 tui:
-	CGO_ENABLED=0 go build -trimpath $(STAMPFLAGS) -o $(BIN_TUI) .
+	CGO_ENABLED=0 go build -trimpath $(STAMPFLAGS) -o $(BIN_TUI) ./cmd/vmx
+
+ctl:
+	CGO_ENABLED=0 go build -trimpath $(STAMPFLAGS) -o $(BIN_CTL) .
 
 gui:
 	go build -trimpath -tags gui $(STAMPFLAGS) -o $(BIN_GUI) .
@@ -127,25 +135,27 @@ check: vet test race build vulncheck manlint staticcheck
 	@test -z "$$(gofmt -l .)" || { echo "gofmt drift:"; gofmt -l .; exit 1; }
 
 clean:
-	rm -f $(BIN_TUI) $(BIN_GUI)
+	rm -f $(BIN_TUI) $(BIN_GUI) $(BIN_CTL)
 
 install:
-	@test -x $(BIN_GUI) && test -x $(BIN_TUI) || \
-		{ echo "make install: build first — $(BIN_GUI)/$(BIN_TUI) not in the tree" >&2; exit 1; }
+	@test -x $(BIN_GUI) && test -x $(BIN_TUI) && test -x $(BIN_CTL) || \
+		{ echo "make install: build first — $(BIN_GUI)/$(BIN_TUI)/$(BIN_CTL) not in the tree" >&2; exit 1; }
 	@./$(BIN_GUI) --version 2>/dev/null | grep -q '(gui)' || \
 		{ echo "make install: ./$(BIN_GUI) is not the GUI build (a bare 'go build' writes the terminal binary under its name) — run: make build" >&2; exit 1; }
 	install -d $(BINDIR) $(MANDIR) $(APPDIR) $(ICONDIR) $(DOCDIR)
 	install -m 0755 $(BIN_GUI) $(BINDIR)/$(BIN_GUI)
 	install -m 0755 $(BIN_TUI) $(BINDIR)/$(BIN_TUI)
+	install -m 0755 $(BIN_CTL) $(BINDIR)/$(BIN_CTL)
 	install -m 0644 docs/vmxplore.1                 $(MANDIR)/vmxplore.1
 	install -m 0644 packaging/vmxplore.svg          $(ICONDIR)/vmxplore.svg
+	install -m 0644 packaging/vmx.svg               $(ICONDIR)/vmx.svg
 	install -m 0644 packaging/vmxplore.desktop      $(APPDIR)/vmxplore.desktop
 	install -m 0644 packaging/vmxplore-tui.desktop  $(APPDIR)/vmxplore-tui.desktop
 	@if [ -f README.md ]; then install -m 0644 README.md $(DOCDIR); fi
 	@echo "vmxplore installed to $(PREFIX)/bin"
 
 uninstall:
-	rm -f $(BINDIR)/$(BIN_GUI) $(BINDIR)/$(BIN_TUI) \
+	rm -f $(BINDIR)/$(BIN_GUI) $(BINDIR)/$(BIN_TUI) $(BINDIR)/$(BIN_CTL) \
 	  $(APPDIR)/vmxplore.desktop $(APPDIR)/vmxplore-tui.desktop \
-	  $(ICONDIR)/vmxplore.svg
+	  $(ICONDIR)/vmxplore.svg $(ICONDIR)/vmx.svg
 	rm -rf $(DOCDIR)

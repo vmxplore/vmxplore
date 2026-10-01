@@ -1,23 +1,23 @@
-# vmxplore terminal edition — the static TUI (vmx), for people who live in
-# a terminal. Terminal=true: the desktop's default terminal hosts it, so
-# the running window groups under the terminal's dock identity — accepted,
-# same as zxplore-tui (a second terminal emulator just for the icon was
-# operator-vetoed 2026-08-07).
+# vmx — the terminal console's launcher: vmx running in vmxplore's terminal.
 #
-# NoDisplay=true (operator call 2026-08-09): "only the GUI version needs the
-# icon, the TUI version is launchable from terminal." Two grid tiles for one
-# tool, differing only in which surface starts, is the duplication the app
-# grid was just cleaned up to remove. The file stays because it is still the
-# window matcher and remains launchable by name — `vmx --tui` from any shell,
-# or gtk-launch vmxplore-tui — it simply does not take a tile.
+# Read by the desktop's app grid and dock. Without it, vmx has no icon and is
+# only reachable from a shell.
+#
+# Exec: `vmxplore --term vmx` opens a window holding vmxplore's terminal (the
+# same widget as the GUI's terminal pane) with vmx inside it, and closes it
+# when vmx exits. On a host with no GUI build, run `vmx` in any terminal.
+#
+# StartupWMClass=vmx matches that window's fixed title "vmx", which is what
+# the desktop pairs with this entry (see gui_term.go), so the running window
+# groups under this icon and not under the GUI's.
 [Desktop Entry]
 Type=Application
-Name=vmxplore (terminal)
-GenericName=VM Console — TUI
-Comment=The ZFS-aware VM estate console, terminal edition
-Exec=vmx --tui
-Icon=vmxplore
-Terminal=true
-Categories=System;Monitor;ConsoleOnly;
-Keywords=vm;kvm;libvirt;virsh;zfs;zvol;snapshot;estate;console;tui;
-NoDisplay=true
+Name=vmx
+GenericName=VM Console (terminal)
+Comment=The ZFS-aware VM and estate console, in the terminal
+Exec=vmxplore --term vmx
+Icon=vmx
+Terminal=false
+StartupWMClass=vmx
+Categories=System;Monitor;Emulator;
+Keywords=vm;kvm;libvirt;virsh;zfs;zvol;snapshot;estate;console;tui;terminal;

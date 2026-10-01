@@ -62,7 +62,7 @@ func runScreen(args []string) error {
 		}
 	}
 	if vm == "" {
-		return errors.New("which VM? kld screen <vm>")
+		return errors.New("which VM? vmx screen <vm>")
 	}
 	if !nameOK(vm) {
 		return errors.New("not a VM name: " + vm)
@@ -78,7 +78,7 @@ func runScreen(args []string) error {
 	defer r.Close()
 	fd := os.Stdin.Fd()
 	if !term.IsTerminal(fd) {
-		return errors.New("kld screen needs a terminal")
+		return errors.New("vmx screen needs a terminal")
 	}
 	st, err := term.MakeRaw(fd)
 	if err != nil {

@@ -28,3 +28,8 @@ func runGUI(rs *Ruleset) {
 
 // hasGUI: see gui_only.go — this is the build without the window.
 const hasGUI = false
+
+func runTermGUI(argv []string) int {
+	fmt.Fprintln(os.Stderr, "vmx: --term needs the GUI build (make gui, or go build -tags gui)")
+	return 2
+}

@@ -182,7 +182,6 @@ var verbs = map[string][]verb{
 		{key: "w", label: "screen (video console)", console: conScreen},
 		{key: "C", label: "serial console", console: conSerial},
 		{key: "H", label: "ssh terminal", console: conSSH},
-		{key: "V", label: "vmxplore", noRow: true, inter: true, argv: fixed("vmxplore", "--tui")},
 		// The wall is a browser page -- fifty live video tiles cannot be drawn
 		// in a terminal -- so kld hands it to vmx, which finds every VDI
 		// that is streaming (the appliance and its Firecracker clones),
@@ -242,12 +241,12 @@ var verbs = map[string][]verb{
 					return nil, errors.New("settings are KEY=VALUE")
 				}
 			}
-			return append([]string{"vmxplore", "--appliance", col(row, 0), "--vm", f[0]}, f[1:]...), nil
+			return append([]string{"vmxctl", "--appliance", col(row, 0), "--vm", f[0]}, f[1:]...), nil
 		}},
 		{key: "s", label: "show its install script", job: true, argv: func(row []string, _ string) ([]string, error) {
-			return []string{"sh", "-c", `vmxplore --appliance-script "$1" | less`, "_", col(row, 0)}, nil
+			return []string{"sh", "-c", `vmxctl --appliance-script "$1" | less`, "_", col(row, 0)}, nil
 		}},
-		{key: "B", label: "build every appliance (vmx --build-all)", noRow: true, job: true, argv: fixed("vmxplore", "--build-all")},
+		{key: "B", label: "build every appliance (vmxctl --build-all)", noRow: true, job: true, argv: fixed("vmxctl", "--build-all")},
 	},
 	"Machines/Build": {
 		{key: "x", label: "build it", job: true, argvs: func(row []string, _ string) ([][]string, error) {
