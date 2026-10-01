@@ -91,8 +91,25 @@ func (t compactTheme) Size(name fyne.ThemeSizeName) float32 {
 // the separation exactly where it was asked for and nowhere else.
 func tabLabel(s string) string { return "   " + s + "   " }
 
+// Icon draws the tree's expand arrows (and the accordion's) in the soft grey
+// of the icon palette: in the theme's white they were as loud as the group
+// icons beside them, and the tree read as all white (2026-10-01).
+func (t compactTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
+	switch name {
+	case theme.IconNameNavigateNext, theme.IconNameMoveDown:
+		return theme.NewColoredResource(t.Theme.Icon(name), "vmx-ic-grey")
+	}
+	return t.Theme.Icon(name)
+}
+
 func (t compactTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
 	dark := v == theme.VariantDark
+	if p, ok := iconPalette[name]; ok {
+		if dark {
+			return p.dark
+		}
+		return p.light
+	}
 	switch name {
 	case theme.ColorNamePrimary, theme.ColorNameHyperlink:
 		if dark {
@@ -270,6 +287,50 @@ func rowDetail(r Row, group string) string {
 	return "   " + strings.Join(parts, " · ")
 }
 
+// iconPalette tints the tree's header icons. Every icon was the theme's
+// white, so the tree read as one colour (operator, 2026-10-01: "other than
+// everything is white"). Soft tones, a dark and a light value each, resolved
+// by the theme so a light/dark switch recolours them; the names stay
+// neutral, the colour is in the icon only.
+var iconPalette = map[fyne.ThemeColorName]accentPair{
+	"vmx-ic-teal":   {color.NRGBA{0x3e, 0xc7, 0xb5, 0xff}, color.NRGBA{0x0f, 0x8a, 0x7a, 0xff}},
+	"vmx-ic-violet": {color.NRGBA{0xb4, 0x8c, 0xff, 0xff}, color.NRGBA{0x6c, 0x3f, 0xd1, 0xff}},
+	"vmx-ic-gold":   {color.NRGBA{0xf2, 0xc1, 0x4e, 0xff}, color.NRGBA{0xa8, 0x77, 0x00, 0xff}},
+	"vmx-ic-blue":   {color.NRGBA{0x5a, 0xa9, 0xff, 0xff}, color.NRGBA{0x14, 0x66, 0xd8, 0xff}},
+	"vmx-ic-grey":   {color.NRGBA{0x8b, 0x96, 0xa5, 0xff}, color.NRGBA{0x6a, 0x74, 0x80, 0xff}},
+	"vmx-ic-amber":  {color.NRGBA{0xff, 0x9f, 0x43, 0xff}, color.NRGBA{0xc2, 0x5e, 0x00, 0xff}},
+	"vmx-ic-orange": {color.NRGBA{0xff, 0x7a, 0x45, 0xff}, color.NRGBA{0xc4, 0x4b, 0x14, 0xff}},
+	"vmx-ic-green":  {color.NRGBA{0x45, 0xd1, 0x7a, 0xff}, color.NRGBA{0x0e, 0x9d, 0x4a, 0xff}},
+	"vmx-ic-steel":  {color.NRGBA{0x9f, 0xb3, 0xc8, 0xff}, color.NRGBA{0x4f, 0x6b, 0x86, 0xff}},
+}
+
+// tint returns icon drawn in one of iconPalette's colours.
+func tint(icon fyne.Resource, name fyne.ThemeColorName) fyne.Resource {
+	return theme.NewColoredResource(icon, name)
+}
+
+// groupIcon gives each estate group its own icon instead of six identical
+// folders (operator, 2026-10-01: "only 3 menu items actually got nice icons,
+// the rest is just folders"). Labels come from the rule set, so a label not
+// listed here keeps the folder it would have had.
+func groupIcon(label string, folder fyne.Resource) fyne.Resource {
+	switch label {
+	case "apps":
+		return tint(theme.GridIcon(), "vmx-ic-teal")
+	case "clones":
+		return tint(theme.ContentCopyIcon(), "vmx-ic-violet")
+	case "goldens":
+		return tint(theme.StorageIcon(), "vmx-ic-gold")
+	case "klab":
+		return tint(theme.ComputerIcon(), "vmx-ic-blue")
+	case groupUngrouped:
+		return tint(theme.ListIcon(), "vmx-ic-grey")
+	case groupUnreconciled:
+		return tint(theme.WarningIcon(), "vmx-ic-amber")
+	}
+	return tint(folder, "vmx-ic-grey")
+}
+
 // vmDisplayName is the name a person reads in the tree. An appliance build
 // is named by applianceVMName (app- + a 10-character slug), so
 // "app-plex-on-zf" is shown as its catalog name, "Plex on ZFS"; any other
@@ -445,7 +506,12 @@ const (
 	// The kldload tool launcher, also a tree branch: one sub-branch per
 	// tool group, one row per tool. On a host without the toolset the branch
 	// holds a single row that says where to get it.
-	toolsBranchUID     = "tools"
+	toolsBranchUID = "tools"
+	// One header over the three branches that are menus of things to build
+	// or run, not machines: Firecracker, the app catalog and the kldload
+	// tools. Nine top-level entries, half of them menus, read as "busy"
+	// (operator, 2026-10-01); the estate is now the machines plus this.
+	actionsBranchUID   = "actions"
 	toolGroupUIDPrefix = "tools/"
 	toolUIDPrefix      = "tool/"
 	getKldloadUID      = "tool-get-kldload"
@@ -575,6 +641,15 @@ func fitText(s string, w float32, size float32, st fyne.TextStyle) string {
 	return cut(lo)
 }
 
+// headerFg is the group-header name: a step softer than the VM names'
+// bright foreground, so the bold headers stop shouting over the rows.
+func headerFg() color.Color {
+	if variantDark() {
+		return color.NRGBA{R: 0xc4, G: 0xcd, B: 0xd8, A: 0xff}
+	}
+	return color.NRGBA{R: 0x33, G: 0x38, B: 0x40, A: 0xff}
+}
+
 // branchRow is a tree group header: an icon, the name, and a faint count.
 // It replaced a single bold canvas.Text in the brand colour, which made
 // every header look like a link (operator, 2026-10-01).
@@ -588,7 +663,7 @@ type branchRow struct {
 func newBranchRow() *branchRow {
 	b := &branchRow{
 		icon:  widget.NewIcon(theme.FolderIcon()),
-		label: canvas.NewText("", brightFg()),
+		label: canvas.NewText("", headerFg()),
 		count: canvas.NewText("", tileSubColor()),
 	}
 	b.label.TextStyle = fyne.TextStyle{Bold: true}
@@ -605,7 +680,7 @@ func (b *branchRow) CreateRenderer() fyne.WidgetRenderer {
 // header widgets between branches.
 func (b *branchRow) set(icon fyne.Resource, label, count string) {
 	b.icon.SetResource(icon)
-	b.label.Text, b.label.Color = label, brightFg()
+	b.label.Text, b.label.Color = label, headerFg()
 	b.count.Text, b.count.Color = count, tileSubColor()
 	b.label.Refresh()
 	b.count.Refresh()
@@ -1032,6 +1107,10 @@ func runGUI(rs *Ruleset) {
 			// tabs in the console card as well; listing the same things
 			// twice was the redundancy the operator asked to lose
 			// (2026-09-03), so the console keeps Serial and Screen only.
+			return append(out, actionsBranchUID)
+		}
+		if uid == actionsBranchUID {
+			out := make([]string, 0, 3)
 			if kfireAvailable() {
 				out = append(out, fcBranchUID)
 			}
@@ -1109,7 +1188,7 @@ func runGUI(rs *Ruleset) {
 		return nil
 	}
 	isBranch := func(uid string) bool {
-		return uid == "" || uid == applianceBranchUID || uid == toolsBranchUID || uid == fcBranchUID ||
+		return uid == "" || uid == actionsBranchUID || uid == applianceBranchUID || uid == toolsBranchUID || uid == fcBranchUID ||
 			strings.HasPrefix(uid, "grp/") || strings.HasPrefix(uid, toolGroupUIDPrefix)
 	}
 	tree = widget.NewTree(childUIDs, isBranch,
@@ -1129,8 +1208,10 @@ func runGUI(rs *Ruleset) {
 					folder = theme.FolderOpenIcon()
 				}
 				switch {
+				case uid == actionsBranchUID:
+					h.set(tint(theme.ContentAddIcon(), "vmx-ic-blue"), "Build & tools", "")
 				case uid == applianceBranchUID:
-					h.set(theme.GridIcon(), "Apps", fmt.Sprintf("%d to build", len(Appliances())))
+					h.set(tint(theme.FolderNewIcon(), "vmx-ic-green"), "App catalog", fmt.Sprintf("%d to build", len(Appliances())))
 				case uid == fcBranchUID:
 					run := 0
 					for _, r := range fcRowsNow {
@@ -1138,7 +1219,7 @@ func runGUI(rs *Ruleset) {
 							run++
 						}
 					}
-					h.set(theme.MediaFastForwardIcon(), "Firecracker",
+					h.set(tint(theme.MediaFastForwardIcon(), "vmx-ic-orange"), "Firecracker",
 						fmt.Sprintf("%d golden · %d microVM · %d running", len(fcGoldensSnapshot()), len(fcRowsNow), run))
 				case uid == toolsBranchUID:
 					n := 0
@@ -1149,9 +1230,9 @@ func runGUI(rs *Ruleset) {
 					if n > 0 {
 						cnt = fmt.Sprintf("%d", n)
 					}
-					h.set(theme.SettingsIcon(), "kldload tools", cnt)
+					h.set(tint(theme.SettingsIcon(), "vmx-ic-steel"), "kldload tools", cnt)
 				case strings.HasPrefix(uid, toolGroupUIDPrefix):
-					h.set(folder, strings.TrimPrefix(uid, toolGroupUIDPrefix), "")
+					h.set(tint(folder, "vmx-ic-steel"), strings.TrimPrefix(uid, toolGroupUIDPrefix), "")
 				default:
 					label := strings.TrimPrefix(uid, "grp/")
 					n, run := groupStats(label)
@@ -1159,7 +1240,7 @@ func runGUI(rs *Ruleset) {
 					if run > 0 {
 						cnt = fmt.Sprintf("%d · %d running", n, run)
 					}
-					h.set(folder, label, cnt)
+					h.set(groupIcon(label, folder), label, cnt)
 				}
 				return
 			}
@@ -4915,6 +4996,7 @@ func runGUI(rs *Ruleset) {
 		time.Sleep(500 * time.Millisecond)
 		fyne.Do(applyPalette)
 	}()
+	openBranch = func(uid string) { tree.OpenBranch(uid) }
 	startCapture(a, w, func(name string) {
 		if g := groupOf(name); g != "" {
 			tree.OpenBranch("grp/" + g)

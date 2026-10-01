@@ -107,6 +107,10 @@ func (c *vmCard) set(r Row, cpu float64, group string) {
 	c.pillBg.FillColor = col
 	c.pillText.Text = pill
 	c.pillText.Color = color.White
+	if pill == "Running" || pill == "Attention" {
+		// dark text: white on the bright green/gold pills was hard to read
+		c.pillText.Color = color.NRGBA{R: 0x0b, G: 0x14, B: 0x10, A: 0xff}
+	}
 	if pill == "Off" {
 		// a stopped machine is not a warning: neutral pill, not the
 		// dormant-brown the tree uses for its dot

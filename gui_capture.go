@@ -18,6 +18,7 @@ import (
 	"image/png"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -26,6 +27,10 @@ import (
 // sel selects a VM by libvirt name, for VMX_CAPTURE_SELECT: the details
 // card only shows with a selection, and a capture of the placeholder proves
 // nothing about it.
+// openBranch (VMX_CAPTURE_OPEN=uid,uid) opens tree branches first, so a
+// capture can show a closed-by-default branch's contents.
+var openBranch func(uid string)
+
 func startCapture(a fyne.App, w fyne.Window, sel func(name string)) {
 	out := os.Getenv("VMX_CAPTURE")
 	if out == "" {
@@ -37,6 +42,13 @@ func startCapture(a fyne.App, w fyne.Window, sel func(name string)) {
 	}
 	go func() {
 		time.Sleep(time.Duration(delay) * time.Second)
+		if open := os.Getenv("VMX_CAPTURE_OPEN"); open != "" && openBranch != nil {
+			fyne.Do(func() {
+				for _, uid := range strings.Split(open, ",") {
+					openBranch(uid)
+				}
+			})
+		}
 		if name := os.Getenv("VMX_CAPTURE_SELECT"); name != "" {
 			fyne.Do(func() { sel(name) })
 			time.Sleep(2 * time.Second) // let the card and console settle
