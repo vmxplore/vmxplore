@@ -263,6 +263,14 @@ func fcRefresh() {
 	fcMu.Unlock()
 }
 
+// fcRowsSnapshot is the instances the last refresh read, as rows, and never
+// runs kfire: for the estate's 2 s tick, which must not wait 4-6 s for it.
+func fcRowsSnapshot() []Row {
+	fcMu.Lock()
+	defer fcMu.Unlock()
+	return fcRows(fcCached)
+}
+
 // fcRowsCached is every instance as an estate row — empty, not absent,
 // when there are none: the Firecracker branch is a fixture of a host that
 // has kfire, so the operator can find the goldens and the Clone row

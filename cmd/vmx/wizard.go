@@ -210,12 +210,19 @@ func wizK8sConfirm(w wizChoices) (string, []palEntry) {
 	return confirmStep("Kubernetes cluster", []string{"kube-cluster", "bootstrap", "--control-planes", w["cps"], "--workers", w["workers"]})
 }
 
-// wizAppliance lists the catalog as vmx prints it: the catalog is vmx's,
-// never a copy here. `vmx --appliances` prints a static list and returns at
-// once, so asking it on the keystroke is not the kfire-on-the-UI-thread
-// mistake.
+// applianceCatalog is `vmxctl --appliances`, asked once: a process on the
+// keystroke still blocked Update while it ran (audit, 2026-10-01). newModel
+// warms it in the background, so the wizard step reads memory.
+var applianceCatalog = sync.OnceValue(func() string {
+	// empty on failure: the wizard step then says so
+	out, _ := run(5*time.Second, "vmxctl", "--appliances")
+	return out
+})
+
+// wizAppliance lists the catalog as vmxctl prints it: the catalog is
+// vmxctl's, never a copy here.
 func wizAppliance(w wizChoices) (string, []palEntry) {
-	out, _ := run(5*time.Second, "vmxctl", "--appliances") // empty on failure: the list then says so
+	out := applianceCatalog()
 	var names []string
 	for _, l := range strings.Split(out, "\n") {
 		if l != "" && l[0] >= 'A' && l[0] <= 'Z' {

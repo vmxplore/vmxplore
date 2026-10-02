@@ -279,6 +279,7 @@ func (m model) conBodyH() int { return max(m.height-conBodyTop-1, 1) }
 // height of 0 lists every row); the TUI learns its real size from the first
 // WindowSizeMsg.
 func newModel(start, sub, width int) model {
+	go applianceCatalog() // warm the wizard's catalog off the update loop
 	f := textinput.New()
 	f.Prompt = "/"
 	f.Placeholder = "filter rows"

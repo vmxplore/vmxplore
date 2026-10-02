@@ -225,6 +225,14 @@ func cardTight(content fyne.CanvasObject) fyne.CanvasObject {
 	return container.NewStack(r, content)
 }
 
+// pageCard is card() for windows rebuilt on every open (sysdiag): the same
+// look, no repaint registration -- registering leaked one closure per open.
+func pageCard(content fyne.CanvasObject) fyne.CanvasObject {
+	r := canvas.NewRectangle(cardColor())
+	r.CornerRadius = 8
+	return container.NewStack(r, container.NewPadded(content))
+}
+
 // heading is a bold accent-colored section title (long-lived surfaces —
 // registers for theme-flip repaints).
 func heading(text string, a accentPair) *canvas.Text {
@@ -968,6 +976,17 @@ var audioProbe = sync.OnceValue(hostAudioReachable)
 func runGUI(rs *Ruleset) {
 	if target.SSHHost == "" {
 		go audioProbe() // warm it; the New VM dialog reads the answer
+	}
+	if kfireAvailable() {
+		// the Firecracker cache's own refresh loop (see fcRowsSnapshot):
+		// kfire is slow, so nothing the estate shows waits for it
+		go func() {
+			for {
+				fcRowsCached()
+				fcGoldensCached()
+				time.Sleep(10 * time.Second)
+			}
+		}()
 	}
 	a := app.NewWithID("dev.vmxplore")
 	a.Settings().SetTheme(compactTheme{theme.DefaultTheme()})
@@ -2130,14 +2149,22 @@ func runGUI(rs *Ruleset) {
 			f(r)
 		}
 	}
+	// The plan is BUILT off the UI thread too: builders check the host
+	// (planDelete asks zfs whether a -data disk exists; the clone and
+	// golden plans ask up to three times), which ran on the click --
+	// a process each, an ssh each against a remote host (audit, 2026-10-01).
 	verb := func(build func(Row) (verbPlan, error)) func() {
 		return withSel(func(r Row) {
-			p, err := build(r)
-			if err != nil {
-				dialog.ShowError(err, w)
-				return
-			}
-			firePlan(w, p, func() { refreshNow() })
+			go func() {
+				p, err := build(r)
+				fyne.Do(func() {
+					if err != nil {
+						dialog.ShowError(err, w)
+						return
+					}
+					firePlan(w, p, func() { refreshNow() })
+				})
+			}()
 		})
 	}
 
@@ -2151,12 +2178,17 @@ func runGUI(rs *Ruleset) {
 					if !ok {
 						return
 					}
-					p, err := plan(r, strings.TrimSpace(entry.Text))
-					if err != nil {
-						dialog.ShowError(err, w)
-						return
-					}
-					firePlan(w, p, func() { refreshNow() })
+					name := strings.TrimSpace(entry.Text)
+					go func() { // built off the UI thread, as in verb
+						p, err := plan(r, name)
+						fyne.Do(func() {
+							if err != nil {
+								dialog.ShowError(err, w)
+								return
+							}
+							firePlan(w, p, func() { refreshNow() })
+						})
+					}()
 				}, w)
 		})
 	}
@@ -2235,35 +2267,41 @@ func runGUI(rs *Ruleset) {
 	// read first so the field opens on the truth and the shrink guard in
 	// planResizeDisk has a real number to compare against — see resize.go for
 	// why an unknown current size is a refusal rather than a default.
+	// the current size is asked for off the UI thread: zfs get or qemu-img,
+	// which ran on the click before the dialog appeared (audit, 2026-10-01)
 	resizeDialog := withSel(func(r Row) {
-		cur, err := currentDiskBytes(r)
-		if err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-		size := widget.NewEntry()
-		size.SetText(fmt.Sprint(cur / gib))
-		form := container.NewVBox(
-			widget.NewLabel("New size (GiB) — currently "+humanGiB(cur)+":"), size,
-			widget.NewLabel("Grows the disk, its partition and its filesystem."),
-			widget.NewLabel("One way: a disk cannot be shrunk back."))
-		dialog.ShowCustomConfirm("Resize disk — "+r.D.Name, "Grow", "Cancel", form,
-			func(ok bool) {
-				if !ok {
-					return
-				}
-				var g int
-				if _, err := fmt.Sscanf(strings.TrimSpace(size.Text), "%d", &g); err != nil || g < 1 {
-					dialog.ShowError(fmt.Errorf("size must be a positive number of GiB"), w)
-					return
-				}
-				p, err := planResizeDisk(r, g, cur)
+		go func() {
+			cur, err := currentDiskBytes(r)
+			fyne.Do(func() {
 				if err != nil {
 					dialog.ShowError(err, w)
 					return
 				}
-				firePlan(w, p, func() { refreshNow() })
-			}, w)
+				size := widget.NewEntry()
+				size.SetText(fmt.Sprint(cur / gib))
+				form := container.NewVBox(
+					widget.NewLabel("New size (GiB) — currently "+humanGiB(cur)+":"), size,
+					widget.NewLabel("Grows the disk, its partition and its filesystem."),
+					widget.NewLabel("One way: a disk cannot be shrunk back."))
+				dialog.ShowCustomConfirm("Resize disk — "+r.D.Name, "Grow", "Cancel", form,
+					func(ok bool) {
+						if !ok {
+							return
+						}
+						var g int
+						if _, err := fmt.Sscanf(strings.TrimSpace(size.Text), "%d", &g); err != nil || g < 1 {
+							dialog.ShowError(fmt.Errorf("size must be a positive number of GiB"), w)
+							return
+						}
+						p, err := planResizeDisk(r, g, cur)
+						if err != nil {
+							dialog.ShowError(err, w)
+							return
+						}
+						firePlan(w, p, func() { refreshNow() })
+					}, w)
+			})
+		}()
 	})
 
 	// menuButton drops a popup menu under the button — the submenu chrome.
@@ -5050,13 +5088,13 @@ func runGUI(rs *Ruleset) {
 			cpuRaw[d.Name] = d.CPUTimeNs
 		}
 		at := time.Now()
-		// kfire is asked HERE, off the UI thread. apply used to call
-		// fcRowsCached from inside fyne.Do, and the sidebar's item painter
-		// called fcGoldensCached: each could run `kfire list` / `kfire
-		// goldens` (4-6 s apiece on a loaded onyx, 2026-09-28) on the UI
-		// thread, and GNOME put up "not responding" over every click.
-		fcRows := fcRowsCached()
-		fcGoldensCached()
+		// kfire is NOT asked here. It was, inline: `kfire list` and the
+		// 4-6 s `kfire goldens` ran before every apply, so the estate stayed
+		// empty for ~10 s after start and each tick waited on kfire (found
+		// 2026-10-01: a selection 10 s in hit an empty tree). The
+		// Firecracker loop started in runGUI refreshes that cache on its
+		// own clock; this reads its last answer.
+		fcRows := fcRowsSnapshot()
 		fyne.Do(func() { apply(doms, cpuRaw, fcRows, at) })
 	}
 	fetchZFS := func() {
@@ -5071,7 +5109,11 @@ func runGUI(rs *Ruleset) {
 	}
 	refreshNow = func() { go fetchEstate() }
 	go func() {
-		fetchZFS()
+		// the estate first: libvirt answers in ~30 ms, while fetchZFS lists
+		// every dataset and snapshot (thousands on onyx) and ran FIRST, so
+		// the tree stayed empty for seconds after start (measured
+		// 2026-10-01). ZFS loads alongside; the next tick folds it in.
+		go fetchZFS()
 		fetchEstate()
 		fast := time.NewTicker(2 * time.Second)
 		slow := time.NewTicker(30 * time.Second)
@@ -5402,6 +5444,11 @@ func runGUI(rs *Ruleset) {
 		fyne.Do(applyPalette)
 	}()
 	openBranch = func(uid string) { tree.OpenBranch(uid) }
+	fullScreen = func() {
+		if toggleFullScreen != nil {
+			toggleFullScreen()
+		}
+	}
 	startCapture(a, w, func(name string) {
 		if strings.HasPrefix(name, "grp/") || name == actionsBranchUID {
 			tree.Select(name) // a header, through the real click path

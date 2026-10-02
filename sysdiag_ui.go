@@ -43,8 +43,20 @@ func framed(content fyne.CanvasObject, col color.Color) fyne.CanvasObject {
 	return container.NewStack(r, container.NewPadded(content))
 }
 
+// showSysdiag runs the diagnosis off the UI thread and opens the window
+// with the answer. RunSysdiag opens a libvirt connection and runs zfs; it ran
+// in the button's callback, so the window froze while it worked. The window
+// uses pageCard/pageHeading: it is rebuilt on every open, and the
+// registering card()/heading() added theme-repaint closures that never went
+// away, one set per open (audit, 2026-10-01).
 func showSysdiag(rows []Row) {
-	d := RunSysdiag(rows)
+	go func() {
+		d := RunSysdiag(rows)
+		fyne.Do(func() { showSysdiagResult(d) })
+	}()
+}
+
+func showSysdiagResult(d Sysdiag) {
 	acc := tierAccent(d.Tier)
 	fg := theme.Color(theme.ColorNameForeground)
 	mono := func(s string, col color.Color, bold bool) *canvas.Text {
@@ -76,7 +88,7 @@ func showSysdiag(rows []Row) {
 	summary := widget.NewLabel(d.Summary)
 	summary.Wrapping = fyne.TextWrapWord
 	head := container.NewBorder(nil, nil, nil, badgeBox,
-		container.NewVBox(pageHeading("SYSDIAG", acGold), summary, card(facts)))
+		container.NewVBox(pageHeading("SYSDIAG", acGold), summary, pageCard(facts)))
 
 	// ── probes ──
 	cards := make([]fyne.CanvasObject, 0, len(d.Probes))
@@ -89,7 +101,7 @@ func showSysdiag(rows []Row) {
 		t.TextStyle = fyne.TextStyle{Bold: true}
 		desc := widget.NewLabel(p.Detail)
 		desc.Wrapping = fyne.TextWrapWord
-		cards = append(cards, card(container.NewVBox(t, desc)))
+		cards = append(cards, pageCard(container.NewVBox(t, desc)))
 	}
 	probes := container.NewGridWrap(fyne.NewSize(250, 96), cards...)
 
@@ -116,7 +128,7 @@ func showSysdiag(rows []Row) {
 		v := canvas.NewText(verdict, vcol)
 		v.TextStyle = fyne.TextStyle{Italic: true}
 		box.Add(v)
-		c := card(box)
+		c := pageCard(box)
 		if t.Key == d.Tier {
 			c = framed(c, tc.at())
 		}
@@ -158,9 +170,9 @@ func showSysdiag(rows []Row) {
 	foot.Wrapping = fyne.TextWrapWord
 	body := container.NewVBox(
 		head,
-		heading("PROBES", acBrand), probes,
-		heading("REQUIREMENTS", acBrand), reqs,
-		heading("CAPABILITIES BY SUBSTRATE", acBrand), card(ladder),
+		pageHeading("PROBES", acBrand), probes,
+		pageHeading("REQUIREMENTS", acBrand), reqs,
+		pageHeading("CAPABILITIES BY SUBSTRATE", acBrand), pageCard(ladder),
 		foot)
 	tw := fyne.CurrentApp().NewWindow("sysdiag — " + d.Host)
 	tw.SetContent(container.NewVScroll(container.NewPadded(body)))

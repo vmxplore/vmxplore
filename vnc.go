@@ -40,7 +40,10 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"log"
+	"math"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -514,6 +517,9 @@ func (r *rfbConn) readLoop() {
 						return
 					}
 				case encDesktopSize: // the guest resized its framebuffer
+					if traceOn {
+						log.Printf("vmxplore trace: vnc framebuffer now %dx%d (DesktopSize)", rw, rh)
+					}
 					r.imgMu.Lock()
 					r.fbW, r.fbH = rw, rh
 					r.img = image.NewRGBA(image.Rect(0, 0, rw, rh))
@@ -553,6 +559,9 @@ func (r *rfbConn) readLoop() {
 					if y == 0 {
 						r.imgMu.Lock()
 						r.fbW, r.fbH = rw, rh
+						if traceOn {
+							log.Printf("vmxplore trace: vnc framebuffer now %dx%d (ExtendedDesktopSize)", rw, rh)
+						}
 						r.img = image.NewRGBA(image.Rect(0, 0, rw, rh))
 						r.imgMu.Unlock()
 					}
@@ -756,6 +765,10 @@ func (v *vncViewer) Resize(s fyne.Size) {
 		scale = c.Scale()
 	}
 	w, h := int(s.Width*scale), int(s.Height*scale)
+	w, h = fitGuestMax(w, h)
+	if traceOn {
+		log.Printf("vmxplore trace: vnc viewer %.0fx%.0f dp, scale %.2f -> asking the guest for %dx%d", s.Width, s.Height, scale, w, h)
+	}
 	v.fitMu.Lock()
 	defer v.fitMu.Unlock()
 	if v.fitTimer != nil {
@@ -1132,4 +1145,32 @@ func (f *frameCoalescer) trigger(do func(func()), paint func()) {
 		f.pending.Store(false)
 		paint()
 	})
+}
+
+// vncMaxW/H cap what the viewer asks a guest to become. Fullscreen on a 5K
+// screen asked for 5120x2880; the guest's compositor took it, its virtio
+// display scanned out only 2160 rows, and the bottom 720 rows of the guest
+// desktop were cut off -- its lock screen sat 360 px below centre (onyx,
+// clone-wmbjeaxj5k, 2026-10-01: "the vm resolution is chopped off").
+// 3840x2160 is what virtio-gpu guests reliably show, and on a HiDPI screen
+// it keeps the guest's UI readable. VMX_VNC_MAX=WxH overrides.
+var vncMaxW, vncMaxH = func() (int, int) {
+	if v := os.Getenv("VMX_VNC_MAX"); v != "" {
+		var w, h int
+		if n, _ := fmt.Sscanf(v, "%dx%d", &w, &h); n == 2 && w > 0 && h > 0 {
+			return w, h
+		}
+	}
+	return 3840, 2160
+}()
+
+// fitGuestMax scales w x h down, keeping its shape, until it fits the cap;
+// a size already inside it is returned as is. Keeping the shape is what
+// makes the result fill the pane with no letterbox bars.
+func fitGuestMax(w, h int) (int, int) {
+	if w <= vncMaxW && h <= vncMaxH {
+		return w, h
+	}
+	f := math.Min(float64(vncMaxW)/float64(w), float64(vncMaxH)/float64(h))
+	return int(float64(w) * f), int(float64(h) * f)
 }

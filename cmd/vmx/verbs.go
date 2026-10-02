@@ -217,13 +217,13 @@ var verbs = map[string][]verb{
 	},
 	"Machines/Snapshots": {
 		{key: "b", label: "roll the VM back to this snapshot (destroys every newer snapshot)", confirm: true, argv: func(row []string, _ string) ([]string, error) {
-			// Asked once, after the name is typed, never on the keypress: this
-			// row carries no state, and a running VM must not be rolled back
-			// (kvm-snap force-destroys it first).
-			if st, _ := run(10*time.Second, "virsh", "domstate", col(row, 0)); strings.TrimSpace(st) == "running" { // an error reads as not running; kvm-snap then reports it
-				return nil, errors.New(col(row, 0) + " is running: a rollback would kill it — shut it down first (Machines/VMs, T)")
-			}
-			return []string{"kvm-snap", col(row, 0), "rollback", "@" + col(row, 1)}, nil
+			// A running VM must not be rolled back (kvm-snap force-destroys it
+			// first), and this row carries no state -- so the command checks
+			// when it RUNS. The check used to run here, inside Update, a virsh
+			// call blocking every key (audit, 2026-10-01). Fixed argv: the
+			// name and the snapshot are $1 and $2, never shell text.
+			return []string{"sh", "-c", `if virsh domstate "$1" 2>/dev/null | grep -qx running; then echo "$1 is running: a rollback would kill it — shut it down first (Machines/VMs, T)" >&2; exit 1; fi; exec kvm-snap "$1" rollback "@$2"`,
+				"_", col(row, 0), col(row, 1)}, nil
 		}},
 		{key: "d", label: "delete snapshot", argv: func(row []string, _ string) ([]string, error) {
 			return []string{"kvm-snap", col(row, 0), "delete", "@" + col(row, 1)}, nil

@@ -31,6 +31,9 @@ import (
 // capture can show a closed-by-default branch's contents.
 var openBranch func(uid string)
 
+// fullScreen toggles the console-only mode (VMX_CAPTURE_FULLSCREEN).
+var fullScreen func()
+
 func startCapture(a fyne.App, w fyne.Window, sel func(name string)) {
 	out := os.Getenv("VMX_CAPTURE")
 	if out == "" {
@@ -52,6 +55,13 @@ func startCapture(a fyne.App, w fyne.Window, sel func(name string)) {
 		if name := os.Getenv("VMX_CAPTURE_SELECT"); name != "" {
 			fyne.Do(func() { sel(name) })
 			time.Sleep(2 * time.Second) // let the card and console settle
+		}
+		// VMX_CAPTURE_FULLSCREEN=1: the console-only fullscreen mode, after
+		// the guest has had time to answer the resize (400 ms debounce, then
+		// its own mode change), for checking that it fits the screen
+		if os.Getenv("VMX_CAPTURE_FULLSCREEN") == "1" && fullScreen != nil {
+			fyne.Do(fullScreen)
+			time.Sleep(8 * time.Second)
 		}
 		fyne.Do(func() {
 			img := w.Canvas().Capture()
