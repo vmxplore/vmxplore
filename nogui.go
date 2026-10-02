@@ -19,11 +19,13 @@ func runConsoleGUI(name string) int {
 	return 2
 }
 
+// runGUI, in the static build (vmxctl), is "no command given": print the
+// help and exit 2. It started the old built-in TUI, but the terminal console
+// is vmx now (cmd/vmx) and vmxctl takes commands (operator, 2026-09-30).
+// --tui still starts the built-in TUI explicitly.
 func runGUI(rs *Ruleset) {
-	fmt.Fprintln(os.Stderr,
-		"vmx: this is the static terminal build (no GUI compiled in) — starting the TUI.\n"+
-			"     For the native GUI, build with:  make gui   (or: go build -tags gui)")
-	runTUIMain(rs)
+	fmt.Fprintln(os.Stderr, usage)
+	os.Exit(2)
 }
 
 // hasGUI: see gui_only.go — this is the build without the window.

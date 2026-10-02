@@ -147,6 +147,8 @@ install:
 	install -m 0755 $(BIN_TUI) $(BINDIR)/$(BIN_TUI)
 	install -m 0755 $(BIN_CTL) $(BINDIR)/$(BIN_CTL)
 	install -m 0644 docs/vmxplore.1                 $(MANDIR)/vmxplore.1
+	install -m 0644 docs/vmx.1                      $(MANDIR)/vmx.1
+	install -m 0644 docs/vmxctl.1                   $(MANDIR)/vmxctl.1
 	install -m 0644 packaging/vmxplore.svg          $(ICONDIR)/vmxplore.svg
 	install -m 0644 packaging/vmx.svg               $(ICONDIR)/vmx.svg
 	install -m 0644 packaging/vmxplore.desktop      $(APPDIR)/vmxplore.desktop

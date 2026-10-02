@@ -1,0 +1,738 @@
+.\" vmx.1 — manual for the vmxplore terminal console. mdoc, OpenBSD section
+.\" order. Keep in lockstep with the --help banner in cmd/vmx/main.go.
+.Dd October 1, 2026
+.Dt VMX 1
+.Os
+.Sh NAME
+.Nm vmx
+.Nd the kldload operator console, in a terminal
+.Sh SYNOPSIS
+.Nm
+.Op Ar section Op Ar sub-tab
+.Nm
+.Fl -gui
+.Op Ar section
+.Nm
+.Ar section
+.Op Ar sub-tab
+.Fl -print
+.Nm
+.Cm install
+.Nm
+.Fl -version
+.Nm
+.Cm screen
+.Ar vm
+.Op Fl -blocks | Fl -sixel
+.Sh DESCRIPTION
+.Nm
+is the kldload operator console as one program for a desktop and a headless
+box alike:
+Overview; Machines (VMs, snapshots, microVMs, appliances, factory,
+networks, pools);
+Storage (pools, pool, topology, datasets, snapshots, boot environments,
+shares, ARC);
+Network (planes, peers, enrolled, fleet, check);
+Cluster (nodes, pods, deployments, services, events, logs, describe);
+Ansible (hosts, groups, plays); Helm (releases, examples);
+Metrics (host, storage, machines, mesh, targets: Prometheus, as sparklines);
+Estate (drift, units, events); and Provision (armed, feed, goldens,
+answers).
+It is a terminal program, the default everywhere, with the ten sections
+of the web console, each with sub-tabs;
+.Fl -gui
+opens this same console in a terminal window through
+.Xr kldload-term 1 :
+the GUI is the TUI, so nothing drifts between them.
+The sections:
+Overview, Machines, Storage, Network, Cluster, Metrics, Estate and Provision.
+Each section is read from the tool that owns the fact and shown as it is:
+.Xr kldload-estate 8
+for the machines and the drift,
+.Xr kldload-doctor 8
+for the host's health,
+.Xr zpool 8
+and
+.Xr kldload-rollback 8
+for storage and boot environments,
+.Xr wg 8
+for the mesh,
+.Xr kubectl 1
+for the cluster after a port probe of the apiserver, the Prometheus targets
+API for metrics, and
+.Xr kldload-netboot-server 8
+for the rack.
+.Pp
+.Nm
+is a hub, not another console.
+The deep views stay in
+.Xr vmxplore 1 ,
+.Xr zxplore 1 ,
+.Xr wgx 1
+and
+.Xr k9s 1 ;
+.Nm
+opens the one that belongs to the current section on
+.Ic Enter
+and returns when it exits.
+Its verbs run the shipped commands
+.Xr kvm-clone 8 ,
+.Xr kvm-snap 8
+and
+.Xr kvm-delete 8 ,
+never a re-implementation of them, so what the terminal does is what the
+estate tests prove.
+.Pp
+With a
+.Ar section
+argument the console opens on that section.
+With
+.Fl -print
+it renders that section once to standard output, without a terminal, and
+exits; the text is the same the console shows.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Ar section
+One of
+.Cm overview , machines , storage , network , cluster , metrics , estate
+or
+.Cm provision ,
+case-insensitive.
+.It Fl -gui
+This console in a terminal window; needs a display.
+.It Fl -print
+Render the named section once and exit.
+Useful from scripts and over an ssh command that has no terminal.
+.It Fl -version
+Print the version and the build stamp.
+.It Fl h , -help
+Print the usage and the key map, and exit 0.
+.El
+.Sh THE INSTALL MENU
+.Nm Cm install
+is the live medium's front door and the netboot menu's twin: it asks the
+profile, the distribution (marked offline when this medium carries its
+mirror), the security posture (standard, encrypted, Secure Boot, both),
+the disk (zvols, zram and the medium's own disk are left out), the
+hostname, the admin user and password, and a passphrase when encrypting,
+shows a summary, writes the same answers file the netboot menu writes
+(mode 0600 under /run/kldload) and hands it to
+.Xr kldload-install-target 8
+.Fl -config .
+Its other entries open the Provision section to arm another machine,
+the operator console, or a shell.
+.Ev KLD_INSTALL_DRYRUN Ns =1
+writes the file and stops.
+.Sh KEYS
+.Bl -tag -width "Shift-Tab" -compact
+.It Ic 1 No to Ic 9 , Ic 0
+Switch to that section
+.Pq Ic h No and Ic l No step through them .
+.It Ic Tab , Shift-Tab
+Next and previous sub-tab of the section
+.Pq also Ic \&[ No and Ic \&] .
+.It Ic j , k
+Move the selection down and up;
+.Ic g
+and
+.Ic G
+first and last;
+.Ic ctrl+f
+and
+.Ic ctrl+b
+a page.
+.It Ic Backspace
+Back to where Enter (or
+.Ic x )
+came from: the tab, its context, the row and the filter as they were.
+Every drill-in, on every tab, comes back the same way.
+.It Ic Esc
+Clear the marks; with none, clear the filter; with neither, the same as
+.Ic Backspace .
+.It Ic r
+Reload the tab now.
+The Machines / VMs table also reloads itself every three seconds while it
+is on screen, for the state and the CPU column; the cursor stays on the
+same machine.
+.It Ic ctrl+t
+A terminal on this host, as you, in the body of vmx; the console menu
+.Pq Ic ctrl+\&] Ic d
+comes back.
+.It Ic Space
+Mark the row; a verb then runs on every marked row of the tab, in order,
+and reports how many succeeded and which failed
+.Pq Ic ctrl+a No marks or clears them all .
+.It Ic Enter
+Drill in: a VM's snapshots, a dataset's snapshots, a group's hosts.
+.It Ic Esc
+Leave a drill-in.
+.It Ic /
+Filter the rows; Enter keeps the filter, Esc clears it.
+.It Ic o
+Sort by the next column, then descending, then the tool's own order.
+.It Ic i
+Show or hide the vitals pane: the selected row's columns as properties,
+then what the tab adds for it (a VM's disks, NICs and zvol properties, a
+dataset's properties), on the left of the table.
+It is hidden below 100 columns, where the table needs the room.
+.It Ic r
+Reload the sub-tab.
+.It Ic \&?
+The keys, including every verb of the current sub-tab.
+.It Ic q
+Quit.
+.El
+.Pp
+Verbs act on the selected row and run the shipped command for it.
+The menu at the bottom lists every verb of the sub-tab after the name it
+acts on, each spelled with its key in parentheses:
+.Dq (S)tart ,
+.Dq shu(T)down ,
+.Dq (K) force off
+when the key is not a letter of the word.
+The key keeps its case, since
+.Ic S
+and
+.Ic s
+are different verbs.
+Destructive verbs are red.
+A menu too long for the terminal ends in
+.Dq (?) more ,
+and
+.Ic \&?
+lists them all with their full labels.
+The last line is the keys that move around; the least used of them give
+way first on a narrow terminal, and
+.Ic \&?
+and
+.Ic q
+never do.
+The layout's heights come from the terminal's size and the tab alone, so
+the three-second refresh never moves the menu.
+A destructive verb asks for the row's name to be typed back and does
+nothing otherwise; a verb that needs more asks for it on the status line.
+Verbs that take the terminal (a serial console, ssh, pod logs and shells,
+plays, helm installs) return to
+.Nm
+when they exit.
+The verbs, by sub-tab:
+.Bl -tag -width "Storage / Boot envs" -compact
+.It Machines / VMs
+.Ic n
+new VM
+.Pq Xr kvm-create 8 ,
+.Ic S
+start,
+.Ic T
+shutdown,
+.Ic R
+reboot,
+.Ic K
+force off,
+.Ic c
+clone: a name (the prompt opens on
+.Ar vm Ns -HHMMSS ) ,
+an optional count (a count above one makes name-1, name-2,
+… in one job, in order) and an optional
+.Fl -snap @name ,
+.Ic s
+snapshot under a typed name (the prompt opens on the timestamp
+.Xr kvm-snap 8
+would pick),
+.Ic b
+roll back to the newest snapshot,
+.Ic d
+delete VM and zvol,
+.Ic e
+enrol on the mesh,
+.Ic z
+suspend,
+.Ic Z
+resume,
+.Ic A
+autostart on or off,
+.Ic M
+make golden: shut the machine down and wait, seal its zvol with
+.Xr kldload-seal 8 ,
+and take a fresh @golden that
+.Ic c
+clones from,
+.Ic F
+seal as a Firecracker golden,
+.Ic v
+vcpus and memory for the next boot,
+.Ic +
+grow the root disk through all three layers
+.Pq Xr kvm-grow 8 ,
+.Ic X
+reconcile an unreconciled row (a zvol with no domain, a DB row with no
+domain),
+.Ic w
+the machine's screen (its VNC display drawn in the body of the console),
+.Ic C
+its serial console,
+.Ic H
+an ssh terminal on it as root,
+.Ic V
+vmxplore,
+.Ic W
+the VDI wall: every streaming desktop tiled on one page in the browser
+.Pq Nm vmxplore Fl -vdi-wall Fl -open .
+The three consoles open inside vmx, see
+.Sx CONSOLES .
+.It Machines / Appliances
+.Ic b
+build one as a VM (asks for the VM name and the KEY=VALUE settings),
+.Ic s
+show its install script,
+.Ic B
+build every appliance.
+.It Machines / Build
+.Ic b
+builds anything guided, one list at a time: what kind (an OS, desktop,
+database or OpenZFS test golden, a Kubernetes cluster, an appliance, a
+Firecracker golden, your own golden, a VM from an ISO, a Windows golden,
+this host as an image file), which one, its options, then a last step
+that shows the exact command with
+.Dq run it
+and
+.Dq edit the command first .
+Your own golden offers every
+.Pa *.sh
+in
+.Pa /srv/postinstallers ,
+.Pa /etc/kldload/postinstallers
+and
+.Pa ~/postinstallers
+as its post-install.
+The rows below are the same builds, one per row, for
+.Ic x
+and
+.Ic X .
+The menu of every image the platform can make: EVERYTHING, all klab
+goldens, each klab kind (lean, GNOME, Xfce, KDE, PostgreSQL, ztest) for
+every distribution, the Kubernetes golden, the Windows goldens, all
+appliances, the appliance self-test, sealing this host as a cloud image
+(the row
+.Ql SEAL-this-host :
+it works on the running machine in place, so its name is typed, as for
+the DESTROY rows) and its export, deploying VMs from an image, the tests.
+Then the cluster: build the HA cluster, add workers, set the control
+planes (X asks how many); and your own images: build your own golden or
+VM from a base golden plus a post-install of yours
+.Pq Xr kvm-golden 8 ,
+X asking for a name, a base (a distro names its klab golden) and a
+post-install file or a command to run as root.
+The have column counts what already exists.
+The DESTROY rows take it all down again — every klab golden, every
+appliance, the cluster — so a minimal install can build everything after
+the fact and remove it.
+.Ic x
+builds the row in a job pane (a row with several commands runs them in
+order),
+.Ic X
+asks for the row's argument first: one distribution for a klab kind, a
+format for the export, an image and a count for a deploy, a count of
+workers or control planes, a name and a base for your own image.
+.Ic D
+runs a DESTROY row after its name is typed;
+.Ic x
+refuses those.
+.It Machines / microVMs
+.Ic c
+clone microVMs from an appliance golden
+.Pq Xr kfire 8 ,
+every option picked from a list (the golden, how many, the memory,
+whether to wait for each to answer) and confirmed as the exact command;
+the last entry types the command yourself,
+.Ic S
+start,
+.Ic T
+stop,
+.Ic d
+destroy,
+.Ic H
+ssh,
+.Ic C
+the serial console log,
+.Ic \&!
+kfire status,
+.Ic W
+the VDI wall, as under Machines / VMs.
+.It Machines / Snapshots
+.Ic b
+roll the VM back to this snapshot,
+.Ic d
+delete it,
+.Ic s
+snapshot the VM now, named as on Machines / VMs.
+.It Machines / Networks
+.Ic S
+start,
+.Ic T
+stop.
+.It Machines / Pools
+.Ic R
+refresh.
+.It Storage / Pools
+.Ic S
+scrub,
+.Ic P
+stop the scrub,
+.Ic z
+zxplore.
+.It Storage / Topology
+.Ic F
+offline the vdev,
+.Ic O
+online it,
+.Ic E
+clear the pool's error counters,
+.Ic S
+scrub.
+.It Storage / Datasets
+.Ic s
+snapshot,
+.Ic P
+set a property,
+.Ic M
+mount,
+.Ic N
+unmount,
+.Ic n
+create a child,
+.Ic V
+create a zvol,
+.Ic m
+rename,
+.Ic L
+load the encryption key (the passphrase is masked and goes to stdin),
+.Ic U
+unload it,
+.Ic E
+create an encrypted child (zfs asks the passphrase),
+.Ic d
+destroy the dataset and everything under it,
+.Ic x
+explore its files,
+.Ic z
+zxplore.
+.It Storage / Explorer
+The files of the dataset opened with
+.Ic x .
+Enter opens a directory,
+.Ic Backspace
+goes up one, and Enter or
+.Ic v
+on a file lists its versions.
+.It Storage / Versions
+The file as every snapshot holds it, next to the live copy, with the
+versions whose size or modification time differ from live marked.
+.Ic c
+restores the selected snapshot's version as a copy beside the live file
+.Pq Pa name.from-snapshot ,
+.Ic R
+restores it over the live file after the snapshot's name is typed.
+Both act on the file the tab names and the snapshot the row names, never
+on a cursor that moved.
+.It Storage / Snapshots
+.Ic b
+roll back (a root snapshot is staged through
+.Xr kldload-rollback 8
+and taken by a reboot, never rolled back in place),
+.Ic d
+destroy,
+.Ic c
+clone into a dataset,
+.Ic D
+diff against live,
+.Ic f
+diff against another snapshot,
+.Ic K
+bookmark,
+.Ic H
+hold,
+.Ic U
+release the hold,
+.Ic T
+replicate to a dataset, local or user@host:dataset (asks for the name:
+the receive is forced).
+.It Storage / Pools
+Enter opens the pool: vitals, space, vdevs, I/O, events.
+.It Storage / Boot envs
+.Ic B
+boot into this environment or snapshot on the next reboot,
+.Ic X
+cancel a staged rollback.
+.It Network
+.Ic w
+wgx,
+.Ic H
+(Fleet) ssh to the host;
+.Ic e
+enrol a VM,
+.Ic E
+re-enrol the selected one.
+.It Cluster / Nodes
+.Ic D
+drain,
+.Ic U
+uncordon,
+.Ic B
+bootstrap an HA cluster (three control planes, asks for the workers),
+.Ic A
+add workers,
+.Ic P
+set the control-plane count,
+.Ic W
+power the cluster off,
+.Ic O
+power it on,
+.Ic K
+k9s.
+.It Cluster / Pods
+.Ic L
+logs,
+.Ic E
+a shell in the pod,
+.Ic X
+delete,
+.Ic K
+k9s.
+.It Cluster / Logs
+.Ic L
+follow the open pod's logs in the terminal.
+.It Cluster / Deployments
+.Ic R
+rollout restart,
+.Ic N
+scale.
+.It Estate / Units
+.Ic J
+the unit's journal,
+.Ic S
+start,
+.Ic R
+restart,
+.Ic T
+stop,
+.Ic F
+reset a failed state.
+.It Ansible / Hosts
+.Ic p
+ping,
+.Ic H
+ssh,
+.Ic m
+run a module.
+.It Ansible / Groups
+.Ic p
+ping the group.
+.It Ansible / Plays
+.Ic p
+run the play (asks for a limit),
+.Ic n
+check mode.
+.It Helm / Releases
+.Ic U
+uninstall,
+.Ic Y
+history.
+.It Helm / Examples
+.Ic I
+install.
+.It Provision / Armed
+.Ic a
+arm a machine,
+.Ic x
+disarm the selected one,
+.Ic X
+disarm every machine.
+.It Provision / Goldens
+.Ic a
+arm-deploy a machine with the selected golden.
+.It Provision / Answers
+.Ic a
+arm a machine with the selected file.
+.El
+.Sh ACTIVITY
+.Sx Overview / Activity
+lists what the host is doing: this session's jobs first, then every unit
+of the kldload family that is active, activating or failed — first boot,
+klab golden builds, kube-cluster, the netboot server, the exporters.
+Enter on a job reopens its pane; Enter on a unit follows its journal in a
+pane that ends when it is left.
+.Sh CONFIRMATION
+Machines verbs ask nothing: start, stop, reboot, force off, delete and
+the rest run on the keypress and the status line says what ran, the way
+vmxplore does it.
+Storage, cluster and provisioning verbs that destroy something ask for the
+name to be typed, the way zxplore does it.
+With rows marked
+.Pq Ic Space
+a verb runs on every marked row; a batch of a job verb is one pane, the
+commands in order, stopping at the first failure.
+.Sh JOBS
+A verb that runs long or whose output must be read
+.Pq a new VM, a clone, an appliance build, an image set, kube-cluster, a replication, a diff, a play
+runs as a job: its command gets a pty behind a terminal emulator and its
+output is a pane in the body of vmx, live, with the elapsed time in the
+status line.
+Keys typed in the pane go to the job, for the one that asks a question.
+.Ic ctrl+\&]
+opens the pane's menu:
+.Ic d
+back to the table while the job keeps running,
+.Ic k
+kill it,
+.Ic J
+the next job.
+Enter on a finished job goes back.
+From the table,
+.Ic ctrl+j
+reopens the newest job's pane; the status line counts the jobs still
+running, and each one's end is reported there once, with the table
+reloaded.
+Short verbs (start, stop, autostart, snapshot) still run directly and
+report on the status line.
+.Sh CONSOLES
+On a VM row,
+.Ic w ,
+.Ic C
+and
+.Ic H
+open the machine's screen, serial line or an ssh terminal in the body of
+vmx, under the rail, so a headless host or a Sway session never needs a
+window to reach a machine.
+While one is open every key and, for the screen, every mouse event goes to
+the machine, with one exception:
+.Ic ctrl+\&]
+opens a one-line menu.
+.Bl -tag -width "ctrl+]" -compact
+.It Ic d
+detach and return to the table
+.Pq Ic q No does the same .
+.It Ic 1 , 2 , 3
+switch to the screen, the serial console or ssh on the same machine.
+.It Ic f
+the screen full-window and pixel-exact; in a terminal that draws sixels
+(asked once at start)
+.Ic w
+opens that view directly and the cell pane is only the fallback —
+.Ev KLD_SCREEN Ns = Ns Cm full
+or
+.Cm pane
+overrides the probe.
+It is also
+.Pq Nm Cm screen ;
+the pane in the TUI is drawn in text cells and is a thumbnail at a
+hundred columns.
+.It Ic x
+send ctrl+alt+del to the screen.
+.It Ic r
+redraw, and ask the guest to match the pane's size again.
+.It Ic \&]
+send a literal ctrl+] (it is also the escape of
+.Xr virsh 1 Ns 's console).
+.El
+Any other key closes the menu and goes back to the machine.
+The screen is drawn as half-block cells, two guest pixels per cell in
+truecolour, so it works in tmux and on a text console; the guest is asked
+to adopt the pane's pixel size, which a virtio-gpu guest honours and a
+legacy VGA guest ignores.
+The serial console and ssh run in a pty behind a terminal emulator sized
+like the pane; when the session ends, Enter returns to the table.
+.Pp
+.Nm Cm screen Ar vm Op Fl -blocks | Fl -sixel
+is the same screen full-screen and pixel-exact: in a terminal that draws
+sixels (foot, xterm, mlterm, wezterm) the frame is scaled to the whole
+window and sent as one sixel image per update; anywhere else it is the
+half-block rendering.
+Under tmux the default is half-blocks whatever tmux answers, because a
+tmux 3.7 server died on its first sixel frame here;
+.Fl -sixel
+overrides that and
+.Fl -blocks
+forces cells anywhere.
+The same
+.Ic ctrl+\&]
+menu applies, and
+.Ic d
+returns to the shell.
+.Sh ENVIRONMENT
+.Bl -tag -width NO_COLOR
+.It Ev NO_COLOR
+Draw no colour and no attributes.
+The selected row is then marked
+.Ql > ,
+and the active section and sub-tab are in brackets.
+.El
+.Sh EXIT STATUS
+.Ex -std
+The exit status is 2 for a section that does not exist.
+.Sh EXAMPLES
+Open the console on the machines:
+.Bd -literal -offset indent
+$ vmx machines
+.Ed
+.Pp
+Print the estate's drift and the doctor's findings from a script:
+.Bd -literal -offset indent
+$ vmx estate --print
+42 machines across leases, libvirt, state_db, wireguard; 1 drift; doctor 22 ok 1 warn 1 fail 18 skip
+machine               finding        detail                                            repair
+klab-green-fedora     unregistered   libvirt knows this domain; the state DB does not  kldload-db vm-register --name klab-green-fedora --role <class>
+.Ed
+.Pp
+Ask which build is installed:
+.Bd -literal -offset indent
+$ vmx --version
+vmx 0.1.0 b3af6a94
+.Ed
+.Sh DIAGNOSTICS
+A section whose tool did not answer shows the tool's own error in red where
+the table would be, and the rest of the console keeps working; for example
+.Dq apiserver https://10.251.0.1:6443 does not answer (port probe)
+in Cluster on a host whose kubeconfig points at a cluster that is gone.
+A verb that fails shows the failing command and its message on the status
+line; nothing is retried.
+.Sh SEE ALSO
+.Xr vmxctl 1 ,
+.Xr vmxplore 1 ,
+.Xr wgx 1 ,
+.Xr zxplore 1 ,
+.Xr kldload-doctor 8 ,
+.Xr kldload-estate 8 ,
+.Xr kvm-clone 8 ,
+.Xr kvm-delete 8
+.Sh HISTORY
+.Nm
+appeared in kldload 1.6 (September 2026), when the four terminal consoles had
+four key maps and the first answers an operator wants lived in eight
+different commands.
+It was named
+.Sy kld
+and lived in the kldload tree until 30 September 2026, when it moved into the
+vmxplore repository as its terminal face, beside
+.Xr vmxplore 1 ,
+the window, and
+.Xr vmxctl 1 ,
+the commands.
+.Sy kld
+remains installed as an alias of
+.Nm ,
+and the management options the old
+.Nm vmx
+binary took
+.Pf ( Fl -build-all , Fl -selftest , Fl -appliances , Fl -enroll
+and the rest) are handed to
+.Xr vmxctl 1
+with a warning, for one release.
+.Sh CAVEATS
+Every collector elevates with
+.Xr sudo 8
+.Fl n ;
+a user without passwordless sudo sees each section's error instead of its
+table.
+The Cluster section needs a kubeconfig on the host; a hypervisor that is not
+a cluster node says so rather than showing an empty table.

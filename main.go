@@ -56,19 +56,18 @@ func versionFull() string {
 	return version + " b" + buildNum
 }
 
-const usage = `usage: vmx [--tui] [--once] [--reconcile] [--connect DEST] [--rules FILE] [--version]
-       vmx --appliances
-       vmx --appliance NAME --vm VMNAME [KEY=VALUE ...]
-       vmx --appliance-script NAME [KEY=VALUE ...]
-       vmx --selftest [--only NAME] [--keep]
-       vmx --build-all [--only A,B]
-       vmx --destroy-all [--yes]
-       vmx --sysdiag
-       vmx --vdi-wall [--open]
-       vmx --console VM
+const usageTmpl = `usage: PROG [--tui] [--once] [--reconcile] [--connect DEST] [--rules FILE] [--version]
+       PROG --appliances
+       PROG --appliance NAME --vm VMNAME [KEY=VALUE ...]
+       PROG --appliance-script NAME [KEY=VALUE ...]
+       PROG --selftest [--only NAME] [--keep]
+       PROG --build-all [--only A,B]
+       PROG --destroy-all [--yes]
+       PROG --sysdiag
+       PROG --vdi-wall [--open]
+       PROG --console VM
 
-  (no flags)   native GUI — the estate frame (list · console · details);
-               static/terminal-only builds start the TUI instead
+NOFLAGS
   --tui        estate TUI (bubbletea) — headless / SSH / power use
   --console VM one VM's screen, fullscreen, nothing else; Ctrl+Alt+Q quits
                (VMX_QUIT_KEY to change it). On a host with no desktop:
@@ -196,6 +195,21 @@ retyping the domain name, and every run is appended to the audit log
 (/var/log/kldload/vmx.log, else ~/.local/state/vmxplore/vmx.log).
 
 Documentation: docs/VM-CONSOLE-DESIGN.md`
+
+// usage is usageTmpl for THIS binary: `vmxplore` (the window) and `vmxctl`
+// (the commands) share this main, and the help printed "usage: vmx" and
+// "(no flags) native GUI" for both, after vmx became the terminal console
+// (cmd/vmx) on 2026-09-30. --help is the contract, so it names the binary
+// it is and says what no flags does in it.
+var usage = func() string {
+	prog := filepath.Base(os.Args[0])
+	nf := "  (no flags)   the native window: the estate, its console and details"
+	if !hasGUI {
+		nf = "  (no flags)   print this help. The terminal console is vmx; the\n" +
+			"               window is vmxplore."
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(usageTmpl, "PROG", prog), "NOFLAGS", nf)
+}()
 
 func main() {
 	once := false
@@ -335,7 +349,7 @@ func main() {
 				}
 			}
 			if name == "" || ip == "" {
-				fmt.Fprintln(os.Stderr, "usage: vmx --enroll NAME --ip IP [--role ROLE]")
+				fmt.Fprintln(os.Stderr, "usage: "+filepath.Base(os.Args[0])+" --enroll NAME --ip IP [--role ROLE]")
 				os.Exit(2)
 			}
 			if role == "" {

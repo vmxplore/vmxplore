@@ -1,0 +1,126 @@
+.\" vmxctl.1 — manual for vmxplore's command-line jobs. mdoc, OpenBSD section
+.\" order. Keep in lockstep with the usage text in main.go (usageTmpl).
+.Dd October 1, 2026
+.Dt VMXCTL 1
+.Os
+.Sh NAME
+.Nm vmxctl
+.Nd vmxplore's jobs from the command line: appliances, reconcile, sysdiag
+.Sh SYNOPSIS
+.Nm
+.Op Fl -once
+.Op Fl -reconcile Op Fl -orphans
+.Op Fl -connect Ar dest
+.Op Fl -rules Ar file
+.Nm
+.Fl -appliances
+.Nm
+.Fl -appliance Ar name Fl -vm Ar vmname
+.Op Ar key Ns = Ns Ar value ...
+.Nm
+.Fl -build-all
+.Op Fl -only Ar a,b
+.Nm
+.Fl -destroy-all
+.Op Fl -yes
+.Nm
+.Fl -selftest
+.Op Fl -only Ar name
+.Op Fl -keep
+.Nm
+.Fl -sysdiag
+.Nm
+.Fl -setup
+.Nm
+.Fl -version
+.Sh DESCRIPTION
+.Nm
+runs vmxplore's non-interactive jobs: building, listing and removing the
+appliance catalog, reconciling the estate register against libvirt, and
+diagnosing the host.
+It is the same program as
+.Xr vmxplore 1
+built without the window, so it runs anywhere: over ssh, from a unit, in a
+script.
+The interactive consoles are
+.Xr vmx 1
+in a terminal and
+.Xr vmxplore 1
+in a window.
+With no options,
+.Nm
+prints its usage and exits 2.
+.Pp
+.Nm vmxctl --help
+is the complete option list, with every appliance option; this page covers
+what each job does.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl -once
+Print the estate table once and exit.
+.It Fl -reconcile Op Fl -orphans
+Clear the unreconciled group: forget register rows for VMs libvirt no longer
+has.
+Orphan zvols are listed and kept; with
+.Fl -orphans
+they are destroyed too, snapshots included.
+.It Fl -connect Ar dest
+Drive a remote hypervisor: a host, user@host, or a libvirt URI such as
+qemu+ssh://host/system.
+.It Fl -rules Ar file
+The grouping and classification rules
+.Pq default Pa /etc/vmxplore/rules , else the built-in profile .
+.It Fl -appliances
+List the appliance catalog with each entry's settings.
+.It Fl -appliance Ar name Fl -vm Ar vmname Op Ar key Ns = Ns Ar value ...
+Build one appliance as a VM and wait until its service answers.
+.It Fl -build-all Op Fl -only Ar a,b
+Build one of every catalog appliance (or the listed ones), kept and shut off;
+appliances that already exist are skipped.
+.It Fl -destroy-all Op Fl -yes
+Remove every VM the catalog built, and nothing else.
+.It Fl -selftest Op Fl -only Ar name Op Fl -keep
+Build and audit each appliance, then remove it unless
+.Fl -keep .
+.It Fl -sysdiag
+Report what this host offers: the substrate, the probes, and what each
+appliance can do here.
+.It Fl -setup
+Install the KVM stack on this machine, printing every command before it
+runs.
+.It Fl -version
+Print the version and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std
+Usage errors, including no options at all, exit 2.
+.Sh EXAMPLES
+List the catalog, then build Plex as a VM named plex:
+.Bd -literal -offset indent
+$ vmxctl --appliances
+$ vmxctl --appliance "Plex on ZFS" --vm plex
+.Ed
+.Pp
+Build every appliance, one at a time, and keep them shut off:
+.Bd -literal -offset indent
+$ vmxctl --build-all
+.Ed
+.Pp
+Forget register rows for VMs that no longer exist, keeping orphan disks:
+.Bd -literal -offset indent
+$ vmxctl --reconcile
+.Ed
+.Sh SEE ALSO
+.Xr vmx 1 ,
+.Xr vmxplore 1 ,
+.Xr kfire 8
+.Sh HISTORY
+The jobs were options of the
+.Nm vmx
+binary until 30 September 2026, when
+.Nm vmx
+became the terminal console and the jobs moved to
+.Nm .
+The old spellings still work through
+.Nm vmx ,
+which hands them here with a warning.
