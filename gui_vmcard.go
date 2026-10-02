@@ -41,6 +41,10 @@ type vmCard struct {
 
 	keys []*canvas.Text
 	vals []*canvas.Text
+
+	// actions is filled by runGUI with buttons for the selected VM (Back up,
+	// Restore…); the card only lays them out.
+	actions *fyne.Container
 }
 
 // The facts, in the order a person asks them.
@@ -79,7 +83,8 @@ func newVMCard(technical fyne.CanvasObject) *vmCard {
 	}
 
 	tech := widget.NewAccordion(widget.NewAccordionItem("Technical details", technical))
-	c.body = container.NewVBox(header, widget.NewSeparator(), form, tech)
+	c.actions = container.NewHBox()
+	c.body = container.NewVBox(header, widget.NewSeparator(), form, c.actions, tech)
 	c.placeholder = container.NewCenter(canvas.NewText("Select a VM to see its details", tileSubColor()))
 	c.root = container.NewStack(c.placeholder, container.NewVScroll(container.NewPadded(c.body)))
 	c.root.(*fyne.Container).Objects[1].Hide()

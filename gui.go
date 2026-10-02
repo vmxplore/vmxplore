@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -4436,9 +4437,250 @@ func runGUI(rs *Ruleset) {
 		d.Resize(fyne.NewSize(820, 640))
 		d.Show()
 	}
+	// ── backup / restore ─────────────────────────────────────────────────
+	// The buttons over backup.go: a VM's disks and definition to a dataset
+	// here or on another host, incremental after the first, and back as a
+	// NEW VM. The destination and the count are remembered.
+	prefs := a.Preferences()
+	suggestBackupDest := func() string {
+		home := ""
+		if p := ZFSVMParent(st.visibleRows()); p != "" {
+			home, _, _ = strings.Cut(p, "/")
+		}
+		pools := map[string]bool{}
+		for name := range st.dss {
+			pool, _, _ := strings.Cut(name, "/")
+			pools[pool] = true
+		}
+		for _, p := range slices.Sorted(maps.Keys(pools)) {
+			if p != home && p != "" {
+				return p + "/backups" // another pool: a backup that survives the VM's disk
+			}
+		}
+		return ""
+	}
+	pointLabel := func(p string) string { // backup-20261001-153000 -> 2026-10-01 15:30:00 UTC
+		if t, err := time.Parse("backup-20060102-150405", p); err == nil {
+			return t.Format("2006-01-02 15:04:05 UTC")
+		}
+		return p
+	}
+	vmExists := func(name string) bool {
+		for _, g := range st.groups {
+			for _, r := range g.Rows {
+				if r.D.Name == name {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	backupDialog := withSel(func(r Row) {
+		disks := vmZvols(r)
+		if r.FC != nil || len(disks) == 0 {
+			dialog.ShowInformation("Back up", vmDisplayName(r.D.Name)+" has no ZFS-backed disks to back up.", w)
+			return
+		}
+		dest := widget.NewEntry()
+		dest.SetPlaceHolder("tank/backups   or   root@nas:tank/backups")
+		dest.SetText(prefs.StringWithFallback("backupDest", suggestBackupDest()))
+		keep := widget.NewEntry()
+		keep.SetText(prefs.StringWithFallback("backupKeep", "7"))
+		what := widget.NewLabel(fmt.Sprintf("%d disk(s) and the VM's definition. The first backup is a full copy; after that only the changes are sent.", len(disks)))
+		what.Wrapping = fyne.TextWrapWord
+		items := []*widget.FormItem{
+			widget.NewFormItem("To", dest),
+			widget.NewFormItem("Keep", keep),
+			widget.NewFormItem("", what),
+		}
+		if r.D.State == "running" {
+			n := widget.NewLabel("It is running, so the copy is crash-consistent (as if the power were pulled at that instant). Shut it down first for a clean copy.")
+			n.Wrapping = fyne.TextWrapWord
+			items = append(items, widget.NewFormItem("", n))
+		}
+		name := r.D.Name
+		d := dialog.NewForm("Back up "+vmDisplayName(name), "Back up", "Cancel", items, func(ok bool) {
+			if !ok {
+				return
+			}
+			bd, err := parseBackupDest(dest.Text)
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			k, err := strconv.Atoi(strings.TrimSpace(keep.Text))
+			if err != nil || k < 1 {
+				dialog.ShowError(fmt.Errorf("keep: a number of backups, 1 or more"), w)
+				return
+			}
+			prefs.SetString("backupDest", bd.String())
+			prefs.SetString("backupKeep", strconv.Itoa(k))
+			batchLogWindow("Back up "+name, fmt.Sprintf("backing up %s to %s\n", name, bd), "Back up", true, 3*time.Second,
+				func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+					xml, err := run(ctx, nil, virsh("dumpxml", "--inactive", name))
+					if err != nil {
+						return "backup FAILED — the definition: " + err.Error()
+					}
+					b, err := BackupDisks(ctx, name, disks, xml, bd, k, log)
+					if err != nil {
+						return "backup FAILED — " + err.Error()
+					}
+					return fmt.Sprintf("done — %s is backed up to %s (%s)", name, bd, pointLabel(b))
+				})
+		}, w)
+		d.Resize(fyne.NewSize(620, 0))
+		d.Show()
+	})
+	restoreDialog := func() {
+		dest := widget.NewEntry()
+		dest.SetPlaceHolder("tank/backups   or   root@nas:tank/backups")
+		dest.SetText(prefs.StringWithFallback("backupDest", suggestBackupDest()))
+		info := widget.NewLabel("Find the backups, pick a machine and a point in time. It comes back as a new VM, shut off; nothing existing is overwritten.")
+		info.Wrapping = fyne.TextWrapWord
+		var sets []BackupSet
+		var points []string
+		ptSel := widget.NewSelect(nil, nil)
+		newName := widget.NewEntry()
+		vmSel := widget.NewSelect(nil, func(v string) {
+			points = nil
+			for _, s := range sets {
+				if s.VM == v {
+					points = s.Points
+				}
+			}
+			labels := make([]string, len(points))
+			for i, p := range points {
+				labels[i] = pointLabel(p)
+			}
+			ptSel.Options = labels
+			ptSel.Refresh()
+			if len(labels) > 0 {
+				ptSel.SetSelectedIndex(0)
+			}
+			if vmExists(v) {
+				newName.SetText(v + "-restored")
+			} else {
+				newName.SetText(v) // the original is gone: bring it back as itself
+			}
+		})
+		var bd backupDest
+		find := widget.NewButton("Find backups", nil)
+		find.OnTapped = func() {
+			var err error
+			if bd, err = parseBackupDest(dest.Text); err != nil {
+				info.SetText(err.Error())
+				return
+			}
+			info.SetText("looking at " + bd.String() + "…")
+			find.Disable()
+			go func() {
+				s, err := ListBackups(context.Background(), bd)
+				fyne.Do(func() {
+					find.Enable()
+					if err != nil {
+						info.SetText("could not read " + bd.String() + ": " + err.Error())
+						return
+					}
+					if len(s) == 0 {
+						info.SetText("no backups at " + bd.String())
+						return
+					}
+					sets = s
+					names := make([]string, len(s))
+					for i, x := range s {
+						names[i] = x.VM
+					}
+					vmSel.Options = names
+					vmSel.Refresh()
+					pick := 0
+					if r, ok := st.selected(); ok {
+						if i := slices.Index(names, r.D.Name); i >= 0 {
+							pick = i
+						}
+					}
+					vmSel.SetSelectedIndex(pick)
+					info.SetText(fmt.Sprintf("%d machine(s) backed up at %s", len(s), bd))
+				})
+			}()
+		}
+		content := widget.NewForm(
+			widget.NewFormItem("From", container.NewBorder(nil, nil, nil, find, dest)),
+			widget.NewFormItem("Machine", vmSel),
+			widget.NewFormItem("Backup", ptSel),
+			widget.NewFormItem("Restore as", newName),
+			widget.NewFormItem("", info),
+		)
+		d := dialog.NewCustomConfirm("Restore from backup", "Restore", "Cancel", content, func(ok bool) {
+			if !ok {
+				return
+			}
+			vm, idx, nn := vmSel.Selected, ptSel.SelectedIndex(), strings.TrimSpace(newName.Text)
+			if vm == "" || idx < 0 || idx >= len(points) {
+				dialog.ShowError(fmt.Errorf("find the backups and pick a machine and a backup first"), w)
+				return
+			}
+			if err := validZFSName(nn); err != nil {
+				dialog.ShowError(fmt.Errorf("restore as: %w", err), w)
+				return
+			}
+			if vmExists(nn) {
+				dialog.ShowError(fmt.Errorf("a VM named %s exists; pick another name (restore never overwrites)", nn), w)
+				return
+			}
+			parent := ZFSVMParent(st.visibleRows())
+			if parent == "" {
+				dialog.ShowError(fmt.Errorf("no VM dataset parent on this host to restore into"), w)
+				return
+			}
+			pt := points[idx]
+			prefs.SetString("backupDest", bd.String())
+			batchLogWindow("Restore "+nn, fmt.Sprintf("restoring %s (%s) from %s as %s\n", vm, pointLabel(pt), bd, nn), "Restore", true, 3*time.Second,
+				func(ctx context.Context, log func(string), _ func(int, int, string)) string {
+					xml, made, err := RestoreDisks(ctx, bd, vm, pt, parent, nn, log)
+					if err != nil {
+						return "restore FAILED — " + err.Error()
+					}
+					f, err := os.CreateTemp("", "vmxplore-restore-*.xml")
+					if err == nil {
+						_, err = f.WriteString(xml)
+						if cerr := f.Close(); err == nil {
+							err = cerr
+						}
+						defer os.Remove(f.Name())
+					}
+					if err == nil {
+						_, err = run(ctx, nil, virsh("define", f.Name()))
+					}
+					if err != nil {
+						for i := len(made) - 1; i >= 0; i-- {
+							if _, derr := run(context.Background(), nil, srcZFS("destroy", "-r", made[i])); derr != nil {
+								log("could not remove " + made[i] + ": " + derr.Error())
+							}
+						}
+						return "restore FAILED — defining " + nn + ": " + err.Error() + " (the restored disks were removed)"
+					}
+					log("defined " + nn)
+					return "done — restored as " + nn + ", shut off; start it when ready"
+				})
+		}, w)
+		d.Resize(fyne.NewSize(680, 0))
+		d.Show()
+		if dest.Text != "" {
+			find.OnTapped() // the remembered destination: list it straight away
+		}
+	}
+	vmc.actions.Objects = []fyne.CanvasObject{
+		widget.NewButtonWithIcon("Back up", theme.DownloadIcon(), backupDialog),
+		widget.NewButtonWithIcon("Restore…", theme.HistoryIcon(), restoreDialog),
+	}
+	vmc.actions.Refresh()
+
 	mStorage := menuButton("Storage", theme.StorageIcon(),
 		fyne.NewMenuItem("Snapshot…", snapAct),
-		fyne.NewMenuItem("Rollback…", rollbackDialog))
+		fyne.NewMenuItem("Rollback…", rollbackDialog),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Back up…", backupDialog),
+		fyne.NewMenuItem("Restore from backup…", restoreDialog))
 	mConfig := menuButton("Configure", theme.SettingsIcon(),
 		fyne.NewMenuItem("vCPU / memory…", specsDialog),
 		fyne.NewMenuItem("Resize disk…", resizeDialog),
@@ -4468,6 +4710,8 @@ func runGUI(rs *Ruleset) {
 			fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("Snapshot…", snapAct),
 			fyne.NewMenuItem("Rollback…", rollbackDialog),
+			fyne.NewMenuItem("Back up…", backupDialog),
+			fyne.NewMenuItem("Restore from backup…", restoreDialog),
 			fyne.NewMenuItem("Clone…", cloneAny),
 			fyne.NewMenuItem("Make Golden…", goldenAct),
 			fyne.NewMenuItem("Firecracker golden", verb(planFCGolden)),
